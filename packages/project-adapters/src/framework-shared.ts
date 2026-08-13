@@ -2,7 +2,6 @@ import {
   DeploymentPlanSchema,
   DetectionResultSchema,
   ExecutionContractSchema,
-  InstrumentationPlanSchema,
   RouteSchema,
   TestPlanSchema,
   type DetectionContext,
@@ -16,6 +15,7 @@ import {
 import { z } from 'zod';
 
 import { analyzeGenericNode } from './generic-node.js';
+import { proposeManagedInstrumentation } from './managed-observability.js';
 
 const PackageJsonSchema = z
   .object({
@@ -108,8 +108,8 @@ export function createFrameworkAdapter(options: FrameworkAdapterOptions): Framew
     proposeTests(): Promise<TestPlan> {
       return Promise.resolve(TestPlanSchema.parse({ tests: [] }));
     },
-    proposeInstrumentation(): Promise<InstrumentationPlan> {
-      return Promise.resolve(InstrumentationPlanSchema.parse({ steps: [] }));
+    proposeInstrumentation(ctx): Promise<InstrumentationPlan> {
+      return proposeManagedInstrumentation(ctx, options.id);
     },
     proposeDeployment(): Promise<DeploymentPlan | null> {
       if (options.deploymentProvider === null) return Promise.resolve(null);

@@ -44,13 +44,39 @@ Master plan §Global Constraints, plus:
 - [x] Failing tests: ledger append + Flexprice event forwarded with `event_id` = ledger row id (fake client); duplicate `recordUsage` retry → single ledger row + same event_id (idempotent); Flexprice-down path queues and drains without data loss; estimate math table-driven (tokens, cpu-seconds, GiB-seconds fixtures → exact estimated credits); compensating entry nets to zero in summary and emits a negative-quantity Flexprice event; unknown category rejected; bootstrap script second run is a no-op diff.
 - [x] Commit: `feat(usage): append-only ledger + idempotent Flexprice metering pipeline`
 
+#### Task OPS-1B-FIX-1 [M2]: Application-role correction serialization
+
+**Files:** Modify: `services/control-api/src/usage/ledger.ts`, `services/control-api/test/integration/usage-ledger.test.ts`
+**Depends on:** OPS-1B. **Binding behavior:** correction serialization must preserve the append-only application-role boundary: `recordUsage` runs with `SELECT` + `INSERT` and no `UPDATE` on `usage_ledger`, takes a transaction-scoped PostgreSQL advisory lock structurally keyed by the correction target, then resolves the positive original through a plain tenant-scoped `SELECT`. It must never grant `UPDATE`, mutate, or row-lock the original, while retaining stable retry identity and aggregate concurrent over-correction rejection.
+
+- [x] RED/GREEN: a temporary unprivileged application role using the shipped append-only grants reproduces SQLSTATE `42501` for the current correction path, then records a valid correction after advisory-lock serialization; the concurrent over-correction proof remains green.
+- [x] Review: at most two rounds; exit = zero Critical/Important correctness or security findings.
+- [x] Commit: `fix(usage): serialize corrections under append-only role`
+
 ### Task OPS-2 [M2]: Metering collectors completion
 
 **Files:** Create: `services/control-api/src/usage/collectors/{storage,git}.ts`; verify gateway/sandbox emitters
+**ADR:** ADR-0030 (persisted logical snapshot bytes + read-only temporary-sandbox volume probe).
 **Effort:** M
 
-- [ ] Binding behavior (PRD §30.1 full category coverage): storage cron (daily): R2 prefix sizes per project → `artifact_storage`; snapshot/volume sizes via sandbox-service → `storage_gib_hours`; deploy-provider usage recorded per deployment (build seconds where measurable); reconciliation job (three-way): Redis run counters vs ledger sums vs Flexprice aggregates (per-category API query) — drift > 1% → alert + heal (ledger is arbiter); **every provider cost category maps to a ledger category and a Flexprice metered feature** — coverage test enumerates PRD §30.1 list against emitter registry and bootstrap output.
-- [ ] Commit: `feat(usage): full metering coverage + three-way reconciliation`
+- [x] Binding behavior (PRD §30.1 full category coverage): storage cron (daily): R2 prefix sizes per project → `artifact_storage`; snapshot/volume sizes via sandbox-service → `storage_gib_hours`; deploy-provider usage recorded per deployment (build seconds where measurable); reconciliation job (three-way): Redis run counters vs ledger sums vs Flexprice aggregates (per-category API query) — drift > 1% → alert + heal (ledger is arbiter); **every provider cost category maps to a ledger category and a Flexprice metered feature** — coverage test enumerates PRD §30.1 list against emitter registry and bootstrap output.
+- [x] Commit: `feat(usage): full metering coverage + three-way reconciliation`
+
+#### Task OPS-2-FIX-1 [M2]: Durable metering and reconciliation closure
+
+**Files:** Modify OPS-2 control-api usage collectors/reconciliation/Flexprice composition and tests; sandbox-service app/checkpoint/cost/storage/Modal composition and tests; `packages/db` billing schema/migration/tests; this plan and `tasks/todo.md`.
+**Depends on:** OPS-2. **Review cap:** two rounds; exit = zero Critical/Important.
+
+- [x] RED/GREEN: query Flexprice analytics only with documented `group_by` fields (`source`, `feature_id`, `properties.<field>`), validate the real response contract, expand the meter and map `meter.event_name` to every usage category, and make the fake reject invalid analytics payloads.
+- [x] RED/GREEN: persist sandbox CPU/memory metering identity and the active interval across restart/replay/attach/termination; two real `buildApp` instances over the same durable workspace rows must emit the complete interval exactly once.
+- [x] RED/GREEN: use the exact artifact prefix `org/{orgId}/project/{projectId}/`.
+- [x] RED/GREEN: persist pending Flexprice correction state; HTTP 202 does not mean healed, later aggregate convergence confirms healing, pending work blocks duplicate full-delta submission, and a new residual is allowed only after the prior target converges.
+- [x] RED/GREEN: production checkpoint composition measures logical bytes before Modal snapshot creation, returns them structurally, records them durably, and fails closed on measurement/contract failure.
+- [x] RED/GREEN: daily storage scan holds a renewable fenced lease for the full scan, including probes longer than one lease and a 1000-project scan; ownership loss fails closed and prevents a second replica from remeasuring.
+- [x] RED/GREEN: control-api starts/readies without waiting for the daily storage scan and reports asynchronous scan failures.
+- [x] RED/GREEN (in-scope Minors): read-only Modal volume probes never create an absent volume; the billing storage route accepts only the control-api service caller.
+- [x] Verify focused RED/GREEN, then full DB/control-api/sandbox tests plus lint, typecheck, sequential build, architecture lint, and diff hygiene; no real-provider calls.
+- [x] Commit: `fix(usage): close durable metering and reconciliation gaps`
 
 ### Task OPS-3 [M2]: Budgets, quotas, plan limits
 
@@ -61,41 +87,84 @@ Master plan §Global Constraints, plus:
 - [ ] Failing tests: each enforcement point table-driven per plan tier; balance-exhaustion mid-run pauses gracefully.
 - [ ] Commit: `feat(usage): plan quotas + budget enforcement`
 
+#### Task OPS-3-FIX-1 [M2]: Production enforcement closure
+
+**Files:** Modify OPS-3 shared contracts, generated API artifacts, control-api run/orchestration/usage composition and tests, orchestrator workflow inputs/signals/tests, sandbox-service production composition/tests, `packages/db` planning schema/migration/tests, this plan, and `tasks/todo.md`.
+**Depends on:** OPS-3. **Review cap:** two fresh rounds; exit = zero Critical/Important production correctness or security findings.
+
+- [x] RED/GREEN: one shared strict mode-to-workflow dispatch contract covers all five modes, exact workflow inputs/signals, same-workflow replay, and the persisted immutable plan budget cap.
+- [x] RED/GREEN: failed dispatch releases active quota while stable-intent retry atomically re-admits; real Postgres proves distinct/same-key concurrency and plan changes cannot change an existing run's cap.
+- [x] RED/GREEN: credit exhaustion uses durable per-org episodes and bounded active workflow records, gates run/build, autonomous, Fix, and desktop-local at their next safe boundary, and a leased nonblocking bounded producer retries partial failure and joins on close.
+- [x] RED/GREEN: malformed/failed/hung Redis reservation reads fall back to bounded authoritative Postgres totals, and alert delivery never blocks admission.
+- [x] RED/GREEN: the sandbox package exports a deployable strict plan-governor assembly whose real workspace-create path rejects quota before the provider call; shared fixed-point plan maxima accept only integral credits from 1 through 1,000,000.
+- [x] Verify focused RED/GREEN, clean migration plus real Postgres/Redis concurrency/failure integrations, touched-package lint/typecheck/build/unit, architecture/provider boundaries, and diff hygiene; no provider calls.
+- [x] Commit: `fix(usage): close plan enforcement production gaps`
+
+#### Task OPS-3-FIX-2 [M2]: Credit-boundary and legacy-approval rollout closure
+
+**Files:** Modify Build and Autonomous workflow credit gates plus unit/real-Temporal interleaving tests; budget-approval legacy decoders plus control-api approval route/tests; `packages/db` next canonical data migration and migration tests; this plan and `tasks/todo.md`.
+**Depends on:** OPS-3-FIX-1. **Review cap:** two fresh rounds; exit = zero Critical/Important production correctness or security findings.
+
+- [x] RED/GREEN: enforce organization-credit exhaustion before every next planner/provider/child boundary: Build before pending redirect planning, and Autonomous before pending redirect processing, verify-to-repair, and repair-to-reverify; real Temporal interleavings prove exhaustion delivered during the preceding child/verify cannot start the next planner, repair, or reverify until matching organization-credit approval, while Fix semantics remain unchanged.
+- [x] RED/GREEN: preserve rollout compatibility for legacy `budget_increase` approvals and Temporal histories that lack `reason`: a canonical migration backfills persisted request JSON to `run_budget_exhausted`, deterministic legacy decoders default only a missing reason, new external inputs remain strict, and old database approve/reject plus old Temporal signal replay regressions pass.
+- [x] Verify focused RED/GREEN, actual local Temporal interleavings/replay, clean migration plus no-diff generation, affected-package lint/typecheck/build/unit/integration, architecture boundaries, and diff hygiene; no provider calls.
+- [x] Commit: `fix(usage): enforce every credit boundary and replay legacy approvals`
+
+#### Task OPS-3-FIX-3 [M2]: Build scheduling and legacy activity boundary closure
+
+**Files:** Modify the Build workflow credit gate plus its real-Temporal interleaving test; the budget-approval activity's legacy execution decoder plus activity tests; this plan and `tasks/todo.md`.
+**Depends on:** OPS-3-FIX-2. **Review cap:** two fresh rounds; exit = zero Critical/Important production correctness or security findings.
+
+- [x] RED/GREEN: place an organization-credit boundary immediately adjacent to Build's provider-backed `workspace.ensureWorkspace` activity, with no awaited operation between the successful check and activity scheduling; a real Temporal interleaving exhausts credit during the preceding status/event await and proves no workspace activity starts before matching organization-credit approval while preserving estimation, bookkeeping, idempotency, and error behavior.
+- [x] RED/GREEN: keep new/public/workflow budget-approval validation strict while the activity execution boundary alone defaults a missing legacy `requestBudgetIncrease` reason to `run_budget_exhausted`; prove an actual activity accepts the old payload without weakening organization-credit reason or approval-ID matching.
+- [x] Verify focused RED/GREEN and actual local Temporal/activity regressions, full worker unit, affected control/database compatibility regressions, touched-package lint/typecheck/build, architecture boundaries, and diff hygiene; no provider calls.
+- [x] Commit: `fix(usage): close build scheduling and legacy activity boundaries`
+
 ### Task OPS-4 [M5]: Stripe platform billing
 
 **Files:** Create: `services/control-api/src/billing/{stripe,webhooks,portal}.ts`, `test/integration/billing.test.ts` (Stripe test mode)
 **Effort:** L
 
-- [ ] Binding behavior (PRD §26.1): products/prices bootstrapped by script from `config/plans.json`; subscribe flow: checkout session (plan + seats) → webhook `customer.subscription.*` sync → `subscriptions` row + org.plan update + Flexprice customer/plan assignment; monthly credit grant on invoice.paid = **Flexprice wallet grant** + mirror `usage_ledger` entry category `credit_grant` (extend enum, idempotent by invoice id); metered/usage charges flow Flexprice → Stripe via Flexprice's Stripe integration (invoice items), reconciled monthly against ledger aggregates; seat changes prorated via Stripe; customer portal link for payment method/invoices; failed payment: dunning state → org banner + 7-day grace → downgrade to trial limits (never data deletion); webhook signature + idempotent event processing (dedupe by event id); **platform Stripe credentials in separate vault scope from generated-app scope (INT-8 separation test extends here)**.
-- [ ] Failing tests: webhook replay idempotent; subscription lifecycle transitions; grace-period state machine.
-- [ ] Commit: `feat(billing): stripe subscriptions, seats, credit grants, dunning`
+- [x] Binding behavior (PRD §26.1): products/prices bootstrapped by script from `config/plans.json`; subscribe flow: checkout session (plan + seats) → webhook `customer.subscription.*` sync → `subscriptions` row + org.plan update + Flexprice customer/plan assignment; monthly credit grant on invoice.paid = **Flexprice wallet grant** + mirror `usage_ledger` entry category `credit_grant` (extend enum, idempotent by invoice id); metered/usage charges flow Flexprice → Stripe via Flexprice's Stripe integration (invoice items), reconciled monthly against ledger aggregates; seat changes prorated via Stripe; customer portal link for payment method/invoices; failed payment: dunning state → org banner + 7-day grace → downgrade to trial limits (never data deletion); webhook signature + idempotent event processing (dedupe by event id); **platform Stripe credentials in separate vault scope from generated-app scope (INT-8 separation test extends here)**.
+- [x] Failing tests: webhook replay idempotent; subscription lifecycle transitions; grace-period state machine.
+- [x] Commit: `feat(billing): stripe subscriptions, seats, credit grants, dunning`
+
+#### Task OPS-4-FIX-1 [M5]: Stripe fixture secret-scan repair
+
+**Files:** Modify `services/control-api/test/{compose,server-entrypoint,env}.test.ts`, `services/control-api/test/integration/billing.test.ts`, this plan, and `tasks/todo.md`.
+**Depends on:** OPS-4. **Review cap:** one focused round; exit = the pinned Gitleaks scan reports no provider-shaped credential literal in the OPS-4 test fixtures and all touched control-api tests stay green.
+
+- [x] RED: reproduce GitHub Security's `stripe-access-token` findings with Gitleaks 8.24.3 against the committed OPS-4 fixtures.
+- [x] GREEN: preserve the Stripe boundary tests while constructing synthetic provider-shaped values only at runtime; do not weaken `.gitleaks.toml` or allowlist Stripe credentials in tests.
+- [x] Verify the pinned Gitleaks scan, focused control-api tests, control-api lint/typecheck/build, diff hygiene, normal pre-push gate, and exact-SHA GitHub Security/CI.
+- [x] Commit: `test(billing): make Stripe fixtures scan-safe`
 
 ### Task OPS-5 [M5]: Credit top-ups + trial
 
 **Files:** Create: `src/billing/topup.ts`
 **Effort:** M
 
-- [ ] Binding behavior: one-time checkout for credit packs (config-defined), grant on payment success = Flexprice wallet top-up + mirror ledger entry (idempotent by checkout session id); trial: signup grants `plans.trial.monthlyCredits` as a Flexprice trial wallet once per org with abuse guard (domain+card heuristics deferred; simple per-user-one-trial in P0); estimated-cost display API for pre-run UX (AR-14/WEB) from local pricing config.
-- [ ] Commit: `feat(billing): credit top-ups + trial grants`
+- [x] Binding behavior: one-time checkout for credit packs (config-defined), grant on payment success = Flexprice wallet top-up + mirror ledger entry (idempotent by checkout session id); trial: signup grants `plans.trial.monthlyCredits` as a Flexprice trial wallet once per org with abuse guard (domain+card heuristics deferred; simple per-user-one-trial in P0); estimated-cost display API for pre-run UX (AR-14/WEB) from local pricing config.
+- [x] Commit: `feat(billing): credit top-ups + trial grants`
 
 ### Task OPS-6 [M5]: Product analytics + feature flags (PostHog)
 
 **Files:** Create: `packages/config/src/{analytics,flags}.ts` (typed catalogs), web/desktop/service wiring
 **Effort:** L
 
-- [ ] Binding behavior — analytics: PostHog with typed catalog: `signup, org_created, project_created, run_started(mode), plan_approved, first_preview_ready, change_applied, verification_passed/failed, release_created, deploy_succeeded/failed, rollback_executed, credits_exhausted` — properties: orgId, projectId, mode, supportLevel (no prompt/code content); north-star dashboard: verified releases per active org per month (PRD §37.1) + activation funnel (§37.2) + reliability panel fed by verifier events (§37.3); release annotations on deploys (DEP-8 hook).
-- [ ] Binding behavior — feature flags (PostHog flags, posthog.com/docs): typed flag catalog in `packages/config/src/flags.ts` (name, type, default, owner, expiry-review date): P0 flags: `voice-input` (WEB-3 mic, default off), `mobile-app-tab`, `visual-editing`, `browser-agent-enabled` (kill-switch), `auto-repair-enabled` (kill-switch), `autonomous-mode` (gradual rollout by org), `model-default-override` (multivariate for AR routing experiments); evaluation: server-side (PostHog Node in control-api/orchestrator, org-keyed with `groups: { organization }`), client bootstrap to web/desktop (no flag flicker); **kill-switch rule:** risky subsystems (browser agent, auto-repair, autonomous) check their flag at run/phase start so ops can disable without deploy; flags cached 60 s with local default fallback on PostHog outage (a flag outage never blocks the platform); stale-flag lint: catalog entries past expiry-review fail CI warning.
-- [ ] Failing tests: flag helper returns default on outage; org-targeted rollout evaluates by group key; kill-switch consulted at autonomous phase boundary (fake flag flip pauses next phase).
-- [ ] Commit: `feat(analytics): typed PostHog events + feature-flag catalog with kill-switches`
+- [x] Binding behavior — analytics: PostHog with typed catalog: `signup, org_created, project_created, run_started(mode), plan_approved, first_preview_ready, change_applied, verification_passed/failed, release_created, deploy_succeeded/failed, rollback_executed, credits_exhausted` — properties: orgId, projectId, mode, supportLevel (no prompt/code content); north-star dashboard: verified releases per active org per month (PRD §37.1) + activation funnel (§37.2) + reliability panel fed by verifier events (§37.3); release annotations on deploys (DEP-8 hook).
+- [x] Binding behavior — feature flags (PostHog flags, posthog.com/docs): typed flag catalog in `packages/config/src/flags.ts` (name, type, default, owner, expiry-review date): P0 flags: `voice-input` (WEB-3 mic, default off), `mobile-app-tab`, `visual-editing`, `browser-agent-enabled` (kill-switch), `auto-repair-enabled` (kill-switch), `autonomous-mode` (gradual rollout by org), `model-default-override` (multivariate for AR routing experiments); evaluation: server-side (PostHog Node in control-api/orchestrator, org-keyed with `groups: { organization }`), client bootstrap to web/desktop (no flag flicker); **kill-switch rule:** risky subsystems (browser agent, auto-repair, autonomous) check their flag at run/phase start so ops can disable without deploy; flags cached 60 s with local default fallback on PostHog outage (a flag outage never blocks the platform); stale-flag lint: catalog entries past expiry-review fail CI warning.
+- [x] Failing tests: flag helper returns default on outage; org-targeted rollout evaluates by group key; kill-switch consulted at autonomous phase boundary (fake flag flip pauses next phase).
+- [x] Commit: `feat(analytics): typed PostHog events + feature-flag catalog with kill-switches`
 
 ### Task OPS-7 [M5]: Notification service
 
 **Files:** Create: `services/control-api/src/notifications/{service,email,templates}.ts`
 **Effort:** M
 
-- [ ] Binding behavior: delivery pipeline: triggers enqueue to SQS `zapp-notifications` (+DLQ); worker consumes → channels: email (AWS SES) + in-app (event-derived) + desktop push (MAC-11 consumes events); SNS topics for multi-subscriber fan-out (e.g. deploy events → email + webhook subscribers) as needed; triggers: approval requested, run completed/failed, budget 50/80/100%, synthetic check failure, deploy success/failure, payment failure, member invited; per-user per-type preferences; batching (no more than 1 email/type/15 min per org); templates text-first with deep links (`zapp://` + web URLs); LocalStack-backed integration tests for the full enqueue→SES path.
-- [ ] Failing tests: trigger→notification mapping; batching window; preference suppression.
-- [ ] Commit: `feat(notifications): multi-channel notification service`
+- [x] Binding behavior: delivery pipeline: triggers enqueue to SQS `zapp-notifications` (+DLQ); worker consumes → channels: email (AWS SES) + in-app (event-derived) + desktop push (MAC-11 consumes events); SNS topics for multi-subscriber fan-out (e.g. deploy events → email + webhook subscribers) as needed; triggers: approval requested, run completed/failed, budget 50/80/100%, synthetic check failure, deploy success/failure, payment failure, member invited; per-user per-type preferences; batching (no more than 1 email/type/15 min per org); templates text-first with deep links (`zapp://` + web URLs); LocalStack-backed integration tests for the full enqueue→SES path.
+- [x] Failing tests: trigger→notification mapping; batching window; preference suppression.
+- [x] Commit: `feat(notifications): multi-channel notification service`
 
 ### Task OPS-8 [M5, start M2]: OpenTelemetry → Grafana Cloud across services
 
@@ -118,40 +187,41 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `templates/observability/{faro-web,otel-node,health-endpoint,logging}.ts.hbs`, instrumentation plan hook in project-adapters
 **Effort:** L
 
-- [ ] Binding behavior (PRD §29.2): `proposeInstrumentation` (VF adapters) returns plan: frontend error reporting + web vitals via **Grafana Faro** (per-project Faro app provisioned under the zapp-managed Grafana Cloud org by default — matching the managed-hosting default of locked decision #4; customer-owned Grafana stack connectable post-P0), backend via OTel node SDK (per-project scoped OTLP token), structured logging setup, `/api/health` endpoint template, release annotation wiring into DEP-8; applied as normal agent tasks (visible commits); observability_check gate (VF-4 matrix) verifies presence for Managed releases; customer telemetry isolation guaranteed (PRD §29.3 — per-project Faro apps/tokens, never shared).
-- [ ] Commit: `feat(templates): managed-app observability via faro + otel`
+- [x] Binding behavior (PRD §29.2): `proposeInstrumentation` (VF adapters) returns plan: frontend error reporting + web vitals via **Grafana Faro** (per-project Faro app provisioned under the zapp-managed Grafana Cloud org by default — matching the managed-hosting default of locked decision #4; customer-owned Grafana stack connectable post-P0), backend via OTel node SDK (per-project scoped OTLP token), structured logging setup, `/api/health` endpoint template, release annotation wiring into DEP-8; applied as normal agent tasks (visible commits); observability_check gate (VF-4 matrix) verifies presence for Managed releases; customer telemetry isolation guaranteed (PRD §29.3 — per-project Faro apps/tokens, never shared).
+- [x] Commit: `feat(templates): managed-app observability via faro + otel`
 
 ### Task OPS-11 [M5]: Closed-loop diagnosis (production error → Fix run)
 
 **Files:** Create: `services/control-api/src/routes/incidents.ts`, web hook-up
 **Effort:** M
 
-- [ ] Binding behavior (PRD §29.4): inbound error webhook (Grafana Alerting webhook from Faro/Loki error rules) / synthetic failure / user report → incident record → "Create Fix run" action (web + notification CTA) → AR-19 fix workflow seeded with: release id, commit, error payload, trace/log links, repro route; resolution links back (incident → fix run → new release) for the §10.3 journey; fully autonomous remediation explicitly absent (approval gates intact).
-- [ ] Commit: `feat(ops): incident-to-fix-run closed loop`
+- [x] Binding behavior (PRD §29.4): inbound error webhook (Grafana Alerting webhook from Faro/Loki error rules) / synthetic failure / user report → incident record → "Create Fix run" action (web + notification CTA) → AR-19 fix workflow seeded with: release id, commit, error payload, trace/log links, repro route; resolution links back (incident → fix run → new release) for the §10.3 journey; fully autonomous remediation explicitly absent (approval gates intact).
+- [x] Commit: `feat(ops): incident-to-fix-run closed loop`
 
 ### Task OPS-12 [M5, start M3]: Security test program — isolation, redaction, sandbox abuse
 
 **Files:** Create: `test/security/{tenant-isolation-extended,redaction,sandbox-abuse,path-traversal}.test.ts`, CI job `security-suite`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §31.2 as executable checks): extends CP-4 suite to every resource type (releases, artifacts, evidence, secrets, audit — 404 cross-tenant matrix); redaction: seeded secrets never appear in events/logs/artifacts/model-request captures (greps recorded fixtures); sandbox abuse (against real dev sandbox, nightly): fork bomb → cgroup kill + abnormal-termination event; memory balloon → OOM handled; egress attempt to non-allowlisted host under `build_test` profile → blocked + policy log; path traversal fuzz corpus vs workspace-agent (`../`, symlinks, `%2e%2e`, null bytes); control-plane credential absence (WS-11 allowlist test promoted here).
-- [ ] Commit: `test(security): permanent isolation/redaction/abuse suites`
+- [x] Binding behavior (PRD §31.2 as executable checks): extends CP-4 suite to every resource type (releases, artifacts, evidence, secrets, audit — 404 cross-tenant matrix); redaction: seeded secrets never appear in events/logs/artifacts/model-request captures (greps recorded fixtures); sandbox abuse (against real dev sandbox, nightly): fork bomb → cgroup kill + abnormal-termination event; memory balloon → OOM handled; egress attempt to non-allowlisted host under `build_test` profile → blocked + policy log; path traversal fuzz corpus vs workspace-agent (`../`, symlinks, `%2e%2e`, null bytes); control-plane credential absence (WS-11 allowlist test promoted here).
+- [x] Commit: `test(security): permanent isolation/redaction/abuse suites`
 
 ### Task OPS-13 [M5, start M3]: Prompt-injection evals + CI policy scans
 
 **Files:** Create: `test/security/injection-evals/{corpus/*.md,eval.test.ts}`, `.semgrep/zapp-policies.yml`, CI updates
 **Effort:** M
 
-- [ ] Binding behavior (PRD §31.3): corpus ≥ 25 injection payloads embedded in fixture repo files (README instructions, code comments, tool output, package descriptions, error messages) — eval asserts agent-policies deny the induced actions (secret exfil attempt, policy override, unapproved deploy, curl-pipe-sh) with `untrusted_instruction`; corpus grows on every real-world finding (regression file per incident); Semgrep policy pack: empty catch, `child_process` outside runtime packages, direct Modal/model SDK imports outside allowed services (Global Constraints 1–2 as scans), `process.env` secret names in client code; osv-scanner flips to blocking for critical severities.
-- [ ] Commit: `test(security): injection eval corpus + semgrep policy gates`
+- [x] Binding behavior (PRD §31.3): corpus ≥ 25 injection payloads embedded in fixture repo files (README instructions, code comments, tool output, package descriptions, error messages) — eval asserts agent-policies deny the induced actions (secret exfil attempt, policy override, unapproved deploy, curl-pipe-sh) with `untrusted_instruction`; corpus grows on every real-world finding (regression file per incident); Semgrep policy pack: empty catch, `child_process` outside runtime packages, direct Modal/model SDK imports outside allowed services (Global Constraints 1–2 as scans), `process.env` secret names in client code; osv-scanner flips to blocking for critical severities.
+- [x] Commit: `test(security): injection eval corpus + semgrep policy gates`
 
 ### Task OPS-14 [M5]: Retention + archival execution
 
 **Files:** Create: `services/control-api/src/jobs/archive.ts` (with CP-17), R2 lifecycle Terraform
 **Effort:** M
 
-- [ ] Binding behavior (PRD §31.4, master §5.2): monthly `agent_events` partitions > 90 d → R2 JSONL archive (readable by support tooling) → partition drop; artifact TTLs by class via R2 lifecycle rules (test 30 d, diagnostics 7 d, evidence retained); Modal snapshot TTL enforcement audit (WS-7 classes); restore-from-archive utility (support tool: rehydrate a run's events read-only).
-- [ ] Commit: `feat(ops): retention archival with rehydration tooling`
+- [x] Binding behavior (PRD §31.4, master §5.2): monthly `agent_events` partitions > 90 d → R2 JSONL archive (readable by support tooling) → partition drop; artifact TTLs by class via R2 lifecycle rules (test 30 d, diagnostics 7 d, evidence retained); Modal snapshot TTL enforcement audit (WS-7 classes); restore-from-archive utility (support tool: rehydrate a run's events read-only).
+- Approved provider deviation (ADR-0031): R2 can match only a key prefix, while master §5.2 locks class after dynamic tenant/project segments. CP-17's structurally classified nightly worker therefore owns 30 d/7 d deletion; Terraform owns only lifecycle hygiene expressible without risking release evidence.
+- [x] Commit: `feat(ops): retention archival with rehydration tooling`
 
 ### Task OPS-15 [Deferred post-P0 — ADR-0022]: Backup/DR + drills
 
@@ -174,9 +244,9 @@ Master plan §Global Constraints, plus:
 **Files:** Create: `apps/web/src/app/admin/*` (staff-role gated), `services/control-api/src/routes/admin.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §6.4, §22.3): staff role (zapp employees, separate flag + allowlist): tenant lookup (org/project/run state, sandbox + deployment status, cost/usage), agent-run diagnostics (support-visibility events + artifacts), resource termination (kill run/sandbox — WS-15 kill-switch), impersonation: explicit reason required → time-boxed session → `support.impersonation` audit events on every action → org-visible in their audit log (locked decision #11: source code inspection requires customer grant flow); no secret value access path exists in admin UI.
-- [ ] Failing tests: staff route 403 for normal users; impersonation without reason → 422; every admin mutation audited.
-- [ ] Commit: `feat(admin): audited support console with termination controls`
+- [x] Binding behavior (PRD §6.4, §22.3): staff role (zapp employees, separate flag + allowlist): tenant lookup (org/project/run state, sandbox + deployment status, cost/usage), agent-run diagnostics (support-visibility events + artifacts), resource termination (kill run/sandbox — WS-15 kill-switch), impersonation: explicit reason required → time-boxed session → `support.impersonation` audit events on every action → org-visible in their audit log (locked decision #11: source code inspection requires customer grant flow); no secret value access path exists in admin UI.
+- [x] Failing tests: staff route 403 for normal users; impersonation without reason → 422; every admin mutation audited.
+- [x] Commit: `feat(admin): audited support console with termination controls`
 
 ### Task OPS-18 [Deferred post-P0 — ADR-0022]: Incident response + status page
 
@@ -201,9 +271,35 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-13 OPS-12-FIX-1 done — Moved `providerEnforced: true` evidence behind the successful Modal policy update and terminated on later audit failure, redacted every model-bound prompt/context/redirect/message at the session boundary, and strengthened the credential-gated containment proof to verify no detached descendant marker plus a kernel cgroup `oom_kill` delta; real Modal was skipped visibly because credentials were absent.
+- 2026-08-13 OPS-12-FIX-2 done — At the Task 45 two-round review cap, legacy completion replay became a separate recovery contract: version 1 records preserve their original accounting fingerprint while provider-bound bytes are redacted, and Model Gateway limits, strips, and accounts for the recovery marker only on authenticated orchestrator-worker calls.
+- 2026-08-12 OPS-12 done — Completed the permanent isolation/redaction/abuse program with provider-enforced Modal domain policies applied before readiness, fail-closed policy updates, real dev-sandbox egress/process-fanout/memory containment, abnormal OOM recovery coverage, and expanded log/evidence/model-request redaction gates; the required provider and lifecycle joins extended the start task's test-only file list, the one real Modal gate passed, and no credential or provider blocker remains.
+- 2026-08-12 OPS-17 done — Added a separately enabled exact-user staff surface, domain-separated 30-minute reason-bound support sessions, tenant-visible auditing for every support read/mutation, bounded secret-free tenant and run diagnostics, generated public API/SDK operations, and a responsive console wired through the real WS-15 run/workspace/org termination paths; full serial control-api 770/770, browser 2/2, static and production-build gates passed, with external-provider tests visibly skipped for missing credentials and no provider call or deviation.
+- 2026-08-12 OPS-14 done — Added strict crash-resumable monthly event partition archival, immutable checksum-verified R2/MinIO JSONL, a read-only run rehydration CLI, persisted WS-7 snapshot class/creation metadata with production retention audit, and validated Cloudflare lifecycle Terraform; the real PostgreSQL→MinIO archive/drop/restore gate passed, while ADR-0031 moves class TTL deletion to CP-17 because Cloudflare can match only a leading key prefix and the locked tenant-first layout makes a broad rule unsafe for release evidence.
+- 2026-08-12 OPS-13 done — Removed all three temporary critical OSV baselines by aligning control-plane AWS clients, upgrading desktop happy-dom, and pinning Electron rebuild 4; the single capped review raised the repository Node floor to 22.12 to match the pinned tool's engine, and task-owned injection, Semgrep, OSV, dependency, static, unit, browser-bundle, and native-rebuild gates passed. Forge's final macOS copy remains unverified because the pre-existing standalone packaging installer cannot resolve later-added `workspace:*` dependencies; no provider call or behavioral deviation.
+- 2026-08-12 OPS-11 done — Added tenant-scoped encrypted incident ingestion, explicit web and notification Fix creation, and transactional incident→run→release resolution links; the single capped review closed identity, seed-bounding, notification, plaintext-diagnostic, and environment-boundary gaps, and the cold gate's cross-package Zod compatibility defect was repaired with a composability regression. Task-owned tests and the real Neon incident lifecycle passed; the root integration rail used the remote us-east-2 Neon database, where one unrelated build-run recovery case completed correctly in 5.15 s under a 15 s process allowance but exceeded its fixed 5 s local-docker timeout, and a later SSE worker wedged in teardown, so exact-head GitHub Actions remains the authoritative clean-machine gate; Forgejo, live Stripe, and live GitHub provider cases skipped for missing credentials, with no provider call, blocker, or behavioral deviation.
+- 2026-08-12 OPS-10 CI repair done — Exact-head Security rejected the generated observability checker's empty JSON-parse catch; made its existing fail-closed empty-manifest fallback explicit and retained the same structural gate behavior.
+- 2026-08-12 OPS-10 done — Added the strict four-template Faro/OTel/logging/health instrumentation plan and Managed structural observability gate with per-project credential isolation; one capped review closed presence-marker and log-value-redaction gaps, while the cold gate's unrelated control-api case completed correctly in 5.166 s under an extended process limit but exceeded its fixed 5 s test timeout, and task-owned tests plus root static gates remained green with no provider call or behavioral deviation.
+- 2026-08-11 OPS-8 CI repair done — Exact-head CI exposed the generated Stripe template test's two serial full TypeScript programs hitting its 30 s ceiling under the 94-task cold DAG; combined both namespaced adapter trees into one compiler program and retained a finite 60 s ceiling, preserving every type assertion while removing half the expensive work.
+- 2026-08-11 OPS-8 BLOCKED: Implemented and locally accepted cross-service OTel traces/metrics/logs, Temporal and sandbox propagation, Grafana alerting, Faro web/desktop telemetry, private sourcemaps, sandbox relay, and tenant-safe pino redaction; the one real Grafana Cloud OTLP gate reached the configured endpoint but returned HTTP 401 because `GRAFANA_OTLP_TOKEN` is still the 10-character `.env.example` placeholder, so the task remains unchecked pending a valid credential.
+- 2026-08-12 OPS-8 BLOCKED: The single final real OTLP acceptance used the current non-placeholder `.env` endpoint/token and Grafana returned HTTP 401 independently for traces, metrics, and logs; no request body or credential was logged, no retry was made, and the task remains unchecked pending a valid Grafana Cloud OTLP credential.
+- 2026-08-11 OPS-7 done — Added SQS/DLQ enqueue, SES delivery, SNS fan-out, event-derived in-app/desktop projections, persistent Redis preferences and fenced idempotency, 15-minute per-recipient/type/org batching, versioned preference API/SDK, and production trigger wiring; the capped review closed retry-safe budget alert claims, the full LocalStack SQS→SES plus real Redis gates passed, and one cold saturated DAG exposed unrelated Git/Chrome fixture timeouts that passed immediately in isolation and in the warm full gate, with no external-provider blocker or plan deviation.
+- 2026-08-11 OPS-6 done — Added privacy-safe typed PostHog analytics, dashboard definitions, org-scoped 60 s cached flags with outage defaults, no-flicker web/desktop bootstrap, and Temporal phase kill-switches; one capped review closed structural worker registration and rollout-boundary gaps, real PostHog verification skipped because `POSTHOG_KEY` was unavailable, and two cold-suite attempts exposed distinct pre-existing SSE waiter flakes that each passed immediately in isolation while task-owned tests and static gates stayed green.
+- 2026-08-11 OPS-5 done — Added config-defined one-time Stripe checkout, signed paid-amount validation, idempotent Flexprice wallet delivery and ledger mirrors, structurally unique durable per-user trial claims with recovery, exact estimate APIs, and generated SDK surfaces; the terse create-only file list required API, migration, configuration, composition, and generated-client joins, with no behavioral deviation, and the one review round's two provider-boundary findings were closed.
+- 2026-08-11 OPS-4-FIX-1 done — GitHub Security caught seven synthetic provider-shaped Stripe literals in OPS-4 tests; kept the scanner and allowlist strict, constructed the same boundary-test values only at runtime, and verified Gitleaks 8.24.3 plus focused control-api static/unit/integration gates with no provider calls, blockers, or deviations.
+- 2026-08-11 OPS-4 done — Shipped versioned Stripe subscription, portal, and prorated-seat APIs; signed replay-safe webhooks; code-owned Flexprice plan linking, monthly wallet grants, ledger mirroring/reconciliation, and seven-day dunning without data deletion. Commercial Stripe unit amounts remain validated deploy-time input because `config/plans.json` owns plan identity and entitlements but contains no prices; the real Stripe test-mode gate skipped because platform credentials and deployed price IDs were unavailable, with no implementation blocker or plan deviation.
+- 2026-08-11 OPS-3-FIX-3 done — Closed Build's workspace scheduling credit race and defaulted only legacy reason-less budget-approval activity payloads; no provider calls, blockers, or deviations.
+- 2026-08-11 OPS-3-FIX-2 done — Gated Build and Autonomous planner, repair, and reverify boundaries and preserved legacy budget approvals through a canonical backfill and deterministic replay decoder; no provider calls, blockers, or deviations.
+- 2026-08-11 OPS-3-FIX-1 done — Closed shared Temporal dispatch, immutable plan caps, atomic dispatch retry, durable leased exhaustion delivery, bounded authoritative credit fallback, the desktop request boundary, and deployable sandbox enforcement; no provider calls, blockers, or deviations.
+- 2026-08-11 OPS-3 done — Added strict deployable plan policy, local run/sandbox enforcement, Flexprice wallet cache/grace admission, deduplicated budget thresholds, and a durable next-task credit gate reusing AR-14; focused RED/GREEN and touched-package static/unit/build gates passed, and an isolated env-backed integration rerun completed after the publisher test passed in focused reproduction.
+- 2026-08-11 OPS-2-FIX-1 done — Closed durable metering, fenced storage, official Flexprice reconciliation, and snapshot-free checkpoint gaps; review fixes added readiness-safe bounded recovery, advisory-locked correction submission, and durable per-category delivery replay, while full verification also fixed the baseline GitHub retry clock fixture.
+- 2026-08-11 OPS-2 done — Full metering coverage, durable three-way reconciliation, and production call paths completed under approved ADR-0030; no remaining blockers or deviations.
 - 2026-08-11 OPS-1B done — Added atomic append-only usage/outbox persistence, allowlisted internal ingestion, exact local estimates, outage-draining Flexprice delivery, and idempotent feature/meter/plan/entitlement bootstrap; correction linkage stays in immutable outbox/Flexprice metadata because the locked PRD ledger schema has no correction column, CPU/memory rates preserve WS-8 fixtures while storage/deploy/artifact rates remain deploy-time GTM placeholders, and the OPS-3-owned plans file plus live Flexprice credentials were unavailable for the final real-provider gate (skipped, not passed); no implementation blockers or deviations.
 - 2026-08-11 OPS-13-start done — Added 25 provenance-tagged injection regressions across README, code-comment, tool-output, package-description, and error surfaces; the five-rule Semgrep pack blocks empty catches, process/Modal/model SDK boundary violations, and client secret env access, while OSV now blocks unexpected severity >= 9 findings and fails stale exceptions. Three current critical groups (fast-xml-parser via AWS SDK, test-only happy-dom, and vendored desktop build-only tar) are explicit M3 baselines whose dependency remediation remains under the M5 completion item; one capped review closed dynamic-import coverage and exact-provenance evaluation before exit.
 - 2026-08-11 OPS-12 CI parser repair done — The second clean Security run executed all 54 tenant cases but exposed ANSI-colored Vitest summary output; the wrapper now removes terminal control sequences with Node's built-in utility before enforcing passed/skipped/total counts, with a GitHub-colored regression and a fresh-DB `FORCE_COLOR=1` 4/4 wrapper proof.
+- 2026-08-11 OPS-12 CI repair follow-up done — Replaced ANSI-sensitive human-reporter matching with Vitest's JSON result contract for the 54-case tenant gate after exact-head Security proved the matrix passed but the wrapper could not parse its colored summary.
+- 2026-08-11 OPS-1B-FIX-1 done — Replaced correction row locking with a transaction-scoped advisory lock keyed by the immutable target, preserving SELECT+INSERT-only application grants and concurrent over-correction serialization; no blockers or deviations.
+- 2026-08-11 OPS-1B done — Append-only keyed ledger, exact SQS-to-Flexprice event shape, summaries, pricing, and bootstrap acceptance verified with LocalStack; `dev-up` still reports its unrelated missing `zapp-notifications` queue.
 - 2026-08-11 OPS-12 CI repair done — The first clean Security run exposed a stale-`dist` dependency on `@zapp/workspace-runtime`; the permanent job now builds the four exercised workspace roots and their Turbo dependencies before typecheck/runtime, with a workflow regression assertion, forced 17/17 dependency build, 54/54 isolated tenant gate, and 12/12 permanent suite green.
 - 2026-08-11 OPS-12-start done — Added a permanent CI security gate over the 54-case PostgreSQL tenant matrix, release/evidence and artifact ownership, sandbox/model redaction, cgroup containment, workspace-agent traversal fuzzing, and Modal credential scoping; real Modal fork-bomb/OOM/enforced-egress plus artifact-capture checks remain under the M5 completion item because the current provider records `providerEnforced: false`.
 - 2026-08-09 OPS-1A done — Durable claim/commit accounting, exact reservations, Postgres-led Redis healing, and SQS-to-Flexprice delivery verified; at the two-review cap, three round-two correctness findings were closed by deterministic RED/GREEN without a third review, the cold gate's real early-abort DB test received the same bounded 15 s process budget as its load-bearing pool assertion, and clean CI repairs release the preview coordinator after aborted CDP cleanup, atomically publish complete native workspace helpers, bound transient normal-filesystem removal retries in the cgroup test double, probe append-only ledger TRUNCATE guards through the new outbox FK with CASCADE, launch the real Chrome primitive-capture test directly instead of through a redundant browser-server reconnect, and extend configurable application-role revocation plus real append-only integration coverage to the approval-backed ceiling-adjustment ledger.

@@ -236,6 +236,7 @@ describe('AR-12 isolated task workflows', () => {
       mergeTask: vi.fn(),
       createConflictTask: vi.fn(),
       emitTaskBlocked: vi.fn(),
+      evaluateFeatureFlag: vi.fn(() => Promise.resolve({ enabled: true })),
     } as unknown as ProductionRunActivities;
 
     await createProductionRunWorker({

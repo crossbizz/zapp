@@ -3,5 +3,5 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["images", "publish.ts", "test", "vitest.config.ts"]
+  "include": ["images", "publish.ts", "render-oci.ts", "test", "vitest.config.ts"]
 }

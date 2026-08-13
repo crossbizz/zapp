@@ -1,21 +1,46 @@
 'use client';
 
-import { EmptyState, Tabs } from '@zapp/ui';
+import type { BuilderPreviewEvent } from '@zapp/api-client';
+import { Tabs } from '@zapp/ui';
 import { useEffect, useRef, type ReactElement } from 'react';
+
+import type { BuilderRun } from '../../lib/api';
+import { PreviewFrame } from '../preview/PreviewFrame';
+import type { SelectedPreviewElement } from '../preview/SelectMode';
+import { CodeView } from '../code/CodeView';
+import { LogView } from '../logs/LogView';
+import { TestRuns } from '../tests/TestRuns';
 
 export type SurfaceTab = 'preview' | 'code' | 'logs' | 'tests';
 
 interface SurfaceTabsProps {
+  readonly fallbackCommitSha?: string;
   readonly focusPreviewRequest: number;
+  readonly onAttachPreviewCapture: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
+  readonly onAttachPreviewSelection: (
+    file: File,
+    selection: SelectedPreviewElement,
+  ) => Promise<boolean>;
+  readonly onRunCreated: (run: BuilderRun) => void;
   readonly onValueChange: (value: SurfaceTab) => void;
+  readonly organizationId: string;
+  readonly projectId: string;
+  readonly runId?: string;
   readonly value: SurfaceTab;
 }
 
 const tabValues = new Set<SurfaceTab>(['preview', 'code', 'logs', 'tests']);
 
 export function SurfaceTabs({
+  fallbackCommitSha,
   focusPreviewRequest,
+  onAttachPreviewCapture,
+  onAttachPreviewSelection,
+  onRunCreated,
   onValueChange,
+  organizationId,
+  projectId,
+  runId,
   value,
 }: SurfaceTabsProps): ReactElement {
   const tabsRef = useRef<HTMLDivElement>(null);
@@ -35,41 +60,31 @@ export function SurfaceTabs({
         items={[
           {
             content: (
-              <EmptyState
-                description="No preview has been created for this project."
-                title="Preview unavailable"
+              <PreviewFrame
+                {...(fallbackCommitSha === undefined ? {} : { fallbackCommitSha })}
+                onAttachToChat={onAttachPreviewCapture}
+                onAttachSelectionToChat={onAttachPreviewSelection}
+                onRunCreated={onRunCreated}
+                organizationId={organizationId}
+                projectId={projectId}
+                {...(runId === undefined ? {} : { runId })}
               />
             ),
             label: 'Preview',
             value: 'preview',
           },
           {
-            content: (
-              <EmptyState
-                description="Code will appear after the first build starts."
-                title="No generated code yet"
-              />
-            ),
+            content: <CodeView organizationId={organizationId} projectId={projectId} />,
             label: 'Code',
             value: 'code',
           },
           {
-            content: (
-              <EmptyState
-                description="Runtime output will appear after work begins."
-                title="No logs yet"
-              />
-            ),
+            content: <LogView organizationId={organizationId} projectId={projectId} />,
             label: 'Logs',
             value: 'logs',
           },
           {
-            content: (
-              <EmptyState
-                description="Verification results will appear after tests run."
-                title="No test results yet"
-              />
-            ),
+            content: <TestRuns onRunCreated={onRunCreated} organizationId={organizationId} projectId={projectId} {...(runId === undefined ? {} : { runId })} />,
             label: 'Tests',
             value: 'tests',
           },

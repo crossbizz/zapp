@@ -286,6 +286,7 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
           requestFingerprint: 'seed:cross-tenant-run',
           status: 'running',
           startedBy: alpha.userId,
+          planMaxCredits: '1000.0000',
         }),
       );
 

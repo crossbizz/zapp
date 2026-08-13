@@ -1,0 +1,35 @@
+[
+  {
+    "slug": "next-starter",
+    "name": "Next.js Starter",
+    "description": "A clean Next.js, React, Tailwind, shadcn/ui, and TypeScript foundation for product apps.",
+    "pagesIncluded": ["Home"],
+    "highlights": ["Responsive shell", "TypeScript included", "shadcn/ui ready"],
+    "demoUrl": "https://templates.zapp.build/next-starter/a57bb2926674/",
+    "stack": ["Next.js", "React", "Tailwind CSS", "TypeScript"],
+    "repoRef": "https://github.com/dyad-sh/nextjs-template.git",
+    "commitSha": "a57bb2926674275a84f651c64e5c995a42519b5e"
+  },
+  {
+    "slug": "react-vite-fullstack",
+    "name": "React + Vite Fullstack",
+    "description": "A full-stack React and Vite starter with a Nitro backend, Tailwind, shadcn/ui, and TypeScript.",
+    "pagesIncluded": ["Home", "API example"],
+    "highlights": ["Nitro API included", "Fast Vite workflow", "TypeScript included"],
+    "demoUrl": "https://templates.zapp.build/react-vite-fullstack/968160b4f0d4/",
+    "stack": ["React", "Vite", "Nitro", "Tailwind CSS", "TypeScript"],
+    "repoRef": "https://github.com/dyad-sh/react-vite-nitro.git",
+    "commitSha": "968160b4f0d477df1b84d14a68af92eff0b4e28c"
+  },
+  {
+    "slug": "mini-store",
+    "name": "Mini Store",
+    "description": "A commerce starter with a storefront, accounts, cart, orders, and an administration surface.",
+    "pagesIncluded": ["Storefront", "Sign in", "Cart", "Orders", "Admin"],
+    "highlights": ["Authentication included", "Commerce flows", "Admin dashboard"],
+    "demoUrl": "https://templates.zapp.build/mini-store/05e29f6b18d3/",
+    "stack": ["Next.js", "React", "Payload CMS", "PostgreSQL", "TypeScript"],
+    "repoRef": "https://github.com/dyad-sh/portal-mini-store-template.git",
+    "commitSha": "05e29f6b18d386d1690b37595800304d679a2274"
+  }
+]

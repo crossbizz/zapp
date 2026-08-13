@@ -1075,7 +1075,7 @@ describe('MemoryWorkspaceRuntime exec safety', () => {
         expect(resultOrTimeout).toMatchObject({ exitCode: 124 });
         const capturedDescendantPid = Number(await readFile(descendantPidFile, 'utf8'));
         descendantPid = capturedDescendantPid;
-        expect(() => process.kill(capturedDescendantPid, 0)).toThrow();
+        await expect(processIsGone(capturedDescendantPid, 1_000)).resolves.toBe(true);
       } finally {
         if (descendantPid === undefined) {
           try {

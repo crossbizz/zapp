@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import { type ExecutionContract, newId } from '@zapp/contracts';
@@ -25,6 +26,10 @@ const hasModalCredentials =
   process.env.MODAL_TOKEN_ID !== '' &&
   typeof process.env.MODAL_TOKEN_SECRET === 'string' &&
   process.env.MODAL_TOKEN_SECRET !== '';
+
+function bashLoginCommand(script: string): string[] {
+  return ['-lc', script];
+}
 
 async function runOrThrow(
   provider: Pick<ReturnType<typeof createModalSandboxProvider>, 'exec'>,
@@ -92,6 +97,12 @@ async function expectPreviewHealthy(
 }
 
 describe('WS-14 nightly Modal journey wiring', () => {
+  it('executes containment shell scripts through Bash command mode', () => {
+    expect(execFileSync('/bin/bash', bashLoginCommand('printf ops12-command-ran'), {
+      encoding: 'utf8',
+    })).toBe('ops12-command-ran');
+  });
+
   it('is scheduled outside pull requests, pins the SDK, and pages Grafana OnCall on failure', async () => {
     const [workflow, packageJson] = await Promise.all([
       readFile(
@@ -168,6 +179,113 @@ describe('WS-14 nightly Modal journey wiring', () => {
       }),
     );
   });
+});
+
+describe('OPS-12 real Modal abuse containment', () => {
+  it.skipIf(!hasModalCredentials)(
+    'blocks non-allowlisted egress and survives bounded process and memory exhaustion [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const lock = JSON.parse(
+        await readFile(
+          new URL('../../../../infra/modal/images.lock.json', import.meta.url),
+          'utf8',
+        ),
+      ) as ModalImageLock;
+      const locked = lock.environments.dev;
+      if (locked === undefined) throw new Error('The dev Modal image lock is missing');
+
+      const ids = {
+        organizationId: newId('org'),
+        projectId: newId('proj'),
+        branchId: newId('br'),
+        runId: newId('run'),
+        taskId: newId('task'),
+      } as const;
+      const provider = createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: lock,
+        agentToken: `ops12-${crypto.randomUUID()}`,
+      });
+      let providerWorkspaceId: string | undefined;
+      try {
+        const handle = await provider.createWorkspace(
+          {
+            ...ids,
+            purpose: 'builder',
+            resourceProfile: 'small',
+            imageTag: locked.images['forge-node-base'].publishedName,
+            env: {},
+            networkProfile: 'build_test',
+          },
+          async (allocatedId) => {
+            providerWorkspaceId = allocatedId;
+            await provider.updateNetworkPolicy({
+              providerWorkspaceId: allocatedId,
+              profile: 'build_test',
+              allowedDomains: ['github.com'],
+            });
+          },
+        );
+        providerWorkspaceId = handle.providerWorkspaceId;
+
+        const allowedEgress = await provider.exec({
+          providerWorkspaceId,
+          command: 'node',
+          args: [
+            '-e',
+            "fetch('https://github.com', { redirect: 'manual', signal: AbortSignal.timeout(10000) }).then((response) => process.exit(response.status >= 200 && response.status < 500 ? 0 : 9), () => process.exit(9))",
+          ],
+          timeoutMs: 15_000,
+        });
+        expect(allowedEgress.exitCode).toBe(0);
+
+        const blockedEgress = await provider.exec({
+          providerWorkspaceId,
+          command: 'node',
+          args: [
+            '-e',
+            "fetch('https://example.com', { signal: AbortSignal.timeout(5000) }).then(() => process.exit(9), () => process.exit(0))",
+          ],
+          timeoutMs: 10_000,
+        });
+        expect(blockedEgress.exitCode).toBe(0);
+
+        const processFanout = await provider.exec({
+          providerWorkspaceId,
+          command: '/bin/bash',
+          args: bashLoginCommand(
+            "rm -f /tmp/ops12-fork-escaped; setsid sh -c 'sleep 4; touch /tmp/ops12-fork-escaped' >/dev/null 2>&1 & for _ in $(seq 1 256); do (while :; do :; done) & done; wait",
+          ),
+          timeoutMs: 2_000,
+        });
+        expect(processFanout.exitCode).toBe(124);
+        const noEscapedDescendant = await provider.exec({
+          providerWorkspaceId,
+          command: '/bin/bash',
+          args: bashLoginCommand('sleep 5; test ! -e /tmp/ops12-fork-escaped'),
+          timeoutMs: 10_000,
+        });
+        expect(noEscapedDescendant.exitCode).toBe(0);
+
+        const memoryBalloon = await provider.exec({
+          providerWorkspaceId,
+          command: '/bin/bash',
+          args: bashLoginCommand(
+            "set -u; events=/sys/fs/cgroup/memory.events; before=$(awk '$1 == \"oom_kill\" { print $2 }' \"$events\"); node -e 'const held=[]; for (;;) { const chunk=Buffer.allocUnsafe(67108864); chunk.fill(90); held.push(chunk); }'; status=$?; after=$(awk '$1 == \"oom_kill\" { print $2 }' \"$events\"); test \"$status\" -ne 0; test \"$after\" -gt \"$before\"; printf 'oom_kill_delta=%s\\n' \"$((after-before))\"",
+          ),
+          timeoutMs: 60_000,
+        });
+        expect(memoryBalloon.exitCode).toBe(0);
+        expect(memoryBalloon.stdout).toMatch(/oom_kill_delta=[1-9][0-9]*/u);
+        await expect(provider.getStatus(providerWorkspaceId)).resolves.toBe('ready');
+      } finally {
+        if (providerWorkspaceId !== undefined) {
+          await provider.terminateWorkspace(providerWorkspaceId).catch(() => undefined);
+        }
+      }
+    },
+    180_000,
+  );
 });
 
 describe('WS-14 real Modal E2E', () => {

@@ -3,6 +3,7 @@ export {
   type AppDeps,
   type AppInstance,
   type AuthDeps,
+  type BillingDeps,
   type LimitDeps,
   type OrgDeps,
   type SecretsDeps,

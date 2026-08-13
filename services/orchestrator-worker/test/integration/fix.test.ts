@@ -15,11 +15,14 @@ import {
   FIX_DIFF_LIMITS,
   FixRegressionTestResultSchema,
   fixCancelSignal,
+  fixCreditBalanceExhaustedSignal,
+  fixResumeSignal,
   fixWorkflow,
   type FixModeActivities,
   type FixVerificationActivities,
   type FixWorkflowInput,
 } from '../../src/workflows/fix.js';
+import { budgetApprovalResolvedSignal } from '../../src/workflows/budget-approval.js';
 
 const executeFile = promisify(execFile);
 const fixtureRoots: string[] = [];
@@ -92,6 +95,7 @@ function workflowInput(relevantCommitSha: string): FixWorkflowInput {
     model: null,
     prompt: 'Addition returns the wrong result in production.',
     budget: null,
+    planMaxCredits: 1000,
     operationKey: `op_${'a'.repeat(64)}`,
     fixRequest: {
       source: 'error_report',
@@ -122,6 +126,7 @@ interface FixFixture {
   readonly statuses: string[];
   readonly workspacePath: () => string;
   readonly patchStarted: Promise<void>;
+  readonly releasePatch: () => void;
 }
 
 function createFixFixture(options: {
@@ -136,8 +141,12 @@ function createFixFixture(options: {
   const statuses: string[] = [];
   let workspace = '';
   let resolvePatchStarted: (() => void) | undefined;
+  let resolvePatch: (() => void) | undefined;
   const patchStarted = new Promise<void>((resolve) => {
     resolvePatchStarted = resolve;
+  });
+  const patchRelease = new Promise<void>((resolve) => {
+    resolvePatch = resolve;
   });
 
   const eventActivities: Pick<EventActivities, 'emitEvents' | 'transitionRunStatus'> = {
@@ -218,19 +227,26 @@ function createFixFixture(options: {
       calls.push('patch');
       resolvePatchStarted?.();
       if (options.blockPatch === true) {
-        await new Promise<void>((resolve) => {
+        const cancelled = await new Promise<boolean>((resolve) => {
           const context = Context.current();
           const heartbeat = setInterval(() => {
             context.heartbeat();
           }, 25);
-          const finish = (): void => {
+          const finish = (wasCancelled: boolean): void => {
             clearInterval(heartbeat);
-            resolve();
+            resolve(wasCancelled);
           };
-          context.cancellationSignal.addEventListener('abort', finish, { once: true });
-          if (context.cancellationSignal.aborted) finish();
+          context.cancellationSignal.addEventListener('abort', () => {
+            finish(true);
+          }, { once: true });
+          void patchRelease.then(() => {
+            finish(false);
+          });
+          if (context.cancellationSignal.aborted) {
+            finish(true);
+          }
         });
-        return { status: 'patched' };
+        if (cancelled) return { status: 'patched' };
       }
       await writeFile(
         join(workspace, 'src/math.mjs'),
@@ -353,6 +369,7 @@ function createFixFixture(options: {
     statuses,
     workspacePath: () => workspace,
     patchStarted,
+    releasePatch: () => resolvePatch?.(),
   };
 }
 
@@ -540,6 +557,76 @@ describe('AR-19 reproduce-first Fix mode', () => {
     expect(await git(fixture.workspacePath(), 'log', '-1', '--pretty=%s')).toBe(
       'seed planted arithmetic bug',
     );
+  }, 60_000);
+
+  it('finishes an in-flight patch and requires credit approval rather than generic resume', async () => {
+    const seeded = await createSeededRepository();
+    const fixture = createFixFixture({ ...seeded, oversized: false, blockPatch: true });
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar19-credit-${Date.now().toString(36)}`;
+    const approvalRequests: unknown[] = [];
+    const runWorker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../../src/workflows/fix.ts', import.meta.url).pathname,
+      activities: {
+        ...fixture.activities,
+        requestBudgetIncrease(input: unknown) {
+          approvalRequests.push(input);
+          return Promise.resolve({
+            approvalId: 'appr_01J00000000000000000000008',
+            absoluteCeiling: '1000.0000',
+          });
+        },
+        checkpointBudgetStop: () => Promise.resolve({ checkpointRef: 'checkpoint-credit-stop' }),
+      },
+    });
+    const verificationWorker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: TASK_QUEUES.verification,
+      workflowsPath: new URL('../../src/workflows/fix.ts', import.meta.url).pathname,
+      activities: fixture.verifier,
+    });
+    workers.push(runWorker, verificationWorker);
+    workerRuns.push(runWorker.run(), verificationWorker.run());
+    const input = workflowInput(seeded.relevantCommitSha);
+    const handle = await environment.client.workflow.start(fixWorkflow, {
+      taskQueue,
+      workflowId: `${ids.runId}:credit-fix`,
+      args: [input],
+    });
+
+    await fixture.patchStarted;
+    await handle.signal(fixCreditBalanceExhaustedSignal, {
+      runId: input.runId,
+      operationKey: `op_${'d'.repeat(64)}`,
+    });
+    expect(fixture.calls).not.toContain('checkpoint');
+    fixture.releasePatch();
+    await vi.waitFor(() => {
+      expect(approvalRequests).toHaveLength(1);
+    }, { timeout: 5_000 });
+    expect(approvalRequests).toEqual([
+      expect.objectContaining({
+        currentCeiling: '1000.0000',
+        absoluteCeiling: '1000.0000',
+        reason: 'organization_credit_exhausted',
+      }),
+    ]);
+    expect(fixture.calls).not.toContain('measure-diff');
+    await handle.signal(fixResumeSignal, {
+      runId: input.runId,
+      operationKey: `op_${'e'.repeat(64)}`,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fixture.calls).not.toContain('measure-diff');
+    await handle.signal(budgetApprovalResolvedSignal, {
+      approvalId: 'appr_01J00000000000000000000008',
+      decision: 'approved',
+      absoluteCeiling: '1000.0000',
+      reason: 'organization_credit_exhausted',
+    });
+    await expect(handle.result()).resolves.toMatchObject({ status: 'completed' });
   }, 60_000);
 
   it('atomically fails the task when the post-gate symptom check still fails', async () => {

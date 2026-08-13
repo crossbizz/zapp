@@ -1,4 +1,15 @@
-import { index, pgTable, text, timestamp, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import {
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  type AnyPgColumn,
+} from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 import { organizationId } from './columns.js';
 import { artifacts } from './execution.js';
@@ -23,7 +34,7 @@ export const releases = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     environmentId: text('environment_id')
       .notNull()
       .references(() => environments.id),
@@ -55,7 +66,7 @@ export const deployments = pgTable(
     organizationId: organizationId(),
     releaseId: text('release_id')
       .notNull()
-      .references(() => releases.id),
+      .references(() => releases.id, { onDelete: 'cascade' }),
     /** `vercel`, `cloudflare`, … (PRD §27.2). */
     provider: text('provider').notNull(),
     /** Null between "we asked" and "the provider answered" — that gap is where reconciliation lives. */
@@ -77,6 +88,173 @@ export const deployments = pgTable(
   (t) => [index('deployments_release_idx').on(t.releaseId)],
 );
 
+/** Append-only, deployment-scoped public progress stream (DEP-14). */
+export const deploymentEvents = pgTable(
+  'deployment_events',
+  {
+    id: text('id').primaryKey(), // evt_*
+    organizationId: organizationId(),
+    deploymentId: text('deployment_id')
+      .notNull()
+      .references(() => deployments.id, { onDelete: 'cascade' }),
+    sequence: integer('sequence').notNull(),
+    stage: text('stage').notNull(),
+    status: text('status').notNull(),
+    elapsedMs: integer('elapsed_ms').notNull(),
+    summary: text('summary').notNull(),
+    evidenceArtifactId: text('evidence_artifact_id').references(() => artifacts.id),
+    terminalSuccessJson: jsonb('terminal_success_json'),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('deployment_events_deployment_sequence_idx').on(
+      t.organizationId,
+      t.deploymentId,
+      t.sequence,
+    ),
+    index('deployment_events_replay_idx').on(t.organizationId, t.deploymentId, t.sequence),
+    check('deployment_events_sequence_check', sql`${t.sequence} >= 0`),
+    check('deployment_events_elapsed_ms_check', sql`${t.elapsedMs} >= 0`),
+    check(
+      'deployment_events_stage_check',
+      sql`${t.stage} in ('readiness_check','build_artifact','configure_secrets','apply_migrations','provision_runtime','start_services','production_health_check','go_live')`,
+    ),
+    check('deployment_events_status_check', sql`${t.status} in ('running','passed','failed')`),
+  ],
+);
+
+/** Durable keyed action request; dispatchers must also honor operation_key idempotently. */
+export const deploymentActionRequests = pgTable(
+  'deployment_action_requests',
+  {
+    organizationId: organizationId(),
+    operationKey: text('operation_key').notNull(),
+    resourceType: text('resource_type').notNull(),
+    resourceId: text('resource_id').notNull(),
+    action: text('action').notNull(),
+    payloadJson: jsonb('payload_json').notNull(),
+    status: text('status').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    dispatchedAt: timestamp('dispatched_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('deployment_action_requests_org_operation_idx').on(
+      t.organizationId,
+      t.operationKey,
+    ),
+    index('deployment_action_requests_resource_idx').on(
+      t.organizationId,
+      t.resourceType,
+      t.resourceId,
+    ),
+    check('deployment_action_requests_resource_check', sql`${t.resourceType} in ('release','deployment')`),
+    check('deployment_action_requests_status_check', sql`${t.status} in ('pending','dispatched')`),
+  ],
+);
+
+/** Provider-neutral durable environment-domain state consumed by DEP-10's service. */
+export const environmentDomains = pgTable(
+  'environment_domains',
+  {
+    organizationId: organizationId(),
+    projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    environmentId: text('environment_id').notNull().references(() => environments.id, { onDelete: 'cascade' }),
+    hostname: text('hostname').notNull(),
+    operationKey: text('operation_key').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    providerId: text('provider_id').notNull(),
+    providerDomainReference: text('provider_domain_reference'),
+    status: text('status').notNull(),
+    dnsInstructionsJson: jsonb('dns_instructions_json').notNull(),
+    routingJson: jsonb('routing_json').notNull(),
+    detail: text('detail'),
+    verificationAttempt: integer('verification_attempt').notNull(),
+  },
+  (t) => [
+    uniqueIndex('environment_domains_environment_hostname_idx').on(
+      t.organizationId,
+      t.environmentId,
+      t.hostname,
+    ),
+    uniqueIndex('environment_domains_operation_idx').on(t.organizationId, t.operationKey),
+    index('environment_domains_project_idx').on(t.organizationId, t.projectId, t.environmentId),
+    projectTenantForeignKey('environment_domains', t.projectId, t.organizationId),
+    check('environment_domains_status_check', sql`${t.status} in ('pending_dns','verifying','active','failed')`),
+    check('environment_domains_attempt_check', sql`${t.verificationAttempt} >= 0`),
+  ],
+);
+
+/** Append-only production health evidence used by the public project dashboard. */
+export const productionHealthResults = pgTable(
+  'production_health_results',
+  {
+    id: text('id').primaryKey(), // vr_*
+    organizationId: organizationId(),
+    projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    environmentId: text('environment_id').notNull().references(() => environments.id, { onDelete: 'cascade' }),
+    releaseId: text('release_id').notNull().references(() => releases.id, { onDelete: 'cascade' }),
+    deploymentId: text('deployment_id').notNull().references(() => deployments.id, { onDelete: 'cascade' }),
+    status: text('status').notNull(),
+    evidenceArtifactId: text('evidence_artifact_id').notNull().references(() => artifacts.id),
+    resultJson: jsonb('result_json').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('production_health_results_deployment_evidence_idx').on(t.organizationId, t.deploymentId, t.evidenceArtifactId),
+    index('production_health_results_project_occurred_idx').on(t.organizationId, t.projectId, t.occurredAt),
+    projectTenantForeignKey('production_health_results', t.projectId, t.organizationId),
+    check('production_health_results_status_check', sql`${t.status} in ('healthy','failed')`),
+  ],
+);
+
+/** Immutable synthetic execution history; the mutable synthetic_checks row remains the latest index. */
+export const syntheticCheckResults = pgTable(
+  'synthetic_check_results',
+  {
+    id: text('id').primaryKey(), // trun_*
+    organizationId: organizationId(),
+    projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    environmentId: text('environment_id').notNull().references(() => environments.id, { onDelete: 'cascade' }),
+    releaseId: text('release_id').notNull().references(() => releases.id, { onDelete: 'cascade' }),
+    syntheticCheckId: text('synthetic_check_id')
+      .notNull()
+      .references((): AnyPgColumn => syntheticChecks.id, { onDelete: 'cascade' }),
+    status: text('status').notNull(),
+    summary: text('summary').notNull(),
+    evidenceArtifactIdsJson: jsonb('evidence_artifact_ids_json').notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull(),
+    retainUntil: timestamp('retain_until', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('synthetic_check_results_check_completed_idx').on(t.organizationId, t.syntheticCheckId, t.completedAt),
+    index('synthetic_check_results_project_completed_idx').on(t.organizationId, t.projectId, t.completedAt),
+    projectTenantForeignKey('synthetic_check_results', t.projectId, t.organizationId),
+    check('synthetic_check_results_status_check', sql`${t.status} in ('passed','failed')`),
+  ],
+);
+
+/** Durable links for Grafana/PostHog annotations emitted for a release/deployment. */
+export const releaseAnnotations = pgTable(
+  'release_annotations',
+  {
+    id: text('id').primaryKey(), // aud_*
+    organizationId: organizationId(),
+    projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    releaseId: text('release_id').notNull().references(() => releases.id, { onDelete: 'cascade' }),
+    deploymentId: text('deployment_id').references(() => deployments.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(),
+    kind: text('kind').notNull(),
+    link: text('link').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('release_annotations_provider_kind_release_idx').on(t.organizationId, t.releaseId, t.provider, t.kind),
+    index('release_annotations_project_occurred_idx').on(t.organizationId, t.projectId, t.occurredAt),
+    projectTenantForeignKey('release_annotations', t.projectId, t.organizationId),
+    check('release_annotations_provider_check', sql`${t.provider} in ('grafana','posthog')`),
+  ],
+);
+
 export const syntheticChecks = pgTable(
   'synthetic_checks',
   {
@@ -84,7 +262,7 @@ export const syntheticChecks = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     environmentId: text('environment_id')
       .notNull()
       .references(() => environments.id),
@@ -105,5 +283,12 @@ export type Release = typeof releases.$inferSelect;
 export type NewRelease = typeof releases.$inferInsert;
 export type Deployment = typeof deployments.$inferSelect;
 export type NewDeployment = typeof deployments.$inferInsert;
+export type DeploymentEvent = typeof deploymentEvents.$inferSelect;
+export type NewDeploymentEvent = typeof deploymentEvents.$inferInsert;
+export type DeploymentActionRequest = typeof deploymentActionRequests.$inferSelect;
+export type EnvironmentDomain = typeof environmentDomains.$inferSelect;
+export type ProductionHealthResult = typeof productionHealthResults.$inferSelect;
+export type SyntheticCheckResult = typeof syntheticCheckResults.$inferSelect;
+export type ReleaseAnnotation = typeof releaseAnnotations.$inferSelect;
 export type SyntheticCheck = typeof syntheticChecks.$inferSelect;
 export type NewSyntheticCheck = typeof syntheticChecks.$inferInsert;

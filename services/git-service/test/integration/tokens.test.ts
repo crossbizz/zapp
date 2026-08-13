@@ -1,12 +1,25 @@
 import { internalRepoRef, newId } from '@zapp/contracts';
+import { writeFile } from 'node:fs/promises';
+
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createRecordingGitAuditSink, type RecordingGitAuditSink } from '../../src/audit.js';
+import { createGitBundleCommands } from '../../src/backup.js';
+import {
+  createGitBundleExporter,
+  createTokenServiceGitBundleCredentials,
+} from '../../src/export.js';
 import type { ForgejoClient } from '../../src/forgejo/client.js';
+import {
+  cleanupFixtureOrganizations,
+  RepositoryFixtureLifecycle,
+  runFixtureCleanup,
+} from '../../src/forgejo/repository-fixture-lifecycle.js';
 import { createForgejoGitProvider } from '../../src/provider/forgejo.js';
 import type { GitProvider } from '../../src/provider/types.js';
 import { createTokenService, expiryOf, type TokenService } from '../../src/tokens.js';
 import {
+  adminToken,
   credentialUrl,
   eventually,
   git,
@@ -43,7 +56,7 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
   let provider: GitProvider;
   let tokens: TokenService;
   let audit: RecordingGitAuditSink;
-  const created: { organizationId: string; projectId: string }[] = [];
+  const lifecycle = new RepositoryFixtureLifecycle();
   /** Ephemeral users this suite minted, cleaned up even when an assertion fails. */
   const minted: string[] = [];
 
@@ -63,8 +76,9 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
     ref: string;
   } {
     const projectId = newId('proj');
-    created.push({ organizationId, projectId });
-    return { organizationId, projectId, ref: internalRepoRef({ organizationId, projectId }) };
+    const ref = internalRepoRef({ organizationId, projectId });
+    lifecycle.record(ref);
+    return { organizationId, projectId, ref };
   }
 
   async function mint(
@@ -91,27 +105,30 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
   });
 
   afterAll(async () => {
-    for (const username of minted) {
-      await client.send({
-        method: 'DELETE',
-        path: `/admin/users/${username}?purge=true`,
-        allow: [404],
-      });
-    }
+    await runFixtureCleanup([
+      {
+        name: 'token users',
+        run: async () => {
+          const failures: string[] = [];
+          for (const username of minted) {
+            try {
+              await client.send({ method: 'DELETE', path: `/admin/users/${username}?purge=true`, allow: [404] });
+              const remaining = await client.send({ method: 'GET', path: `/users/${username}`, allow: [404] });
+              if (remaining.status !== 404) failures.push(`${username}: still exists`);
+            } catch {
+              failures.push(`${username}: deletion or absence verification failed`);
+            }
+          }
+          if (failures.length > 0) throw new Error(failures.join('; '));
+        },
+      },
     // Two passes, and the order is not optional: this suite deliberately puts
     // two projects in one organization (see `project`), and Forgejo answers a
     // delete of an organization that still owns a repository with a 500. Every
     // repository first, then each organization once.
-    for (const { organizationId, projectId } of created) {
-      const [owner, name] = internalRepoRef({ organizationId, projectId }).split('/') as [
-        string,
-        string,
-      ];
-      await client.send({ method: 'DELETE', path: `/repos/${owner}/${name}`, allow: [404] });
-    }
-    for (const owner of new Set(created.map((entry) => entry.organizationId.toLowerCase()))) {
-      await client.send({ method: 'DELETE', path: `/orgs/${owner}`, allow: [404] });
-    }
+      { name: 'repositories', run: async () => { await lifecycle.cleanup(provider); } },
+      { name: 'organizations', run: async () => { await cleanupFixtureOrganizations(client, lifecycle.refs()); } },
+    ]);
   });
 
   it('clones and pushes its own repository, and cannot touch any other', async () => {
@@ -214,6 +231,61 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
     }
   }, 120_000);
 
+  it('exports a verified Git bundle through a read credential and revokes it immediately', async () => {
+    const mine = project();
+    const repository = await provider.createRepository({ ...mine, defaultBranch: 'main' });
+    const dir = await workspace();
+    try {
+      const url = credentialUrl(repository.cloneUrl, 'zapp-admin-token', adminToken());
+      expect((await git(dir, 'clone', url, 'mine')).ok).toBe(true);
+      const repo = `${dir}/mine`;
+      await git(repo, 'config', 'user.email', 'suite@zapp.test');
+      await git(repo, 'config', 'user.name', 'zapp suite');
+      expect((await git(repo, 'commit', '--allow-empty', '-m', 'portable')).ok).toBe(true);
+      expect((await git(repo, 'push', 'origin', 'HEAD:main')).ok).toBe(true);
+      const head = (await git(repo, 'rev-parse', 'HEAD')).output.trim();
+
+      const exporter = createGitBundleExporter({
+        credentials: createTokenServiceGitBundleCredentials(tokens),
+        commands: ({ username, token }) =>
+          createGitBundleCommands({ username, password: token, timeoutMs: 60_000 }),
+      });
+      const bytes = await exporter.bundle({
+        organizationId: mine.organizationId,
+        projectId: mine.projectId,
+        operationKey: 'cp18-provider-export',
+      });
+      const bundlePath = `${dir}/repository.bundle`;
+      await writeFile(bundlePath, bytes);
+      expect((await git(repo, 'bundle', 'verify', bundlePath)).ok).toBe(true);
+      expect((await git(repo, 'bundle', 'list-heads', bundlePath)).output).toContain(head);
+
+      const minted = [...audit.events]
+        .reverse()
+        .find(
+          (event) =>
+            event.action === 'git_token.minted' && event.projectId === mine.projectId,
+        );
+      const revoked = [...audit.events]
+        .reverse()
+        .find(
+          (event) =>
+            event.action === 'git_token.revoked' && event.projectId === mine.projectId,
+        );
+      expect(minted?.action).toBe('git_token.minted');
+      expect(revoked?.action).toBe('git_token.revoked');
+      if (minted?.action !== 'git_token.minted') throw new Error('missing export token audit');
+      const account = await client.send({
+        method: 'GET',
+        path: `/users/${minted.metadata.tokenUser}`,
+        allow: [404],
+      });
+      expect(account.status).toBe(404);
+    } finally {
+      await removeWorkspace(dir);
+    }
+  }, 120_000);
+
   it('stops working once expired and swept', async () => {
     const mine = project();
     const repository = await provider.createRepository({ ...mine, defaultBranch: 'main' });
@@ -279,7 +351,11 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
       await removeWorkspace(dir);
     }
 
-    expect(audit.events.filter((event) => event.action === 'git_token.revoked')).toHaveLength(1);
+    expect(
+      audit.events.filter(
+        (event) => event.action === 'git_token.revoked' && event.projectId === mine.projectId,
+      ),
+    ).toHaveLength(1);
   }, 120_000);
 
   it('records a mint in the trail, and never the token in it', async () => {

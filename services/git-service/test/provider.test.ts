@@ -183,6 +183,34 @@ describe('getBranch', () => {
   });
 });
 
+describe('compareCommits', () => {
+  it('bounds UTF-8 patches and file metadata from the exact Forgejo comparison', async () => {
+    const after = 'b'.repeat(40);
+    const patch = '🙂'.repeat(300_000);
+    const { forgejo, git } = provider({
+      [`GET /repos/${OWNER}/${NAME}/compare/${SHA}...${after}`]: {
+        status: 200,
+        body: {
+          files: [{ filename: 'src/index.ts', status: 'modified', additions: 2, deletions: 1, patch }],
+        },
+      },
+    });
+
+    const result = await git.compareCommits(REF, SHA, after);
+
+    expect(result).toMatchObject({
+      beforeSha: SHA,
+      afterSha: after,
+      changedFiles: 1,
+      filesTruncated: false,
+      patchTruncated: true,
+    });
+    expect(Buffer.byteLength(result?.patch ?? '', 'utf8')).toBeLessThanOrEqual(1_048_576);
+    expect(result?.patch.endsWith('🙂')).toBe(true);
+    expect(forgejo.calls.at(-1)?.path).toBe(`/repos/${OWNER}/${NAME}/compare/${SHA}...${after}`);
+  });
+});
+
 describe('createBranch', () => {
   it('tolerates a branch that already points at the requested commit', async () => {
     const { git } = provider({

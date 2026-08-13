@@ -1,5 +1,6 @@
 import { ApplicationFailure } from '@temporalio/activity';
 import { Worker } from '@temporalio/worker';
+import { projectTemporalRunStart } from '@zapp/contracts';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ActivityIdempotencyStore } from '../src/activities/idempotency.js';
@@ -19,6 +20,8 @@ import {
   buildWorkflow,
   RunWorkflowInputSchema,
 } from '../src/workflows/run.js';
+import { AutonomousWorkflowInputSchema } from '../src/workflows/autonomous.js';
+import { FixWorkflowInputSchema } from '../src/workflows/fix.js';
 
 const unusedStore: ActivityIdempotencyStore = {
   claim: () => Promise.resolve({ status: 'acquired' }),
@@ -91,17 +94,31 @@ describe('AR-9 worker queue and activity policy', () => {
   it('composes the concrete Postgres repository into a production worker', async () => {
     const created = { run: vi.fn() };
     const create = vi.spyOn(Worker, 'create').mockResolvedValueOnce(created as never);
+    const evaluateFeatureFlag = vi.fn(() => Promise.resolve({ enabled: true }));
+    const activities = { evaluateFeatureFlag } as unknown as ProductionRunActivities;
 
     await expect(
+      createProductionRunWorker({
+        connection: {} as never,
+        taskQueue: TASK_QUEUES.agentRuns,
+        activities,
+        database: {} as never,
+      }),
+    ).resolves.toBe(created);
+    expect(create.mock.calls[0]?.[0].interceptors?.activity).toHaveLength(1);
+    expect(create.mock.calls[0]?.[0].activities).toBe(activities);
+    create.mockRestore();
+  });
+
+  it('refuses a production worker without the feature-flag runtime', () => {
+    expect(() =>
       createProductionRunWorker({
         connection: {} as never,
         taskQueue: TASK_QUEUES.agentRuns,
         activities: {} as ProductionRunActivities,
         database: {} as never,
       }),
-    ).resolves.toBe(created);
-    expect(create.mock.calls[0]?.[0].interceptors?.activity).toHaveLength(1);
-    create.mockRestore();
+    ).toThrow('feature-flag activities');
   });
 
   it('registers the capability scan activity on the production verification queue', async () => {
@@ -175,6 +192,7 @@ describe('AR-9 worker queue and activity policy', () => {
       model: null,
       prompt: 'Build the app',
       budget: null,
+      planMaxCredits: 100,
       operationKey: `op_${'a'.repeat(64)}`,
     };
 
@@ -184,4 +202,46 @@ describe('AR-9 worker queue and activity policy', () => {
     expect(start.mock.calls[0]?.[0]).toBe(buildWorkflow);
     expect(start.mock.calls[0]?.[1]).toMatchObject({ taskQueue: TASK_QUEUES.agentRuns });
   });
+
+  it.each(['ask', 'prototype', 'build', 'fix', 'autonomous'] as const)(
+    'accepts the shared strict %s projection at the actual worker schema',
+    (mode) => {
+      const projected = projectTemporalRunStart({
+        runId: `run_${'0'.repeat(26)}`,
+        workflowId: 'run:test',
+        organizationId: `org_${'0'.repeat(26)}`,
+        projectId: `proj_${'0'.repeat(26)}`,
+        branchId: null,
+        mode,
+        appType: 'web',
+        model: null,
+        prompt: 'Build the app',
+        budget: { maxCredits: 10 },
+        planMaxCredits: 100,
+        operationKey: `op_${'a'.repeat(64)}`,
+        ...(mode === 'fix'
+          ? {
+              fixRequest: {
+                source: 'user_bug',
+                summary: 'Fix it',
+                relevantCommitSha: 'a'.repeat(40),
+                reproductionRef: 'test/fix.test.ts',
+                evidence: [{
+                  kind: 'user_report',
+                  artifactId: `art_${'0'.repeat(26)}`,
+                  summary: 'It is broken',
+                }],
+              },
+            }
+          : {}),
+      });
+      const schema =
+        projected.workflowType === 'autonomousWorkflow'
+          ? AutonomousWorkflowInputSchema
+          : projected.workflowType === 'fixWorkflow'
+            ? FixWorkflowInputSchema
+            : RunWorkflowInputSchema;
+      expect(schema.parse(projected.input)).toEqual(projected.input);
+    },
+  );
 });

@@ -14,7 +14,7 @@ import { useAtomValue } from "jotai";
 import { currentAppUrlAtom } from "@/atoms/previewRuntimeAtoms";
 import { useTranslation } from "react-i18next";
 import type { RuntimeMode2 } from "@/lib/schemas";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,6 +36,16 @@ export function shouldShowCloudSandboxOption({
   return cloudSandboxExperimentEnabled || runtimeMode === "cloud";
 }
 
+export function dockerModePresentation(input: {
+  available: boolean;
+  selected: boolean;
+}): { showOption: boolean; showDiagnostics: boolean } {
+  return {
+    showOption: input.available || input.selected,
+    showDiagnostics: !input.available,
+  };
+}
+
 export function RuntimeModeSelector() {
   const { settings, updateSettings } = useSettings();
   const { t } = useTranslation(["settings", "common"]);
@@ -44,6 +54,14 @@ export function RuntimeModeSelector() {
   const [pendingRuntimeMode, setPendingRuntimeMode] =
     useState<RuntimeMode2 | null>(null);
   const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
+  const [dockerAvailability, setDockerAvailability] = useState<{
+    available: boolean;
+    diagnosticsUrl: string;
+  } | null>(null);
+
+  useEffect(() => {
+    void ipc.system.getDockerAvailability().then(setDockerAvailability);
+  }, []);
 
   if (!settings) {
     return null;
@@ -55,6 +73,10 @@ export function RuntimeModeSelector() {
   const showCloudSandboxOption = shouldShowCloudSandboxOption({
     runtimeMode: settings.runtimeMode2 ?? "host",
     cloudSandboxExperimentEnabled: !!settings.experiments?.enableCloudSandbox,
+  });
+  const dockerPresentation = dockerModePresentation({
+    available: dockerAvailability?.available ?? false,
+    selected: isDockerMode,
   });
 
   const applyRuntimeModeChange = async (value: RuntimeMode2) => {
@@ -102,7 +124,9 @@ export function RuntimeModeSelector() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="host">Local (default)</SelectItem>
-            <SelectItem value="docker">Docker (experimental)</SelectItem>
+            {dockerPresentation.showOption && (
+              <SelectItem value="docker">Docker</SelectItem>
+            )}
             {showCloudSandboxOption && (
               <SelectItem disabled={!hasCloudSandboxAccess} value="cloud">
                 Cloud Sandbox (Pro)
@@ -111,6 +135,20 @@ export function RuntimeModeSelector() {
           </SelectContent>
         </Select>
       </SettingField>
+      {dockerPresentation.showDiagnostics && (
+        <button
+          type="button"
+          className="text-sm underline text-muted-foreground"
+          onClick={() =>
+            ipc.system.openExternalUrl(
+              dockerAvailability?.diagnosticsUrl ??
+                "https://docs.docker.com/desktop/troubleshoot/",
+            )
+          }
+        >
+          Docker diagnostics
+        </button>
+      )}
       {showCloudSandboxOption && !hasCloudSandboxAccess && (
         <div className="text-sm text-muted-foreground bg-muted/40 p-2 rounded">
           Cloud sandboxes are a Dyad Pro feature.{" "}

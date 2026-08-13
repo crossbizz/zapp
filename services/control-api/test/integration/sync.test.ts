@@ -366,12 +366,12 @@ describe('INT-3 GitHub synchronization engine', () => {
         await database.sql`
           insert into agent_runs
             (id, organization_id, project_id, branch_id, mode, model, request_fingerprint, status,
-             specification_id, temporal_workflow_id, started_by, budget_json)
+             specification_id, temporal_workflow_id, started_by, budget_json, plan_max_credits)
           values
             (${runId}, ${organizationId}, ${projectId}, ${branchId}, 'build', null,
-             'sync-db-fingerprint', 'running', null, 'sync-db-workflow', ${userId}, null),
+             'sync-db-fingerprint', 'running', null, 'sync-db-workflow', ${userId}, null, 1000),
             (${otherRunId}, ${organizationId}, ${projectId}, ${otherBranchId}, 'build', null,
-             'sync-db-other-fingerprint', 'running', null, 'sync-db-other-workflow', ${userId}, null)
+             'sync-db-other-fingerprint', 'running', null, 'sync-db-other-workflow', ${userId}, null, 1000)
         `;
         await database.sql`
           insert into agent_phases

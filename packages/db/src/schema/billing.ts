@@ -10,10 +10,12 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { CHECKPOINT_KINDS } from '@zapp/contracts';
 
 import { oneOf } from './columns.js';
-import { organizations } from './identity.js';
-import { agentRuns, agentTasks, approvals } from './planning.js';
+import { organizations, users } from './identity.js';
+import { agentRuns, agentTasks } from './planning.js';
 import { projectTenantForeignKey, projects } from './projects.js';
 
 export const subscriptions = pgTable(
@@ -38,6 +40,36 @@ export const subscriptions = pgTable(
   ],
 );
 
+const TRIAL_CREDIT_GRANT_STATES = ['pending', 'delivered'] as const;
+
+/**
+ * Durable P0 trial claim and delivery journal (plan 10 OPS-5).
+ *
+ * The organization primary key enforces one trial wallet per organization;
+ * the user unique index is the structural abuse guard enforcing one trial per
+ * user across every organization they create. Provider delivery may be retried
+ * while pending under the stable organization-derived idempotency key.
+ */
+export const trialCreditGrants = pgTable(
+  'trial_credit_grants',
+  {
+    organizationId: text('organization_id')
+      .primaryKey()
+      .references(() => organizations.id),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    state: text('state', { enum: TRIAL_CREDIT_GRANT_STATES }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('trial_credit_grants_user_idx').on(t.userId),
+    index('trial_credit_grants_pending_idx').on(t.state, t.createdAt),
+    check('trial_credit_grants_state_check', oneOf('state', TRIAL_CREDIT_GRANT_STATES)),
+  ],
+);
+
 /**
  * PRD §23.1, in order. Persisted as `text` + CHECK rather than a pg enum (see
  * `oneOf` in `./columns.ts`): plan 10 (OPS-4) already has to add `credit_grant`,
@@ -45,7 +77,7 @@ export const subscriptions = pgTable(
  * dropped at all and only append. The TypeScript union below is the
  * compile-time half of the same rule.
  */
-export const USAGE_CATEGORIES = [
+export const METERED_USAGE_CATEGORIES = [
   'model_input_tokens',
   'model_output_tokens',
   'model_cached_tokens',
@@ -56,7 +88,13 @@ export const USAGE_CATEGORIES = [
   'artifact_storage',
 ] as const;
 
+export const USAGE_CATEGORIES = [
+  ...METERED_USAGE_CATEGORIES,
+  'credit_grant',
+] as const;
+
 export type UsageCategory = (typeof USAGE_CATEGORIES)[number];
+export type MeteredUsageCategory = (typeof METERED_USAGE_CATEGORIES)[number];
 
 /**
  * Append-only (plan 01 §Global Constraints, plan 10 OPS-1): rows are never
@@ -68,6 +106,8 @@ export const usageLedger = pgTable(
   'usage_ledger',
   {
     id: text('id').primaryKey(), // also the Flexprice ingestion `event_id` (plan 10 OPS-1)
+    /** A caller-supplied stable identity makes a ledger append retry-safe. */
+    operationKey: text('operation_key').notNull(),
     organizationId: text('organization_id')
       .notNull()
       .references(() => organizations.id),
@@ -88,6 +128,8 @@ export const usageLedger = pgTable(
     unit: text('unit').notNull(),
     costUsd: numeric('cost_usd', { precision: 12, scale: 6 }).notNull(),
     creditsCharged: numeric('credits_charged', { precision: 12, scale: 4 }).notNull(),
+    /** Corrections reference the original append with `correction_of`. */
+    metadata: jsonb('metadata').notNull().default({}),
     // No default: usage happens when it happens, and late-arriving batches must
     // not be silently stamped with their insert time.
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
@@ -96,12 +138,14 @@ export const usageLedger = pgTable(
     // Every read is org-scoped and time-bounded (invoicing periods, budget
     // windows, the three-way reconciliation job in plan 10).
     index('usage_ledger_org_occurred_at_idx').on(t.organizationId, t.occurredAt),
+    uniqueIndex('usage_ledger_operation_idx').on(t.organizationId, t.operationKey),
     check('usage_ledger_category_check', oneOf('category', USAGE_CATEGORIES)),
   ],
 );
 
 const COMPLETION_STATES = ['claimed', 'completed'] as const;
-const OUTBOX_STATES = ['pending', 'published'] as const;
+const OUTBOX_STATES = ['pending', 'published', 'delivered'] as const;
+const CORRECTION_STATES = ['pending', 'confirmed'] as const;
 
 /**
  * ADR-0025's one authoritative accounting row per run. Reservations and usage
@@ -112,7 +156,7 @@ export const runCreditAccounts = pgTable(
   {
     runId: text('run_id')
       .primaryKey()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     organizationId: text('organization_id')
       .notNull()
       .references(() => organizations.id),
@@ -142,11 +186,11 @@ export const modelCompletionJournal = pgTable(
       .references(() => organizations.id),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
-    taskId: text('task_id').references(() => agentTasks.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
+    taskId: text('task_id').references(() => agentTasks.id, { onDelete: 'cascade' }),
     requestFingerprint: text('request_fingerprint').notNull(),
     claimOwner: text('claim_owner'),
     claimExpiresAt: timestamp('claim_expires_at', { withTimezone: true }),
@@ -172,12 +216,8 @@ export const runCreditCeilingAdjustments = pgTable(
     organizationId: text('organization_id')
       .notNull()
       .references(() => organizations.id),
-    runId: text('run_id')
-      .notNull()
-      .references(() => agentRuns.id),
-    approvalId: text('approval_id')
-      .notNull()
-      .references(() => approvals.id),
+    runId: text('run_id').notNull(),
+    approvalId: text('approval_id').notNull(),
     operationKey: text('operation_key').notNull(),
     absoluteCeiling: numeric('absolute_ceiling', { precision: 12, scale: 4 }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -205,11 +245,81 @@ export const usageOutbox = pgTable(
     nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     publishedAt: timestamp('published_at', { withTimezone: true }),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('usage_outbox_ledger_row_idx').on(t.ledgerRowId),
     index('usage_outbox_pending_idx').on(t.status, t.nextAttemptAt),
     check('usage_outbox_status_check', oneOf('status', OUTBOX_STATES)),
+  ],
+);
+
+/** ADR-0030 logical snapshot bytes captured at the structural creation seam. */
+export const sandboxSnapshotMeasurements = pgTable(
+  'sandbox_snapshot_measurements',
+  {
+    providerSnapshotId: text('provider_snapshot_id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    projectId: text('project_id').notNull(),
+    logicalBytes: numeric('logical_bytes').notNull(),
+    kind: text('kind', { enum: CHECKPOINT_KINDS }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    measuredAt: timestamp('measured_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('sandbox_snapshot_measurements_project_expiry_idx').on(
+      t.organizationId,
+      t.projectId,
+      t.expiresAt,
+    ),
+    projectTenantForeignKey(
+      'sandbox_snapshot_measurements',
+      t.projectId,
+      t.organizationId,
+    ),
+    check('sandbox_snapshot_measurements_kind_check', oneOf('kind', CHECKPOINT_KINDS)),
+  ],
+);
+
+/** Durable, idempotent Flexprice healing journal for a stable closed window. */
+export const usageReconciliationCorrections = pgTable(
+  'usage_reconciliation_corrections',
+  {
+    id: text('id').primaryKey(),
+    operationKey: text('operation_key').notNull(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    projectId: text('project_id'),
+    runId: text('run_id'),
+    taskId: text('task_id'),
+    category: text('category', { enum: METERED_USAGE_CATEGORIES }).notNull(),
+    windowFrom: timestamp('window_from', { withTimezone: true }).notNull(),
+    windowTo: timestamp('window_to', { withTimezone: true }).notNull(),
+    targetQuantity: numeric('target_quantity').notNull(),
+    deltaQuantity: numeric('delta_quantity').notNull(),
+    eventJson: jsonb('event_json').notNull(),
+    status: text('status', { enum: CORRECTION_STATES }).notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    submissionClaimedAt: timestamp('submission_claimed_at', { withTimezone: true }),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('usage_reconciliation_corrections_operation_idx').on(t.operationKey),
+    index('usage_reconciliation_corrections_pending_idx').on(t.status, t.createdAt),
+    check(
+      'usage_reconciliation_corrections_category_check',
+      oneOf('category', METERED_USAGE_CATEGORIES),
+    ),
+    check(
+      'usage_reconciliation_corrections_status_check',
+      oneOf('status', CORRECTION_STATES),
+    ),
   ],
 );
 
@@ -221,12 +331,36 @@ export const accountingLeaderLeases = pgTable('accounting_leader_leases', {
   cursorRunId: text('cursor_run_id'),
 });
 
+/** One durable operation identity per organization credit-exhaustion episode. */
+export const creditExhaustionEpisodes = pgTable(
+  'credit_exhaustion_episodes',
+  {
+    operationKey: text('operation_key').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => organizations.id),
+    exhaustedAt: timestamp('exhausted_at', { withTimezone: true }).notNull(),
+    recoveredAt: timestamp('recovered_at', { withTimezone: true }),
+    cursorRunId: text('cursor_run_id'),
+  },
+  (t) => [
+    uniqueIndex('credit_exhaustion_episodes_active_org_idx')
+      .on(t.organizationId)
+      .where(sql`${t.recoveredAt} is null`),
+    index('credit_exhaustion_episodes_org_time_idx').on(t.organizationId, t.exhaustedAt),
+  ],
+);
+
 export type Subscription = typeof subscriptions.$inferSelect;
 export type NewSubscription = typeof subscriptions.$inferInsert;
+export type TrialCreditGrant = typeof trialCreditGrants.$inferSelect;
 export type UsageLedgerEntry = typeof usageLedger.$inferSelect;
 export type NewUsageLedgerEntry = typeof usageLedger.$inferInsert;
 export type RunCreditAccount = typeof runCreditAccounts.$inferSelect;
 export type ModelCompletionJournal = typeof modelCompletionJournal.$inferSelect;
 export type RunCreditCeilingAdjustment = typeof runCreditCeilingAdjustments.$inferSelect;
 export type UsageOutboxEntry = typeof usageOutbox.$inferSelect;
+export type SandboxSnapshotMeasurement = typeof sandboxSnapshotMeasurements.$inferSelect;
+export type UsageReconciliationCorrection = typeof usageReconciliationCorrections.$inferSelect;
 export type AccountingLeaderLease = typeof accountingLeaderLeases.$inferSelect;
+export type CreditExhaustionEpisode = typeof creditExhaustionEpisodes.$inferSelect;

@@ -1,4 +1,5 @@
 import { AgentEventSchema, idSchema } from '@zapp/contracts';
+import { createObservabilityInstruments } from '@zapp/config';
 import type { FastifyReply } from 'fastify';
 import { z } from 'zod';
 
@@ -12,9 +13,7 @@ const RunParamsSchema = z.object({ runId: idSchema('run') }).strict();
 const CursorSchema = z.coerce.number().int().nonnegative().safe();
 const EventStreamQuerySchema = z.object({ after: z.string().optional() }).strict();
 const EventPingSchema = z.object({ sequence: z.number().int().positive().safe() }).strict();
-const EventAccessDecisionSchema = z
-  .object({ access: z.enum(['user', 'support']) })
-  .strict();
+const EventAccessDecisionSchema = z.object({ access: z.enum(['user', 'support']) }).strict();
 const EventStreamConcurrencyLimitsSchema = z
   .object({
     perUser: z.number().int().positive(),
@@ -37,6 +36,7 @@ const DEFAULT_CONCURRENCY_LIMITS: EventStreamConcurrencyLimits = {
   perOrganization: 64,
   perProcess: 256,
 };
+const eventStreamInstruments = createObservabilityInstruments();
 
 export interface EventWakeupSubscription {
   next(): Promise<unknown>;
@@ -140,7 +140,12 @@ function isQuotedText(code: number): boolean {
 }
 
 function isQuotedPair(code: number): boolean {
-  return code === 0x09 || code === 0x20 || (code >= 0x21 && code <= 0x7e) || (code >= 0x80 && code <= 0xff);
+  return (
+    code === 0x09 ||
+    code === 0x20 ||
+    (code >= 0x21 && code <= 0x7e) ||
+    (code >= 0x80 && code <= 0xff)
+  );
 }
 
 function parseHttpParameterValue(value: string): string | undefined {
@@ -256,11 +261,7 @@ function parseCursor(value: string | undefined, name: string): number | undefine
   if (value === undefined) return undefined;
   const parsed = CursorSchema.safeParse(value);
   if (!parsed.success || String(parsed.data) !== value) {
-    throw new ApiError(
-      'invalid_event_cursor',
-      400,
-      `${name} must be a nonnegative safe integer.`,
-    );
+    throw new ApiError('invalid_event_cursor', 400, `${name} must be a nonnegative safe integer.`);
   }
   return parsed.data;
 }
@@ -452,10 +453,7 @@ async function streamEvents(input: {
       clearTimeout(handle as NodeJS.Timeout);
     },
   };
-  const cleanupTimeoutMs = Math.max(
-    1,
-    dependencies.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS,
-  );
+  const cleanupTimeoutMs = Math.max(1, dependencies.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS);
   const report = (error: unknown): void => {
     try {
       void Promise.resolve(dependencies.onError?.(asError(error))).catch(() => undefined);
@@ -632,6 +630,15 @@ async function streamEvents(input: {
           if (row.visibility === 'internal') continue;
           if (row.visibility === 'support' && access !== 'support') continue;
           const event = toAgentEvent(row);
+          eventStreamInstruments.record(
+            'eventStreamLag',
+            Math.max(0, Date.now() - row.occurredAt.getTime()),
+            {
+              'zapp.organization.id': row.organizationId,
+              'zapp.project.id': row.projectId,
+              'zapp.run.id': row.runId,
+            },
+          );
           const block = `id: ${String(event.sequence)}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
           try {
             await writeFrame(block);
@@ -654,7 +661,10 @@ async function streamEvents(input: {
       await waitForEventWakeup({ wakeup, readFromDatabase: readAndWrite, sleep });
       if (pendingWakeup !== undefined) {
         const settled = await Promise.race([
-          pendingWakeup.then(() => true, () => true),
+          pendingWakeup.then(
+            () => true,
+            () => true,
+          ),
           Promise.resolve(false),
         ]);
         if (settled) pendingWakeup = undefined;
@@ -736,7 +746,10 @@ export function registerRunEventStreamRoute(
           : await dependencies.eventStream.supportAccess.decide(accessContext),
       );
       if (decision.access === 'support') {
-        await dependencies.eventStream.supportAccess?.audit({ ...accessContext, access: 'support' });
+        await dependencies.eventStream.supportAccess?.audit({
+          ...accessContext,
+          access: 'support',
+        });
       }
 
       const processStreams = activeStreams.size;

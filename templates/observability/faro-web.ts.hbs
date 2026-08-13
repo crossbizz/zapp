@@ -1,0 +1,34 @@
+import { getWebInstrumentations, initializeFaro } from '@grafana/faro-web-sdk';
+
+export const MANAGED_FARO_ENV = {
+  collectorUrl: 'ZAPP_PROJECT_FARO_URL',
+  projectId: 'ZAPP_PROJECT_ID',
+  release: 'ZAPP_RELEASE',
+} as const;
+
+export interface ManagedFaroConfig {
+  /** The collector URL for this project's dedicated Faro app. It is safe to expose to the browser. */
+  readonly collectorUrl: string;
+  readonly projectId: string;
+  readonly release: string;
+  readonly environment: string;
+}
+
+function required(value: string, name: keyof typeof MANAGED_FARO_ENV): string {
+  const normalized = value.trim();
+  if (normalized.length === 0) throw new Error(`managed_faro_config_missing:${MANAGED_FARO_ENV[name]}`);
+  return normalized;
+}
+
+/** Call before rendering the application so startup errors and web vitals retain release identity. */
+export function initializeManagedFaro(config: ManagedFaroConfig) {
+  return initializeFaro({
+    url: required(config.collectorUrl, 'collectorUrl'),
+    app: {
+      name: required(config.projectId, 'projectId'),
+      version: required(config.release, 'release'),
+      environment: config.environment,
+    },
+    instrumentations: [...getWebInstrumentations()],
+  });
+}

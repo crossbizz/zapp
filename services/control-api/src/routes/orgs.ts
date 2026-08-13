@@ -1,6 +1,7 @@
 import { PageSchema, idSchema } from '@zapp/contracts';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import type { ProductAnalytics } from '@zapp/config';
 
 import type { AppInstance } from '../app.js';
 import { AuthPortError, type AuthPort } from '../auth/port.js';
@@ -24,8 +25,10 @@ import {
 } from '../orgs/store.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, organizationNotFound, selectOrganizationId } from '../plugins/tenant.js';
+import { memberInvitedNotification } from '../notifications/service.js';
 import { ROLES } from '../policy/permissions.js';
 import { SlugSchema, derivedSlug, randomSuffix } from '../slug.js';
+import type { TrialGrantPort } from '../billing/topup.js';
 
 /**
  * PRD §32 organizations, memberships and invites.
@@ -102,6 +105,14 @@ const CreateInviteBody = z.object({
 });
 
 const SetRoleBody = z.object({ role: RoleSchema });
+const OrganizationDirectoryResponse = z.object({
+  members: z.array(z.object({
+    user: z.object({ id: idSchema('user'), email: z.string().email(), displayName: z.string(), avatarUrl: z.string().nullable() }).strict(),
+    role: RoleSchema,
+    status: z.literal('active'),
+  }).strict()).max(1_000),
+  pendingInvites: z.array(z.object({ email: z.string().email(), role: RoleSchema, invitedBy: idSchema('user'), expiresAt: z.string().datetime() }).strict()).max(1_000),
+}).strict();
 
 /**
  * Keyset pagination, as the FND-10 envelope describes it: `cursor` is the
@@ -121,6 +132,12 @@ export interface OrgRoutesDeps {
   readonly users: UserStore;
   readonly port: AuthPort;
   readonly now: () => Date;
+  readonly trial?: TrialGrantPort;
+  readonly productAnalytics?: ProductAnalytics;
+  readonly notifications?: {
+    readonly appBaseUrl: string;
+    enqueue(trigger: ReturnType<typeof memberInvitedNotification>): Promise<void>;
+  };
 }
 
 /** Nothing carrying a credential — an invite token — may be cached. */
@@ -270,6 +287,31 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
         throw slugTaken();
       }
 
+      if (deps.trial !== undefined) {
+        try {
+          await deps.trial.ensureTrial({
+            organizationId: created.organization.id,
+            userId: user.id,
+          });
+        } catch (error) {
+          // The durable claim remains pending. The billing lifecycle retries it;
+          // provider availability must not roll back an otherwise valid org.
+          request.log.error(
+            { err: error, organizationId: created.organization.id },
+            'trial credit delivery deferred',
+          );
+        }
+      }
+
+      if (deps.productAnalytics !== undefined) {
+        await deps.productAnalytics.capture({
+          eventId: `org_created:${created.organization.id}`,
+          distinctId: user.id,
+          event: 'org_created',
+          properties: { orgId: created.organization.id },
+        });
+      }
+
       return await reply
         .status(201)
         .send({ organization: created.organization, role: created.membership.role });
@@ -404,11 +446,51 @@ export function registerOrgRoutes(app: AppInstance, deps: OrgRoutesDeps): void {
         metadata: { email, role: request.body.role },
       });
 
+      if (deps.notifications !== undefined) {
+        await deps.notifications.enqueue(
+          memberInvitedNotification({
+            organizationId: request.params.orgId,
+            email,
+            inviteId: hashInviteToken(token),
+            inviteUrl: new URL(
+              `/invites/${encodeURIComponent(token)}`,
+              deps.notifications.appBaseUrl,
+            ).toString(),
+            occurredAt: now().toISOString(),
+          }),
+        );
+      }
+
       noStore(reply);
       return await reply.status(201).send({
         invite: { email, role: request.body.role, expiresAt: expiresAt.toISOString() },
         token,
       });
+    },
+  );
+
+  app.get(
+    '/v1/organizations/:orgId/members',
+    {
+      preHandler: [app.requireSession],
+      schema: { params: OrganizationParams, response: { 200: OrganizationDirectoryResponse } },
+    },
+    async (request) => {
+      const membership = await membershipOf(request, request.params.orgId);
+      authorize(membership, 'manage_members');
+      const rows = await organizations.listMembers(request.params.orgId);
+      const members = await Promise.all(rows.filter((row) => row.status === 'active').map(async (row) => {
+        const profile = await users.profile(row.userId);
+        if (profile === undefined) throw new Error('membership references a missing user');
+        return { user: profile.user, role: row.role, status: 'active' as const };
+      }));
+      const pendingInvites = (await invites.list(request.params.orgId)).map((invite) => ({
+        email: invite.email,
+        role: invite.role,
+        invitedBy: invite.invitedBy,
+        expiresAt: invite.expiresAt.toISOString(),
+      }));
+      return { members, pendingInvites };
     },
   );
 

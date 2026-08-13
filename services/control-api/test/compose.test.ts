@@ -7,6 +7,7 @@ import { composeApp } from '../src/compose.js';
 import { loadRateLimitSettings } from '../src/config/rate-limits.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { RedisCommands } from '../src/redis/client.js';
+import { createInMemoryNotificationState } from '../src/notifications/service.js';
 import { FakeAuthPort } from './support/fake-auth-port.js';
 import {
   InMemoryUserStore,
@@ -38,6 +39,8 @@ import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
 
 /** Never connected to. `createDb` opens no socket until something asks it a question. */
 const UNUSED_DATABASE_URL = 'postgres://unused:unused@127.0.0.1:1/unused';
+const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformbilling'].join('_');
+const PLATFORM_STRIPE_WEBHOOK_SECRET = ['whsec', 'platformbilling'].join('_');
 
 /** Any use is a bug in the test, so every command says so rather than answering. */
 const unusedRedis: RedisCommands = {
@@ -71,9 +74,58 @@ function composed(): AppInstance {
     },
     masterKey: TEST_MASTER_KEY,
     serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
+    gitServiceUrl: 'http://127.0.0.1:4500',
     modelGatewayUrl: 'http://127.0.0.1:4100',
     rateLimits: loadRateLimitSettings(),
     pricing: TEST_PRICING,
+    planLimits: {
+      trial: {
+        concurrentAutonomousRuns: 1,
+        concurrentSandboxes: 1,
+        maxResourceProfile: 'small',
+        maxRunBudgetCredits: '10.0000',
+        maxPreviewLifetimeHours: 1,
+        artifactRetentionDays: 7,
+        monthlyCredits: '10.0000',
+        seats: 1,
+      },
+      builder: {
+        concurrentAutonomousRuns: 3,
+        concurrentSandboxes: 3,
+        maxResourceProfile: 'standard',
+        maxRunBudgetCredits: '100.0000',
+        maxPreviewLifetimeHours: 24,
+        artifactRetentionDays: 30,
+        monthlyCredits: '100.0000',
+        seats: 3,
+      },
+      studio: {
+        concurrentAutonomousRuns: 10,
+        concurrentSandboxes: 10,
+        maxResourceProfile: 'large',
+        maxRunBudgetCredits: '1000.0000',
+        maxPreviewLifetimeHours: 168,
+        artifactRetentionDays: 90,
+        monthlyCredits: '1000.0000',
+        seats: 10,
+      },
+    },
+    flexprice: {
+      apiKey: 'not-a-real-flexprice-key',
+      baseUrl: 'https://api.cloud.flexprice.io/v1',
+    },
+    creditBalance: {
+      availableCredits: () => Promise.reject(new Error('credit balance reached')),
+      requireRunAdmission: () => Promise.reject(new Error('credit balance reached')),
+    },
+    billing: {
+      platformSecretKey: PLATFORM_STRIPE_SECRET,
+      webhookSecret: PLATFORM_STRIPE_WEBHOOK_SECRET,
+      prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      creditPackPrices: { starter: 'price_starter123' },
+      flexpriceStripeWebhookUrl:
+        'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+    },
     temporal: { workflow: {} as never },
     artifactStorage: {
       endpoint: 'http://127.0.0.1:9000',
@@ -89,6 +141,10 @@ function composed(): AppInstance {
       clientSecret: 'test-client-secret',
       privateKey: 'test-private-key',
       webhookSecret: 'test-webhook-secret',
+    },
+    notifications: {
+      state: createInMemoryNotificationState(),
+      enqueue: () => Promise.resolve(),
     },
   });
   apps.push(app);
@@ -125,6 +181,9 @@ const ROUTES: readonly (readonly [string, string])[] = [
   // CP-4's tenant surface — the six that were missing from the running service.
   ['POST', '/v1/projects'],
   ['GET', '/v1/projects'],
+  ['GET', '/v1/feature-flags'],
+  ['GET', '/v1/notification-preferences'],
+  ['PUT', '/v1/notification-preferences/:type'],
   ['GET', '/v1/projects/:projectId'],
   ['GET', '/v1/projects/:projectId/runs'],
   ['GET', '/v1/runs/:runId'],
@@ -138,6 +197,17 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['PATCH', '/v1/projects/:projectId'],
   ['GET', '/v1/projects/:projectId/contract'],
   ['POST', '/v1/projects/:projectId/scan'],
+  ['GET', '/v1/workspaces/:workspaceId/dev-server/logs'],
+  ['POST', '/v1/workspaces/:workspaceId/dev-server/restart'],
+  ['GET', '/v1/workspaces/:workspaceId/preview/events'],
+  ['POST', '/v1/workspaces/:workspaceId/preview/screenshot'],
+  ['POST', '/v1/projects/:projectId/releases'],
+  ['GET', '/v1/releases/:releaseId'],
+  ['POST', '/v1/releases/:releaseId/approve'],
+  ['POST', '/v1/releases/:releaseId/deploy'],
+  ['POST', '/v1/releases/:releaseId/rollback'],
+  ['GET', '/v1/releases/:releaseId/evidence'],
+  ['POST', '/v1/releases/:releaseId/fork'],
   // CP-7's vault (PRD §32.5), including the internal decrypt — deployed with a
   // deny-all verifier until CP-8, which is a route that admits nobody rather
   // than a route that does not exist.
@@ -151,6 +221,14 @@ const ROUTES: readonly (readonly [string, string])[] = [
   ['GET', '/v1/integrations/github/repositories'],
   ['GET', '/v1/integrations/github/repositories/:repositoryId/branches'],
   ['POST', '/v1/webhooks/github'],
+  ['GET', '/v1/billing/status'],
+  ['POST', '/v1/billing/checkout'],
+  ['POST', '/v1/billing/portal'],
+  ['PATCH', '/v1/billing/subscription'],
+  ['GET', '/v1/billing/topups'],
+  ['POST', '/v1/billing/topups/checkout'],
+  ['POST', '/v1/billing/estimate'],
+  ['POST', '/v1/webhooks/stripe'],
 ];
 
 describe('the composition server.ts performs', () => {

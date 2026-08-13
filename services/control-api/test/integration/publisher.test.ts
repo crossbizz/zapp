@@ -895,6 +895,7 @@ describe.skipIf(!hasDatabase || !hasRedis)('PostgreSQL NOTIFY to Redis fanout', 
       temporalWorkflowId: currentRunId,
       startedBy: userId,
       budgetJson: null,
+      planMaxCredits: '1000.0000',
     });
   });
 

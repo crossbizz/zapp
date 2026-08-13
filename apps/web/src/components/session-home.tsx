@@ -5,6 +5,12 @@ import { useEffect, useState, type ReactElement } from 'react';
 
 import { Hero } from './home/Hero';
 import { createControlPlaneClient, type MeResponse } from '../lib/api';
+import { captureSignup } from '../lib/activation';
+import {
+  bootstrapHomeFeatureFlags,
+  homeFeatureFlags,
+  type HomeFeatureFlags,
+} from '../lib/feature-flags';
 import { organizationStorageKey, resolveOrganization } from '../lib/session';
 
 export function SessionHome(): ReactElement {
@@ -12,12 +18,14 @@ export function SessionHome(): ReactElement {
   const [organizationId, setOrganizationId] = useState<string>();
   const [organizationName, setOrganizationName] = useState<string>();
   const [allowedModels, setAllowedModels] = useState<readonly string[]>([]);
+  const [featureFlags, setFeatureFlags] = useState<HomeFeatureFlags>();
   const [invalidOrganization, setInvalidOrganization] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     let current = true;
+    const isCurrent = (): boolean => current;
 
     const load = async (): Promise<void> => {
       setLoadFailed(false);
@@ -25,23 +33,38 @@ export function SessionHome(): ReactElement {
       setOrganizationId(undefined);
       setOrganizationName(undefined);
       setAllowedModels([]);
+      setFeatureFlags(undefined);
       setInvalidOrganization(false);
       try {
         const me = await createControlPlaneClient().getMe();
-        if (!current) return;
+        if (!isCurrent()) return;
         const override = new URLSearchParams(window.location.search).get('organizationId');
         const key = organizationStorageKey(me.user.id);
         const selected = resolveOrganization(me.memberships, override, localStorage.getItem(key));
-        setProfile(me);
-        setInvalidOrganization(selected.invalidOverride);
-        if (selected.membership === undefined) return;
+        if (selected.membership === undefined) {
+          setProfile(me);
+          setInvalidOrganization(selected.invalidOverride);
+          return;
+        }
 
         localStorage.setItem(key, selected.membership.organization.id);
+        const organizationClient = createControlPlaneClient(selected.membership.organization.id);
+        const [, flags] = await Promise.all([
+          organizationClient.getMe(),
+          organizationClient.getFeatureFlags(),
+        ]);
+        if (!isCurrent()) return;
+        bootstrapHomeFeatureFlags(selected.membership.organization.id, flags);
+        captureSignup({
+          organizationId: selected.membership.organization.id,
+          userId: me.user.id,
+        });
+        setProfile(me);
+        setInvalidOrganization(selected.invalidOverride);
         setOrganizationId(selected.membership.organization.id);
         setOrganizationName(selected.membership.organization.name);
         setAllowedModels(selected.membership.allowedModels);
-        const organizationClient = createControlPlaneClient(selected.membership.organization.id);
-        await organizationClient.getMe();
+        setFeatureFlags(homeFeatureFlags(flags));
       } catch (error) {
         if (error instanceof ZappApiError && error.status === 401) {
           window.location.replace('/login');
@@ -75,7 +98,11 @@ export function SessionHome(): ReactElement {
 
   if (profile === undefined) return <main>Loading session…</main>;
 
-  if (organizationId === undefined || organizationName === undefined) {
+  if (
+    organizationId === undefined ||
+    organizationName === undefined ||
+    featureFlags === undefined
+  ) {
     return (
       <main>
         <h1>{profile.user.displayName}</h1>
@@ -89,6 +116,7 @@ export function SessionHome(): ReactElement {
     <main>
       <Hero
         allowedModels={allowedModels}
+        flags={featureFlags}
         invalidOrganization={invalidOrganization}
         organizationId={organizationId}
         organizationName={organizationName}

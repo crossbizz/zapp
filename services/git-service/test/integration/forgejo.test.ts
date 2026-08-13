@@ -2,6 +2,7 @@ import { RELEASE_BRANCH_PATTERN, internalRepoRef, newId } from '@zapp/contracts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { ForgejoClient } from '../../src/forgejo/client.js';
+import { RepositoryFixtureLifecycle } from '../../src/forgejo/repository-fixture-lifecycle.js';
 import { createForgejoGitProvider } from '../../src/provider/forgejo.js';
 import { GitProviderConflictError, type GitProvider } from '../../src/provider/types.js';
 import {
@@ -31,14 +32,17 @@ import {
 describe.skipIf(!hasForgejo)('the Forgejo provider, against a real instance', () => {
   let client: ForgejoClient;
   let provider: GitProvider;
-  /** Organizations this suite created, removed in `afterAll` and nothing else. */
-  const created: { organizationId: string; projectId: string }[] = [];
+  /** Records a ref before its provider call, so even a partial create is owned. */
+  const lifecycle = new RepositoryFixtureLifecycle();
 
   function project(): { organizationId: string; projectId: string; ref: string } {
     const organizationId = newId('org');
     const projectId = newId('proj');
-    created.push({ organizationId, projectId });
-    return { organizationId, projectId, ref: internalRepoRef({ organizationId, projectId }) };
+    const ref = internalRepoRef({ organizationId, projectId });
+    // This precedes `createRepository`: a provider response lost after Forgejo
+    // committed must still be reclaimed by this suite's cleanup.
+    lifecycle.record(ref);
+    return { organizationId, projectId, ref };
   }
 
   beforeAll(() => {
@@ -52,15 +56,25 @@ describe.skipIf(!hasForgejo)('the Forgejo provider, against a real instance', ()
     // that deleted their work.
     // Repositories first, then organizations: Forgejo answers a delete of an
     // organization that still owns one with a 500.
-    for (const { organizationId, projectId } of created) {
-      const [owner, name] = internalRepoRef({ organizationId, projectId }).split('/') as [
-        string,
-        string,
-      ];
-      await client.send({ method: 'DELETE', path: `/repos/${owner}/${name}`, allow: [404] });
+    const failures: unknown[] = [];
+    try {
+      await lifecycle.cleanup(provider);
+    } catch (error) {
+      failures.push(error);
     }
-    for (const owner of new Set(created.map((entry) => entry.organizationId.toLowerCase()))) {
-      await client.send({ method: 'DELETE', path: `/orgs/${owner}`, allow: [404] });
+    for (const owner of new Set(lifecycle.refs().map((ref) => ref.split('/')[0] ?? ''))) {
+      try {
+        await client.send({ method: 'DELETE', path: `/orgs/${owner}`, allow: [404] });
+        const remaining = await client.send({ method: 'GET', path: `/orgs/${owner}`, allow: [404] });
+        if (remaining.status !== 404) {
+          failures.push(new Error(`Forgejo fixture cleanup failed: organization ${owner} still exists`));
+        }
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'Forgejo fixture cleanup failed');
     }
   });
 
@@ -264,10 +278,12 @@ describe.skipIf(!hasForgejo)('the Forgejo provider, against a real instance', ()
   it('deletes a repository, and deleting a missing one is a success', async () => {
     const { organizationId, projectId, ref } = project();
     await provider.createRepository({ organizationId, projectId, defaultBranch: 'main' });
+    await expect(provider.repositoryExists(ref)).resolves.toBe(true);
 
     await provider.deleteRepository(ref);
     // The caller's goal was that it not exist, and it does not.
     await expect(provider.deleteRepository(ref)).resolves.toBeUndefined();
+    await expect(provider.repositoryExists(ref)).resolves.toBe(false);
 
     const [owner, name] = ref.split('/') as [string, string];
     const gone = await client.send({

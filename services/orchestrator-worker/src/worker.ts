@@ -2,14 +2,20 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { ApplicationFailure } from '@temporalio/activity';
-import type { Client } from '@temporalio/client';
+import { WorkflowExecutionAlreadyStartedError, type Client } from '@temporalio/client';
 import { Worker, type NativeConnection, type WorkerOptions } from '@temporalio/worker';
-import { MessageUserPayloadSchema } from '@zapp/contracts';
+import { OpenTelemetryPlugin } from '@temporalio/interceptors-opentelemetry';
+import { getOpenTelemetryRuntime } from '@zapp/config';
+import {
+  TEMPORAL_RUN_WORKFLOW_TYPES,
+  projectTemporalRunSignal,
+  projectTemporalRunStart,
+} from '@zapp/contracts';
 import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 import { z } from 'zod';
 
 import type { EventActivities } from './activities/events.js';
-import type { ApprovalActivities } from './activities/approvals.js';
+import type { ApprovalActivities, RunApprovalActivities } from './activities/approvals.js';
 import type { CapabilityScanActivities } from './activities/capability-scan.js';
 import {
   createActivityIdempotencyInterceptor,
@@ -19,6 +25,7 @@ import type { SessionActivities } from './activities/session.js';
 import type { WorkspaceActivities } from './activities/workspace.js';
 import type { TaskWorkflowActivities } from './activities/merge.js';
 import type { RepairActivities } from './activities/repair.js';
+import type { FeatureFlagActivities } from './activities/feature-flags.js';
 import type { VerifyPhaseActivities } from './activities/verify-phase.js';
 import {
   fixWorkflow,
@@ -34,36 +41,29 @@ import {
   type AutonomousActivities,
 } from './workflows/autonomous.js';
 import {
-  budgetApprovalResolvedSignal,
   buildWorkflow,
-  cancelRunSignal,
-  messageRunSignal,
-  pauseRunSignal,
-  redirectRunSignal,
-  resumeRunSignal,
   runWorkflow,
   RunWorkflowInputSchema,
   type BuildModeActivities,
 } from './workflows/run.js';
 import type { RedirectActivities } from './workflows/redirect.js';
 
-export type RunActivities =
-  & EventActivities
-  & SessionActivities
-  & WorkspaceActivities
-  & ApprovalActivities;
-export type ProductionRunActivities =
-  & RunActivities
-  & TaskWorkflowActivities
-  & AutonomousActivities
-  & RedirectActivities
-  & BuildModeActivities
-  & FixModeActivities;
-export type ProductionVerificationActivities =
-  & CapabilityScanActivities
-  & VerifyPhaseActivities
-  & RepairActivities
-  & FixVerificationActivities;
+export type RunActivities = EventActivities &
+  SessionActivities &
+  WorkspaceActivities &
+  ApprovalActivities;
+export type ProductionRunActivities = RunActivities &
+  RunApprovalActivities &
+  TaskWorkflowActivities &
+  AutonomousActivities &
+  FeatureFlagActivities &
+  RedirectActivities &
+  BuildModeActivities &
+  FixModeActivities;
+export type ProductionVerificationActivities = CapabilityScanActivities &
+  VerifyPhaseActivities &
+  RepairActivities &
+  FixVerificationActivities;
 
 export const TASK_QUEUES = {
   agentRuns: 'agent-runs',
@@ -83,6 +83,17 @@ interface CommonRunWorkerOptions {
   readonly activities: RunActivities;
   readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
   readonly maxHeartbeatThrottleInterval?: WorkerOptions['maxHeartbeatThrottleInterval'];
+}
+
+function openTelemetryPlugins(): NonNullable<WorkerOptions['plugins']> {
+  const runtime = getOpenTelemetryRuntime('orchestrator-worker');
+  if (runtime?.spanProcessor === undefined) return [];
+  const options = {
+    tracer: runtime.tracer,
+    resource: runtime.resource,
+    spanProcessor: runtime.spanProcessor,
+  } as unknown as ConstructorParameters<typeof OpenTelemetryPlugin>[0];
+  return [new OpenTelemetryPlugin(options)];
 }
 
 export type RunWorkerOptions = CommonRunWorkerOptions &
@@ -116,12 +127,14 @@ export function createRunWorker(options: RunWorkerOptions): Promise<Worker> {
     'idempotencyStore' in options
       ? { activity: [createActivityIdempotencyInterceptor({ store: options.idempotencyStore })] }
       : undefined;
+  const plugins = openTelemetryPlugins();
   return Worker.create({
     connection: options.connection,
     taskQueue: options.taskQueue,
     workflowsPath: workflowPath(),
     activities: options.activities,
     ...(interceptors === undefined ? {} : { interceptors }),
+    ...(plugins.length === 0 ? {} : { plugins }),
     ...(options.shutdownGraceTime === undefined
       ? {}
       : { shutdownGraceTime: options.shutdownGraceTime }),
@@ -138,6 +151,9 @@ export function createProductionRunWorker(
     readonly database: Database;
   },
 ): Promise<Worker> {
+  if (typeof options.activities.evaluateFeatureFlag !== 'function') {
+    throw new TypeError('Production run workers require feature-flag activities');
+  }
   return createRunWorker({
     connection: options.connection,
     taskQueue: TaskQueueSchema.parse(options.taskQueue),
@@ -158,6 +174,7 @@ export function createProductionCapabilityScanWorker(options: {
   readonly database: Database;
   readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
 }): Promise<Worker> {
+  const plugins = openTelemetryPlugins();
   return Worker.create({
     connection: options.connection,
     taskQueue: TASK_QUEUES.verification,
@@ -170,6 +187,7 @@ export function createProductionCapabilityScanWorker(options: {
         }),
       ],
     },
+    ...(plugins.length === 0 ? {} : { plugins }),
     ...(options.shutdownGraceTime === undefined
       ? {}
       : { shutdownGraceTime: options.shutdownGraceTime }),
@@ -183,6 +201,7 @@ export function createProductionVerificationWorker(options: {
   readonly database: Database;
   readonly shutdownGraceTime?: WorkerOptions['shutdownGraceTime'];
 }): Promise<Worker> {
+  const plugins = openTelemetryPlugins();
   return Worker.create({
     connection: options.connection,
     taskQueue: TASK_QUEUES.verification,
@@ -195,6 +214,7 @@ export function createProductionVerificationWorker(options: {
         }),
       ],
     },
+    ...(plugins.length === 0 ? {} : { plugins }),
     ...(options.shutdownGraceTime === undefined
       ? {}
       : { shutdownGraceTime: options.shutdownGraceTime }),
@@ -203,7 +223,10 @@ export function createProductionVerificationWorker(options: {
 
 /** Business outcomes are explicit Temporal failures and are never retried. */
 export function createBusinessFailure(type: string, message: string): ApplicationFailure {
-  const parsedType = z.string().regex(/^[a-z][a-z0-9_]{1,127}$/u).parse(type);
+  const parsedType = z
+    .string()
+    .regex(/^[a-z][a-z0-9_]{1,127}$/u)
+    .parse(type);
   const parsedMessage = z.string().min(1).max(1_024).parse(message);
   return ApplicationFailure.nonRetryable(parsedMessage, parsedType);
 }
@@ -220,118 +243,72 @@ function createTemporalOrchestratorForQueue(
 ): TemporalOrchestrator {
   return {
     async startRun(inputValue) {
-      const requestedMode = z
-        .object({ mode: z.enum(['ask', 'prototype', 'build', 'fix', 'autonomous']) })
-        .passthrough()
-        .parse(inputValue).mode;
-      if (requestedMode === 'fix' && useDedicatedBuildWorkflow) {
-        const input = FixWorkflowInputSchema.parse(inputValue);
-        await client.workflow.start(fixWorkflow, {
+      const projected = projectTemporalRunStart(inputValue);
+      const workflowType =
+        projected.workflowType === TEMPORAL_RUN_WORKFLOW_TYPES.build && !useDedicatedBuildWorkflow
+          ? TEMPORAL_RUN_WORKFLOW_TYPES.ask
+          : projected.workflowType;
+      const workflow = {
+        [TEMPORAL_RUN_WORKFLOW_TYPES.ask]: runWorkflow,
+        [TEMPORAL_RUN_WORKFLOW_TYPES.build]: buildWorkflow,
+        [TEMPORAL_RUN_WORKFLOW_TYPES.fix]: fixWorkflow,
+        [TEMPORAL_RUN_WORKFLOW_TYPES.autonomous]: autonomousWorkflow,
+      }[workflowType];
+      const input =
+        projected.workflowType === TEMPORAL_RUN_WORKFLOW_TYPES.autonomous
+          ? AutonomousWorkflowInputSchema.parse(projected.input)
+          : projected.workflowType === TEMPORAL_RUN_WORKFLOW_TYPES.fix
+            ? FixWorkflowInputSchema.parse(projected.input)
+            : RunWorkflowInputSchema.parse(projected.input);
+      try {
+        await client.workflow.start(workflow, {
           taskQueue,
           workflowId: input.workflowId,
           args: [input],
         });
-        return;
-      }
-      const input = RunWorkflowInputSchema.parse(inputValue);
-      if (input.mode === 'autonomous') {
-        const autonomousInput = AutonomousWorkflowInputSchema.parse({
-          workflowId: input.workflowId,
-          runId: input.runId,
-          organizationId: input.organizationId,
-          projectId: input.projectId,
-          prompt: input.prompt,
-          model: input.model,
-          budget: input.budget,
-          maxConcurrency: 3,
-        });
-        await client.workflow.start(autonomousWorkflow, {
-          taskQueue,
-          workflowId: input.workflowId,
-          args: [autonomousInput],
-        });
-      } else if (input.mode === 'build' && useDedicatedBuildWorkflow) {
-        await client.workflow.start(buildWorkflow, {
-          taskQueue,
-          workflowId: input.workflowId,
-          args: [input],
-        });
-      } else {
-        await client.workflow.start(runWorkflow, {
-          taskQueue,
-          workflowId: input.workflowId,
-          args: [input],
-        });
+      } catch (error) {
+        if (
+          error instanceof WorkflowExecutionAlreadyStartedError &&
+          error.workflowId === input.workflowId &&
+          error.workflowType === workflowType
+        )
+          return;
+        throw error;
       }
     },
     async signalRun(inputValue) {
-      const input = z
+      const special = z
         .object({
           runId: z.string().regex(/^run_[0-9A-HJKMNP-TV-Z]{26}$/u),
           workflowId: z.string().min(1).max(255),
           signal: z.string().min(1).max(100),
           operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
-          prompt: z.string().trim().min(1).max(20_000).optional(),
-          approvalId: z.string().optional(),
           artifactId: z.string().min(1).max(512).optional(),
           decision: z.enum(['approved', 'rejected']).optional(),
-          absoluteCeiling: z.string().optional(),
-          message: MessageUserPayloadSchema.optional(),
         })
         .passthrough()
         .parse(inputValue);
-      const handle = client.workflow.getHandle(input.workflowId);
-      if (input.signal === 'autonomous_specification_approval') {
+      const handle = client.workflow.getHandle(special.workflowId);
+      if (special.signal === 'autonomous_specification_approval') {
         await handle.signal(autonomousSpecificationApprovalSignal, {
-          runId: input.runId,
-          artifactId: z.string().min(1).max(512).parse(input.artifactId),
-          decision: z.enum(['approved', 'rejected']).parse(input.decision),
-          operationKey: input.operationKey,
+          runId: special.runId,
+          artifactId: z.string().min(1).max(512).parse(special.artifactId),
+          decision: z.enum(['approved', 'rejected']).parse(special.decision),
+          operationKey: special.operationKey,
         });
-      } else if (input.signal === 'autonomous_plan_approval') {
+      } else if (special.signal === 'autonomous_plan_approval') {
         await handle.signal(autonomousPlanApprovalSignal, {
-          runId: input.runId,
-          artifactId: z.string().regex(/^art_[0-9A-HJKMNP-TV-Z]{26}$/u).parse(input.artifactId),
-          decision: z.enum(['approved', 'rejected']).parse(input.decision),
-          operationKey: input.operationKey,
-        });
-      } else if (input.signal === 'budget_approval') {
-        await handle.signal(budgetApprovalResolvedSignal, {
-          approvalId: input.approvalId,
-          decision: input.decision,
-          ...(input.absoluteCeiling === undefined
-            ? {}
-            : { absoluteCeiling: input.absoluteCeiling }),
-        });
-      } else if (input.signal === 'pause') {
-        await handle.signal(pauseRunSignal, {
-          runId: input.runId,
-          operationKey: input.operationKey,
-        });
-      } else if (input.signal === 'resume') {
-        await handle.signal(resumeRunSignal, {
-          runId: input.runId,
-          operationKey: input.operationKey,
-        });
-      } else if (input.signal === 'cancel') {
-        await handle.signal(cancelRunSignal, {
-          runId: input.runId,
-          operationKey: input.operationKey,
-        });
-      } else if (input.signal === 'redirect') {
-        await handle.signal(redirectRunSignal, {
-          runId: input.runId,
-          instruction: z.string().trim().min(1).max(20_000).parse(input.prompt),
-          operationKey: input.operationKey,
-        });
-      } else if (input.signal === 'message') {
-        await handle.signal(messageRunSignal, {
-          runId: input.runId,
-          message: MessageUserPayloadSchema.parse(input.message),
-          operationKey: input.operationKey,
+          runId: special.runId,
+          artifactId: z
+            .string()
+            .regex(/^art_[0-9A-HJKMNP-TV-Z]{26}$/u)
+            .parse(special.artifactId),
+          decision: z.enum(['approved', 'rejected']).parse(special.decision),
+          operationKey: special.operationKey,
         });
       } else {
-        throw new TypeError('Unsupported run signal');
+        const projected = projectTemporalRunSignal(inputValue);
+        await handle.signal(projected.signalName, projected.payload);
       }
       return { applied: true };
     },

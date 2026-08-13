@@ -1,8 +1,20 @@
 import { defineEnv, type ServiceTokenConfig } from '@zapp/config';
 import { z } from 'zod';
 
+import {
+  StripePlatformSecretSchema,
+  StripePriceCatalogSchema,
+  StripeWebhookSecretSchema,
+  type StripePriceCatalog,
+} from './billing/stripe.js';
+import {
+  StripeCreditPackPriceCatalogSchema,
+  type StripeCreditPackPriceCatalog,
+} from './billing/topup.js';
+
 import { LOG_LEVELS } from './logging.js';
 import { KEY_BYTES, createEnvMasterKey, type MasterKeyPort } from './secrets/crypto.js';
+export { loadReleaseServiceUrl } from './release/client.js';
 
 /**
  * Everything the process needs to boot. Defaults keep `pnpm start` working with an
@@ -28,6 +40,42 @@ export type ServiceEnv = z.infer<typeof EnvSchema>;
 /** @throws Error naming the offending variables — never their values. */
 export function loadEnv(source: unknown = process.env): ServiceEnv {
   return defineEnv(EnvSchema, source);
+}
+
+const PostHogEnvSchema = z.object({
+  POSTHOG_KEY: z.string().trim().min(1),
+  POSTHOG_HOST: z.string().url(),
+});
+
+export interface PostHogEnv {
+  readonly projectKey: string;
+  readonly host: string;
+}
+
+/** Server-side product analytics and organization-scoped feature evaluation. */
+export function loadPostHogEnv(source: unknown = process.env): PostHogEnv {
+  const env = defineEnv(PostHogEnvSchema, source);
+  return {
+    projectKey: env.POSTHOG_KEY,
+    host: env.POSTHOG_HOST.replace(/\/+$/u, ''),
+  };
+}
+
+const IncidentWebhookEnvSchema = z.object({
+  GRAFANA_ALERT_WEBHOOK_SECRET: z.union([z.string().trim().min(32), z.literal('')]).optional(),
+});
+
+/** Dedicated Grafana Alerting credential. Production refuses to expose an inert webhook. */
+export function loadIncidentWebhookSecret(
+  source: unknown = process.env,
+  environment: ServiceEnv['NODE_ENV'] = 'production',
+): string | undefined {
+  const configured = defineEnv(IncidentWebhookEnvSchema, source).GRAFANA_ALERT_WEBHOOK_SECRET;
+  const secret = configured === '' ? undefined : configured;
+  if (environment === 'production' && secret === undefined) {
+    throw new Error('GRAFANA_ALERT_WEBHOOK_SECRET is required in production');
+  }
+  return secret;
 }
 
 /**
@@ -129,9 +177,55 @@ export function loadUsageQueueEnv(source: unknown = process.env): UsageQueueEnv 
   };
 }
 
+const NotificationEnvSchema = z
+  .object({
+    AWS_REGION: z.string().trim().min(1),
+    AWS_ENDPOINT_URL: z.union([z.string().url(), z.literal('')]).optional(),
+    AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    SQS_NOTIFICATION_QUEUE_NAME: z.string().trim().min(1).default('zapp-notifications'),
+    SES_NOTIFICATION_SOURCE: z.string().email(),
+    SNS_NOTIFICATION_TOPIC_ARN: z.string().regex(/^arn:[^:]+:sns:[^:]+:[^:]+:[^:]+$/u),
+  })
+  .superRefine((value, context) => {
+    if ((value.AWS_ACCESS_KEY_ID === undefined) !== (value.AWS_SECRET_ACCESS_KEY === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be supplied together',
+      });
+    }
+  });
+
+export interface NotificationEnv extends UsageQueueEnv {
+  readonly source: string;
+  readonly topicArn: string;
+}
+
+export function loadNotificationEnv(source: unknown = process.env): NotificationEnv {
+  const env = defineEnv(NotificationEnvSchema, source);
+  return {
+    region: env.AWS_REGION,
+    ...(env.AWS_ENDPOINT_URL === undefined || env.AWS_ENDPOINT_URL === ''
+      ? {}
+      : { endpoint: env.AWS_ENDPOINT_URL }),
+    ...(env.AWS_ACCESS_KEY_ID === undefined || env.AWS_SECRET_ACCESS_KEY === undefined
+      ? {}
+      : {
+          accessKeyId: env.AWS_ACCESS_KEY_ID,
+          secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+        }),
+    queueName: env.SQS_NOTIFICATION_QUEUE_NAME,
+    source: env.SES_NOTIFICATION_SOURCE,
+    topicArn: env.SNS_NOTIFICATION_TOPIC_ARN,
+  };
+}
+
 const GitHubAppEnvSchema = z.object({
   GITHUB_APP_ID: z.string().trim().min(1),
-  GITHUB_APP_SLUG: z.string().trim().regex(/^[A-Za-z0-9-]+$/u),
+  GITHUB_APP_SLUG: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9-]+$/u),
   GITHUB_APP_PRIVATE_KEY: z.string().min(1),
   GITHUB_APP_CLIENT_ID: z.string().trim().min(1),
   GITHUB_APP_CLIENT_SECRET: z.string().min(1),
@@ -197,9 +291,7 @@ const GitHubWebhookQueueConfigSchema = z
 
 export type GitHubWebhookQueueEnv = z.infer<typeof GitHubWebhookQueueConfigSchema>;
 
-export function loadGitHubWebhookQueueEnv(
-  source: unknown = process.env,
-): GitHubWebhookQueueEnv {
+export function loadGitHubWebhookQueueEnv(source: unknown = process.env): GitHubWebhookQueueEnv {
   const env = defineEnv(GitHubWebhookQueueEnvSchema, source);
   return GitHubWebhookQueueConfigSchema.parse({
     region: env.AWS_REGION,
@@ -294,6 +386,99 @@ export function loadFlexpriceEnv(source: unknown = process.env): FlexpriceEnv | 
   };
 }
 
+/** Production must never silently start without the wallet admission gate. */
+export function requireFlexpriceForEnvironment(
+  environment: Pick<ServiceEnv, 'NODE_ENV'>,
+  flexprice: FlexpriceEnv | undefined,
+): FlexpriceEnv | undefined {
+  if (environment.NODE_ENV === 'production' && flexprice === undefined) {
+    throw new Error('FLEXPRICE_API_KEY is required in production');
+  }
+  return flexprice;
+}
+
+const OptionalBillingValueSchema = z.union([z.string().trim().min(1), z.literal('')]).optional();
+const StripeBillingEnvSchema = z.object({
+  PLATFORM_BILLING_STRIPE_SECRET_KEY: OptionalBillingValueSchema,
+  PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: OptionalBillingValueSchema,
+  STRIPE_PLAN_PRICE_IDS_JSON: OptionalBillingValueSchema,
+  STRIPE_CREDIT_PACK_PRICE_IDS_JSON: OptionalBillingValueSchema,
+  FLEXPRICE_STRIPE_WEBHOOK_URL: z
+    .union([
+      z
+        .string()
+        .url()
+        .refine((value) => /^https:\/\//u.test(value), 'must use HTTPS'),
+      z.literal(''),
+    ])
+    .optional(),
+});
+
+export interface StripeBillingEnv {
+  readonly platformSecretKey: string;
+  readonly webhookSecret: string;
+  readonly prices: StripePriceCatalog;
+  readonly creditPackPrices: StripeCreditPackPriceCatalog;
+  readonly flexpriceStripeWebhookUrl: string;
+}
+
+function parseJsonEnvironmentValue(value: string | undefined, name: string): unknown {
+  try {
+    return JSON.parse(value ?? '');
+  } catch {
+    throw new Error(`${name} must be valid JSON`);
+  }
+}
+
+export function loadStripeBillingEnv(source: unknown = process.env): StripeBillingEnv | undefined {
+  const env = defineEnv(StripeBillingEnvSchema, source);
+  const values = [
+    env.PLATFORM_BILLING_STRIPE_SECRET_KEY,
+    env.PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET,
+    env.STRIPE_PLAN_PRICE_IDS_JSON,
+    env.STRIPE_CREDIT_PACK_PRICE_IDS_JSON,
+    env.FLEXPRICE_STRIPE_WEBHOOK_URL,
+  ];
+  if (
+    values.every((value) => value === undefined || value === '' || value.includes('replace-me'))
+  ) {
+    return undefined;
+  }
+  return {
+    platformSecretKey: StripePlatformSecretSchema.parse(env.PLATFORM_BILLING_STRIPE_SECRET_KEY, {
+      path: ['PLATFORM_BILLING_STRIPE_SECRET_KEY'],
+    }),
+    webhookSecret: StripeWebhookSecretSchema.parse(env.PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET, {
+      path: ['PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET'],
+    }),
+    prices: StripePriceCatalogSchema.parse(
+      parseJsonEnvironmentValue(env.STRIPE_PLAN_PRICE_IDS_JSON, 'STRIPE_PLAN_PRICE_IDS_JSON'),
+      { path: ['STRIPE_PLAN_PRICE_IDS_JSON'] },
+    ),
+    creditPackPrices: StripeCreditPackPriceCatalogSchema.parse(
+      parseJsonEnvironmentValue(
+        env.STRIPE_CREDIT_PACK_PRICE_IDS_JSON,
+        'STRIPE_CREDIT_PACK_PRICE_IDS_JSON',
+      ),
+      { path: ['STRIPE_CREDIT_PACK_PRICE_IDS_JSON'] },
+    ),
+    flexpriceStripeWebhookUrl: z
+      .string()
+      .url()
+      .parse(env.FLEXPRICE_STRIPE_WEBHOOK_URL, { path: ['FLEXPRICE_STRIPE_WEBHOOK_URL'] }),
+  };
+}
+
+export function requireStripeBillingForEnvironment(
+  environment: Pick<ServiceEnv, 'NODE_ENV'>,
+  billing: StripeBillingEnv | undefined,
+): StripeBillingEnv | undefined {
+  if (environment.NODE_ENV === 'production' && billing === undefined) {
+    throw new Error('PLATFORM_BILLING_STRIPE_SECRET_KEY is required in production');
+  }
+  return billing;
+}
+
 /**
  * Cross-instance key for the HMAC stored with durable run intent. There is no
  * default: retries must derive the same digest on every replica, while a
@@ -346,6 +531,18 @@ const ModelGatewayEnvSchema = z.object({
 /** MAC-6's server-to-server completion hop. No browser or desktop receives this credential. */
 export function loadModelGatewayUrl(source: unknown = process.env): string {
   return defineEnv(ModelGatewayEnvSchema, source).MODEL_GATEWAY_URL.replace(/\/+$/u, '');
+}
+
+const VerificationServiceEnvSchema = z.object({
+  VERIFICATION_SERVICE_URL: z.string().url().refine(
+    (value) => /^https?:\/\//u.test(value),
+    'VERIFICATION_SERVICE_URL must use HTTP(S)',
+  ).optional(),
+});
+
+/** CP-24's internal evidence/test read destination; no credential is returned to clients. */
+export function loadVerificationServiceUrl(source: unknown = process.env): string | undefined {
+  return defineEnv(VerificationServiceEnvSchema, source).VERIFICATION_SERVICE_URL?.replace(/\/+$/u, '');
 }
 
 /**

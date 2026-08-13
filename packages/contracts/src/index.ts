@@ -1,5 +1,27 @@
 export { idSchema, newId, type IdPrefix } from './ids.js';
 export {
+  BudgetApprovalReasonSchema,
+  RunApprovalKindSchema,
+  type BudgetApprovalReason,
+  type RunApprovalKind,
+} from './budget-approval.js';
+export {
+  ConversationCardEventPayloadSchema,
+  ConversationCardIdSchema,
+  ConversationCardResponseSchema,
+  ConversationCardSchema,
+  ConversationResponseEventPayloadSchema,
+  type ConversationCard,
+  type ConversationCardResponse,
+} from './conversation-cards.js';
+export {
+  IntegralCreditDecimalSchema,
+  PlanLimitSchema,
+  PlanLimitsConfigSchema,
+  type PlanLimit,
+  type PlanLimitsConfig,
+} from './plan-limits.js';
+export {
   AppPathSchema,
   CommitShaSchema,
   EnvVarsSchema,
@@ -50,11 +72,41 @@ export {
   type ModelIdentifier,
 } from './run-intent.js';
 export {
+  AutonomousWorkflowStartInputSchema,
+  FixWorkflowStartInputSchema,
+  OperationKeySchema,
+  RunBudgetSchema,
+  RunWorkflowStartInputSchema,
+  SignalRunInputSchema,
+  SignalRunResultSchema,
+  StartRunInputSchema,
+  TEMPORAL_RUN_WORKFLOW_TYPES,
+  TemporalRunStartProjectionSchema,
+  WorkflowCreditCapSchema,
+  projectTemporalRunSignal,
+  projectTemporalRunStart,
+  type SignalRunInput,
+  type StartRunInput,
+  type TemporalRunSignalProjection,
+  type TemporalRunStartProjection,
+} from './temporal-run.js';
+export {
   ExecutionContractSchema,
   PackageManagerSchema,
   type ExecutionContract,
   type PackageManager,
 } from './execution-contract.js';
+export {
+  BuilderPreviewDevServerResponseSchema,
+  BuilderPreviewEventSchema,
+  BuilderPreviewLogEntrySchema,
+  BuilderPreviewLogsQuerySchema,
+  BuilderPreviewLogsResponseSchema,
+  type BuilderPreviewDevServerResponse,
+  type BuilderPreviewEvent,
+  type BuilderPreviewLogsQuery,
+  type BuilderPreviewLogsResponse,
+} from './builder-preview.js';
 export {
   RetryPolicySchema,
   TOOL_GROUPS,
@@ -73,6 +125,7 @@ export {
 export {
   CheckpointInputSchema,
   CheckpointKindSchema,
+  CHECKPOINT_KINDS,
   CheckpointRefSchema,
   CleanupFailureResponseSchema,
   CleanupFailureStageSchema,

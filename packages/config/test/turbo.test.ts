@@ -27,6 +27,16 @@ const webManifest = JSON.parse(
 const rootManifest = JSON.parse(
   readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
 ) as PackageManifest;
+const ciWorkflow = readFileSync(
+  new URL('../../../.github/workflows/ci.yml', import.meta.url),
+  'utf8',
+);
+const orchestratorManifest = JSON.parse(
+  readFileSync(
+    new URL('../../../services/orchestrator-worker/package.json', import.meta.url),
+    'utf8',
+  ),
+) as PackageManifest;
 
 describe('Turbo task graph', () => {
   it('runs each package build before its typecheck', () => {
@@ -43,7 +53,9 @@ describe('Turbo task graph', () => {
   });
 
   it('keeps web tests from rebuilding shared dependency artifacts', () => {
-    expect(webManifest.scripts?.['test']).toBe('playwright test');
+    expect(webManifest.scripts?.['test']).toBe(
+      'tsx --test test/next-dev-output.test.ts test/faro.test.ts test/activation.test.ts && playwright test',
+    );
     expect(webManifest.scripts?.['test:e2e']).toBe(
       '../../node_modules/.bin/turbo run test --filter=@zapp/web',
     );
@@ -53,5 +65,19 @@ describe('Turbo task graph', () => {
     expect(rootManifest.scripts?.['verify']).toContain(
       'turbo run test:integration --filter=!@zapp/desktop --concurrency=1',
     );
+    expect(rootManifest.scripts?.['test:integration']).toContain('--concurrency=1');
+    expect(ciWorkflow).toMatch(
+      /name: Integration suites[\s\S]*run: pnpm turbo run test:integration[^\n]*--concurrency=1/u,
+    );
+  });
+
+  it('routes redirect Temporal acceptance through the serial integration lane', () => {
+    expect(orchestratorManifest.scripts?.['test']).toContain(
+      '--exclude test/integration/redirect.test.ts',
+    );
+    expect(orchestratorManifest.scripts?.['test:integration']).toContain(
+      'test/integration/redirect.test.ts',
+    );
+    expect(orchestratorManifest.scripts?.['test:integration']).toContain('--no-file-parallelism');
   });
 });

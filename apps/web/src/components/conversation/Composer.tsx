@@ -1,5 +1,6 @@
 'use client';
 
+import type { BuilderPreviewEvent } from '@zapp/api-client';
 import { Button, IconButton } from '@zapp/ui';
 import Link from 'next/link';
 import {
@@ -13,6 +14,7 @@ import {
 } from 'react';
 
 import type { CreateRunInput } from '../../lib/api';
+import type { SelectedPreviewElement } from '../preview/SelectMode';
 
 const maximumImages = 10;
 const maximumImageBytes = 8 * 1024 * 1024;
@@ -34,12 +36,22 @@ export interface ConversationSubmission {
   readonly files: readonly File[];
   readonly mode: ConversationMode;
   readonly model?: string;
+  readonly selectedElements: readonly SelectedPreviewElement[];
+}
+
+export interface ConversationImageInput {
+  readonly capture?: BuilderPreviewEvent;
+  readonly file: File;
+  readonly id: string;
+  readonly onConsumed?: (accepted: boolean) => void;
+  readonly selection?: SelectedPreviewElement;
 }
 
 export interface ConversationComposerProps {
   readonly active: boolean;
   readonly allowedModels: readonly string[];
   readonly branches: readonly { readonly id: string; readonly name: string }[];
+  readonly incomingImages?: readonly ConversationImageInput[];
   readonly onStop: () => Promise<void>;
   readonly onSubmit: (submission: ConversationSubmission) => Promise<boolean>;
   readonly projectId: string;
@@ -55,8 +67,22 @@ interface ComposerSettings {
 }
 
 interface SelectedImage {
+  readonly capture?: BuilderPreviewEvent;
   readonly file: File;
   readonly id: string;
+  readonly selection?: SelectedPreviewElement;
+}
+
+function captureDescription(event: BuilderPreviewEvent): string {
+  switch (event.type) {
+    case 'console':
+    case 'runtime_error':
+      return event.payload.message;
+    case 'network':
+      return `${event.payload.method} ${String(event.payload.status)} ${event.payload.url}`;
+    case 'route_change':
+      return event.payload.url;
+  }
 }
 
 function settingsKey(projectId: string): string {
@@ -109,6 +135,7 @@ export function Composer({
   active,
   allowedModels,
   branches,
+  incomingImages = [],
   onStop,
   onSubmit,
   projectId,
@@ -116,6 +143,8 @@ export function Composer({
   stopping,
 }: ConversationComposerProps): ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement>(null);
+  const consumedIncomingImagesRef = useRef(new Set<string>());
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [content, setContent] = useState('');
   const [imageError, setImageError] = useState<string>();
@@ -150,30 +179,70 @@ export function Composer({
     setSettings(next);
   };
 
-  const addImages = (files: readonly File[]): void => {
-    const supported = files.filter((file) => supportedImageTypes.has(file.type));
-    const withinSize = supported.filter((file) => file.size > 0 && file.size <= maximumImageBytes);
-    const available = maximumImages - imagesRef.current.length;
-    const accepted = withinSize.slice(0, Math.max(0, available));
-    const nextImages = [
-      ...imagesRef.current,
-      ...accepted.map((file) => ({ file, id: crypto.randomUUID() })),
-    ];
+  const addImages = (
+    inputs: readonly Pick<ConversationImageInput, 'capture' | 'file' | 'selection'>[],
+  ): readonly boolean[] => {
+    let available = maximumImages - imagesRef.current.length;
+    let exceededCapacity = false;
+    let unsupported = false;
+    let invalidSize = false;
+    const results: boolean[] = [];
+    const accepted: SelectedImage[] = [];
+    for (const { capture, file, selection } of inputs) {
+      if (!supportedImageTypes.has(file.type)) {
+        unsupported = true;
+        results.push(false);
+        continue;
+      }
+      if (file.size <= 0 || file.size > maximumImageBytes) {
+        invalidSize = true;
+        results.push(false);
+        continue;
+      }
+      if (available <= 0) {
+        exceededCapacity = true;
+        results.push(false);
+        continue;
+      }
+      available -= 1;
+      results.push(true);
+      accepted.push({
+        ...(capture === undefined ? {} : { capture }),
+        file,
+        id: crypto.randomUUID(),
+        ...(selection === undefined ? {} : { selection }),
+      });
+    }
+    const nextImages = [...imagesRef.current, ...accepted];
     imagesRef.current = nextImages;
     setImages(nextImages);
-    if (files.length > available) {
+    if (exceededCapacity) {
       setImageError('You can attach up to 10 images.');
-    } else if (supported.length !== files.length) {
+    } else if (unsupported) {
       setImageError('Use PNG, JPEG, WebP, or GIF images.');
-    } else if (withinSize.length !== supported.length) {
+    } else if (invalidSize) {
       setImageError('Each image must be between 1 byte and 8 MiB.');
     } else {
       setImageError(undefined);
     }
+    return results;
   };
 
+  useEffect(() => {
+    const fresh = incomingImages.filter(
+      (image) => !consumedIncomingImagesRef.current.has(image.id),
+    );
+    if (fresh.length === 0) return;
+    const results = addImages(fresh);
+    fresh.forEach((image, index) => {
+      consumedIncomingImagesRef.current.add(image.id);
+      image.onConsumed?.(results[index] === true);
+    });
+    if (results.some(Boolean)) messageInputRef.current?.focus();
+  }, [incomingImages]);
+
   const chooseFiles = (event: ChangeEvent<HTMLInputElement>): void => {
-    addImages(Array.from(event.currentTarget.files ?? []));
+    addImages(Array.from(event.currentTarget.files ?? [], (file) => ({ file })));
     event.currentTarget.value = '';
   };
 
@@ -183,7 +252,7 @@ export function Composer({
     );
     if (files.length === 0) return;
     event.preventDefault();
-    addImages(files);
+    addImages(files.map((file) => ({ file })));
   };
 
   const submit = async (event: SyntheticEvent<HTMLFormElement, SubmitEvent>): Promise<void> => {
@@ -197,6 +266,9 @@ export function Composer({
       files: images.map(({ file }) => file),
       mode: settings.mode,
       ...(settings.model === undefined ? {} : { model: settings.model }),
+      selectedElements: images.flatMap((image) =>
+        image.selection === undefined ? [] : [image.selection],
+      ),
     });
     if (!sent) return;
     setContent('');
@@ -207,26 +279,56 @@ export function Composer({
 
   return (
     <form className="zapp-conversation-composer" onSubmit={(event) => void submit(event)}>
-      <div aria-label="Attached images" className="zapp-conversation-images">
-        {images.map((image) => (
-          <span className="zapp-conversation-image-chip" key={image.id}>
-            {image.file.name}
-            <button
-              aria-label={`Remove ${image.file.name}`}
-              onClick={() => {
-                const nextImages = imagesRef.current.filter(
-                  (candidate) => candidate.id !== image.id,
-                );
-                imagesRef.current = nextImages;
-                setImages(nextImages);
-                setImageError(undefined);
-              }}
-              type="button"
-            >
-              ×
-            </button>
-          </span>
-        ))}
+      <div aria-label="Attached images" className="zapp-conversation-images" role="list">
+        {images
+          .filter((image) => image.selection === undefined)
+          .map((image) => (
+            <span className="zapp-conversation-image-chip" key={image.id} role="listitem">
+              {image.file.name}
+              {image.capture === undefined ? null : ` · ${captureDescription(image.capture)}`}
+              <button
+                aria-label={`Remove ${image.file.name}`}
+                onClick={() => {
+                  const nextImages = imagesRef.current.filter(
+                    (candidate) => candidate.id !== image.id,
+                  );
+                  imagesRef.current = nextImages;
+                  setImages(nextImages);
+                  setImageError(undefined);
+                }}
+                type="button"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+      </div>
+      <div aria-label="Attached selections" className="zapp-conversation-images" role="list">
+        {images
+          .filter((image) => image.selection !== undefined)
+          .map((image) => {
+            const selection = image.selection;
+            if (selection === undefined) return null;
+            return (
+              <span className="zapp-conversation-image-chip" key={image.id} role="listitem">
+                {`Selected: <${selection.componentHint}> '${selection.text}' on ${selection.path}`}
+                <button
+                  aria-label={`Remove selected ${selection.componentHint} ${selection.text}`}
+                  onClick={() => {
+                    const nextImages = imagesRef.current.filter(
+                      (candidate) => candidate.id !== image.id,
+                    );
+                    imagesRef.current = nextImages;
+                    setImages(nextImages);
+                    setImageError(undefined);
+                  }}
+                  type="button"
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
       </div>
       {imageError === undefined ? null : <p role="alert">{imageError}</p>}
       <label className="zapp-sr-only" htmlFor="conversation-message">
@@ -240,6 +342,7 @@ export function Composer({
         }}
         onPaste={pasteImages}
         placeholder="Ask for a change or tell the agent what to do next…"
+        ref={messageInputRef}
         rows={3}
         value={content}
       />

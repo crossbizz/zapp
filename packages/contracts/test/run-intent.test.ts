@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   APP_TYPES,
   AppTypeSchema,
+  FixRequestSchema,
   ModelIdentifierSchema,
   type AppType,
   type ModelIdentifier,
@@ -25,6 +26,10 @@ describe('structured run intent', () => {
     expect(() => ModelIdentifierSchema.parse(' model with spaces ')).toThrow();
     expect(() => ModelIdentifierSchema.parse('')).toThrow();
     expect(() => ModelIdentifierSchema.parse(`a${'b'.repeat(160)}`)).toThrow();
+  });
+
+  it('remains composable at service boundaries that extend the Fix request', () => {
+    expect(() => FixRequestSchema.extend({ requestId: z.string() })).not.toThrow();
   });
 
   it('infers both public types from their schemas', () => {

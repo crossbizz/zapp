@@ -66,6 +66,10 @@ const NON_PRD_TABLES = new Map([
     'the database lease that makes active-run credit reconciliation single-leader and bounded as required by plan 10 OPS-1A',
   ],
   [
+    'credit_exhaustion_episodes',
+    'durable per-organization exhaustion operation identity and bounded delivery cursor required by plan 10 OPS-3-FIX-1',
+  ],
+  [
     'desktop_local_agent_sessions',
     'the tenant/user-scoped bridge from a desktop-local transcript to server-owned project, run, task, and accounting identities required by plan 09 MAC-6',
   ],
@@ -85,6 +89,54 @@ const NON_PRD_TABLES = new Map([
     'github_import_outbox',
     'the transactional one-stage-per-delivery SQS outbox required by plan 06 INT-2 and ADR-0028',
   ],
+  [
+    'sandbox_snapshot_measurements',
+    'the durable logical-byte inventory captured at snapshot creation because Modal 0.9.0 exposes no authoritative snapshot size API, required by ADR-0030 and plan 10 OPS-2',
+  ],
+  [
+    'usage_reconciliation_corrections',
+    'the idempotent durable Flexprice correction journal required by plan 10 OPS-2 so reconciliation retries cannot double-adjust vendor aggregates',
+  ],
+  [
+    'trial_credit_grants',
+    'the durable organization trial delivery journal and structural per-user abuse guard required by plan 10 OPS-5',
+  ],
+  [
+    'incidents',
+    'the durable production-error to AR-19 Fix-run and resolving-release linkage required by PRD §29.4 and plan 10 OPS-11',
+  ],
+  [
+    'project_deletions',
+    'the durable cross-store deletion state and post-project polling proof required by PRD §31.4 and plan 02 CP-17',
+  ],
+  [
+    'artifact_retention',
+    'the closed expirable-artifact classification required by ADR-0031 and plan 02 CP-17 so release evidence cannot be selected by a name heuristic',
+  ],
+  [
+    'deployment_events',
+    'the append-only eight-stage replay and terminal-success projection required by plan 07 DEP-14',
+  ],
+  [
+    'deployment_action_requests',
+    'the durable idempotency claim for safe readiness and deployment actions required by plan 07 DEP-14',
+  ],
+  [
+    'environment_domains',
+    'the provider-neutral DNS and managed-SSL verification state required by plan 07 DEP-10 and exposed by DEP-14',
+  ],
+  [
+    'production_health_results',
+    'append-only production health evidence history required by plan 07 DEP-15',
+  ],
+  [
+    'synthetic_check_results',
+    'immutable per-run synthetic result history and retention evidence required by plan 07 DEP-11 and exposed by DEP-15',
+  ],
+  [
+    'release_annotations',
+    'durable Grafana/PostHog monitoring annotation links required by plan 07 DEP-8 and exposed by DEP-15',
+  ],
 ]);
 
 /**
@@ -99,12 +151,28 @@ const NON_PRD_TABLES = new Map([
  */
 const NON_PRD_COLUMNS = new Map([
   [
+    'agent_runs.plan_max_credits',
+    'immutable resolved plan ceiling required by plan 10 OPS-3-FIX-1 so retries, continuation, and approvals cannot drift after a plan change',
+  ],
+  [
     'users.external_id',
     'platform identity link (Stytch member id); PRD §23.1 predates the identity-provider decision (ADR-0001)',
   ],
   [
     'organizations.settings_json',
     'durable organization settings for CP-12 and its configurable deploy policy; accepted physical-schema extension in ADR-0004',
+  ],
+  [
+    'organizations.deletion_requested_at',
+    'durable organization deletion fence required by plan 02 CP-17 so a concurrent project create cannot enter after cascade enumeration',
+  ],
+  [
+    'usage_ledger.operation_key',
+    'caller-supplied stable operation identity required by plan 10 OPS-1B so an append retry returns its original immutable ledger row and outbox event',
+  ],
+  [
+    'usage_ledger.metadata',
+    'correction_of metadata required by plan 10 OPS-1B to make negative compensating ledger entries traceable without ever mutating the original row',
   ],
   [
     'secret_metadata.key_version',
@@ -132,6 +200,25 @@ const NON_PRD_COLUMNS = new Map([
       [
         `workspaces.${column}`,
         'durable Modal attachment attribution and single-owner preview failure observation required by plan 03 WS-13',
+      ] as const,
+  ),
+  ...[
+    'usage_operation_key',
+    'usage_last_sample_at',
+    'usage_last_cpu_micros',
+    'usage_cpu_seconds',
+    'usage_memory_gib_seconds',
+    'usage_cpu_second_usd',
+    'usage_memory_gib_second_usd',
+    'usage_credits_per_usd',
+    'usage_finalized_at',
+    'usage_cpu_delivered_at',
+    'usage_memory_delivered_at',
+  ].map(
+    (column) =>
+      [
+        `workspaces.${column}`,
+        'durable provider sampling, finalization, and per-category delivery state required by plan 10 OPS-2 so CPU/memory metering survives sandbox-service restarts',
       ] as const,
   ),
   [

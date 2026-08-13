@@ -1,4 +1,5 @@
 import type { Database } from '@zapp/db';
+import { createTemplateRegistry } from '@zapp/config';
 import { describe, expect, it } from 'vitest';
 
 import { composeApp } from '../src/compose.js';
@@ -36,6 +37,13 @@ function deployed() {
     // The composition needs a handle; nothing in this suite reaches a query,
     // because every assertion is answered before a route touches the database.
     database: unusedDatabase(),
+    templates: createTemplateRegistry([{
+      slug: 'next-starter', name: 'Next.js Starter', description: 'A starter.',
+      pagesIncluded: ['Home'], highlights: ['TypeScript'],
+      demoUrl: 'https://templates.zapp.build/next-starter/a57bb2926674/',
+      stack: ['Next.js'], repoRef: 'https://github.com/dyad-sh/nextjs-template.git',
+      commitSha: 'a57bb2926674275a84f651c64e5c995a42519b5e',
+    }]),
   });
 }
 
@@ -109,6 +117,13 @@ describe('the deployed composition', () => {
         forgejo: { baseUrl: 'http://127.0.0.1:1', adminToken: 'x', timeoutMs: 100 },
         serviceTokens: { secret: `${SERVICE_SECRET}-different` },
         database: unusedDatabase(),
+        templates: createTemplateRegistry([{
+          slug: 'next-starter', name: 'Next.js Starter', description: 'A starter.',
+          pagesIncluded: ['Home'], highlights: ['TypeScript'],
+          demoUrl: 'https://templates.zapp.build/next-starter/a57bb2926674/',
+          stack: ['Next.js'], repoRef: 'https://github.com/dyad-sh/nextjs-template.git',
+          commitSha: 'a57bb2926674275a84f651c64e5c995a42519b5e',
+        }]),
       });
       try {
         const response = await wrongSecretApp.inject({

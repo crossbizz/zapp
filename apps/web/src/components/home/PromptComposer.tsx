@@ -13,6 +13,7 @@ import {
 } from 'react';
 
 import { createControlPlaneClient, type CreateRunInput } from '../../lib/api';
+import { captureProjectCreated } from '../../lib/activation';
 import { rememberFirstPrompt } from '../../lib/prompt-handoff';
 import styles from './home.module.css';
 
@@ -203,6 +204,7 @@ export function PromptComposer({
         pending.projectBody,
         pending.projectIdempotencyKey,
       );
+      captureProjectCreated({ organizationId, projectId: created.project.id });
       const requestedBranch = pending.requestedBranch || created.repository.defaultBranch;
       const branch = created.branches.find((candidate) => candidate.name === requestedBranch);
       if (branch === undefined) throw new RangeError('target_branch_not_found');

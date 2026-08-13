@@ -29,6 +29,7 @@ function workflowInput(runId = id('run')): RunWorkflowInput {
     model: null,
     prompt: 'Exercise the AR-9 workflow phases.',
     budget: null,
+    planMaxCredits: 1000,
     operationKey: `op_${'a'.repeat(64)}`,
   };
 }

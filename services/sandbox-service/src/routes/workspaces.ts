@@ -1,5 +1,6 @@
 import {
   CreateWorkspaceInputSchema,
+  CheckpointKindSchema,
   ExecutionContractSchema,
   ExecInputSchema,
   EnvVarsSchema,
@@ -13,11 +14,13 @@ import {
   type CreateWorkspaceInput,
   type ExecutionContract,
   type ExecInput,
+  type NetworkPolicyInput,
   type PreviewLifecycleEvent,
   type WorkspaceHandle,
   type WorkspacePurpose,
   type WorkspaceStatus,
 } from '@zapp/contracts';
+import { withObservabilitySpan } from '@zapp/config';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -36,6 +39,8 @@ import {
   type ModalWorkspaceAttachment,
 } from '../provider/modal.js';
 import { BranchLockedResponseSchema } from '../provider/volumes.js';
+import type { ActiveCostRecording } from '../cost/recorder.js';
+import type { CheckpointRecord } from '../checkpoint/service.js';
 import {
   assertSandboxEnvironment,
   createSecretStreamRedactor,
@@ -43,6 +48,11 @@ import {
   type ScopedSecretInjector,
   type SecretRegistry,
 } from '../secrets/injector.js';
+import {
+  MAX_EDITOR_FILE_BYTES,
+  MAX_EDITOR_LIST_ENTRIES,
+  createWorkspaceFileEditor,
+} from '../workspace-files.js';
 
 const OperationKeySchema = z.string().regex(/^op_[a-f0-9]{64}$/u);
 
@@ -162,9 +172,20 @@ export interface WorkspaceLifecycleProvider {
   ): Promise<WorkspaceHandle>;
   terminateWorkspace(providerWorkspaceId: string): Promise<void>;
   getStatus(providerWorkspaceId: string): Promise<WorkspaceStatus>;
+  updateNetworkPolicy(input: NetworkPolicyInput): Promise<void>;
 }
 
 export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
+  measureProjectVolumeBytes?(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+  }): Promise<string>;
+  snapshotWorkspace?(
+    providerWorkspaceId: string,
+    ttlMs: number,
+  ): Promise<{ providerSnapshotId: string; logicalBytes: string; expiresAt: string }>;
+  deleteSnapshot?(providerSnapshotId: string): Promise<void>;
+  snapshotExists?(providerSnapshotId: string): Promise<boolean>;
   resolvePreviewTunnel?(providerWorkspaceId: string): Promise<URL>;
   exec(input: ExecInput, idempotencyKey?: string): Promise<z.infer<typeof ExecResultSchema>>;
   execStream(
@@ -172,11 +193,29 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
     idempotencyKey?: string,
     signal?: AbortSignal,
   ): AsyncIterable<z.infer<typeof ExecStreamRecordSchema>>;
-  killExec(providerWorkspaceId: string, pid: number, executionId: string, idempotencyKey?: string): Promise<z.infer<typeof KillResponseSchema>>;
+  killExec(
+    providerWorkspaceId: string,
+    pid: number,
+    executionId: string,
+    idempotencyKey?: string,
+  ): Promise<z.infer<typeof KillResponseSchema>>;
   readFile(providerWorkspaceId: string, path: string): Promise<Uint8Array>;
-  writeFile(providerWorkspaceId: string, path: string, data: Uint8Array, idempotencyKey?: string): Promise<void>;
-  listFiles(providerWorkspaceId: string, path: string, options?: { glob?: string; maxDepth?: number }): Promise<z.infer<typeof FileListResponseSchema>>;
-  git(providerWorkspaceId: string, input: unknown, idempotencyKey?: string): Promise<z.infer<typeof GitResponseSchema>>;
+  writeFile(
+    providerWorkspaceId: string,
+    path: string,
+    data: Uint8Array,
+    idempotencyKey?: string,
+  ): Promise<void>;
+  listFiles(
+    providerWorkspaceId: string,
+    path: string,
+    options?: { glob?: string; maxDepth?: number },
+  ): Promise<z.infer<typeof FileListResponseSchema>>;
+  git(
+    providerWorkspaceId: string,
+    input: unknown,
+    idempotencyKey?: string,
+  ): Promise<z.infer<typeof GitResponseSchema>>;
   health(providerWorkspaceId: string): Promise<z.infer<typeof HealthResponseSchema>>;
   metrics(providerWorkspaceId: string): Promise<z.infer<typeof MetricsResponseSchema>>;
   readFileForUpdate(providerWorkspaceId: string, path: string): Promise<unknown>;
@@ -186,10 +225,22 @@ export interface WorkspaceAgentProvider extends WorkspaceLifecycleProvider {
     idempotencyKey?: string,
   ): Promise<void>;
   search(providerWorkspaceId: string, input: unknown): Promise<z.infer<typeof ExecResultSchema>>;
-  deleteFile(providerWorkspaceId: string, path: string, idempotencyKey?: string): Promise<{ alreadyAbsent: boolean }>;
+  deleteFile(
+    providerWorkspaceId: string,
+    path: string,
+    idempotencyKey?: string,
+  ): Promise<{ alreadyAbsent: boolean }>;
   renameFile(providerWorkspaceId: string, input: unknown, idempotencyKey?: string): Promise<void>;
-  startDevServer(providerWorkspaceId: string, contract: ExecutionContract, idempotencyKey?: string): Promise<z.infer<typeof DevServerResponseSchema>>;
-  restartDevServer(providerWorkspaceId: string, contract: ExecutionContract, idempotencyKey?: string): Promise<z.infer<typeof DevServerResponseSchema>>;
+  startDevServer(
+    providerWorkspaceId: string,
+    contract: ExecutionContract,
+    idempotencyKey?: string,
+  ): Promise<z.infer<typeof DevServerResponseSchema>>;
+  restartDevServer(
+    providerWorkspaceId: string,
+    contract: ExecutionContract,
+    idempotencyKey?: string,
+  ): Promise<z.infer<typeof DevServerResponseSchema>>;
   readDevServerLogs(
     providerWorkspaceId: string,
     query: z.infer<typeof DevServerLogsQuerySchema>,
@@ -223,7 +274,20 @@ const WorkspaceScopeHeadersSchema = z
   })
   .strict();
 const WorkspaceParamsSchema = z.object({ workspaceId: idSchema('ws') }).strict();
+const ProjectParamsSchema = z.object({ projectId: idSchema('proj') }).strict();
+const StorageMeasurementSchema = z
+  .object({
+    snapshotBytes: z.string().regex(/^\d+$/u),
+    volumeBytes: z.string().regex(/^\d+$/u),
+  })
+  .strict();
 const TerminateBodySchema = z.object({ operationKey: OperationKeySchema }).strict();
+const CheckpointBodySchema = z
+  .object({ kind: CheckpointKindSchema, operationKey: OperationKeySchema })
+  .strict();
+const CheckpointResponseSchema = z
+  .object({ snapshotRef: z.string().regex(/^ckpt_[a-f0-9]{64}$/u) })
+  .strict();
 const AttachBodySchema = TerminateBodySchema;
 const OrganizationParamsSchema = z.object({ organizationId: idSchema('org') }).strict();
 const TerminateAllBodySchema = z
@@ -252,12 +316,17 @@ const SecretExecScopeSchema = z
     secretIds: z.array(idSchema('sec')).min(1).max(200),
   })
   .strict();
-const ExecCommandBodySchema = ExecInputSchema.omit({ providerWorkspaceId: true, env: true }).strip();
-const ExecBodySchema = ExecCommandBodySchema
-  .extend({ secretScope: SecretExecScopeSchema.optional() })
-  .strict();
+const ExecCommandBodySchema = ExecInputSchema.omit({
+  providerWorkspaceId: true,
+  env: true,
+}).strip();
+const ExecBodySchema = ExecCommandBodySchema.extend({
+  secretScope: SecretExecScopeSchema.optional(),
+}).strict();
 const ExecQuerySchema = z.object({ stream: z.literal('1').optional() }).strict();
-const ExecParamsSchema = WorkspaceParamsSchema.extend({ pid: z.coerce.number().int().positive() }).strict();
+const ExecParamsSchema = WorkspaceParamsSchema.extend({
+  pid: z.coerce.number().int().positive(),
+}).strict();
 const KillBodySchema = z.object({ executionId: z.string().uuid() }).strict();
 const FileQuerySchema = z.object({ path: z.string().min(1) }).strict();
 const ListQuerySchema = z
@@ -267,6 +336,41 @@ const ListQuerySchema = z
     maxDepth: z.coerce.number().int().min(0).max(100).optional(),
   })
   .strict();
+const EditorPathSchema = z.string().min(1).max(1_024);
+const EditorListQuerySchema = z
+  .object({
+    path: EditorPathSchema.default('.'),
+    glob: z.string().min(1).max(256).optional(),
+    maxDepth: z.coerce.number().int().min(0).max(100).optional(),
+  })
+  .strict();
+const EditorReadQuerySchema = z.object({ path: EditorPathSchema }).strict();
+const EditorListResponseSchema = z.object({
+  entries: z.array(
+    z.object({ path: z.string().max(1_024), type: z.enum(['file', 'directory', 'symlink']) }).strict(),
+  ).max(MAX_EDITOR_LIST_ENTRIES),
+  truncated: z.boolean(),
+}).strict();
+const EditorReadResponseSchema = z.object({
+  path: EditorPathSchema,
+  dataBase64: z.string().max(Math.ceil(MAX_EDITOR_FILE_BYTES / 3) * 4),
+  byteSize: z.number().int().nonnegative().max(MAX_EDITOR_FILE_BYTES),
+  compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+}).strict();
+const EditorEditBodySchema = z.object({
+  path: EditorPathSchema,
+  dataBase64: z.string()
+    .max(Math.ceil(MAX_EDITOR_FILE_BYTES / 3) * 4)
+    .refine((value) => Buffer.from(value, 'base64').toString('base64') === value, 'Expected canonical base64')
+    .refine((value) => Buffer.from(value, 'base64').byteLength <= MAX_EDITOR_FILE_BYTES, 'File is too large'),
+  expectedCompareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+  actorUserId: idSchema('user'),
+}).strict();
+const EditorEditResponseSchema = z.object({
+  path: EditorPathSchema,
+  commitRef: z.string().regex(/^[0-9a-f]{7,64}$/u),
+  compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+}).strict();
 const GitBodySchema = z.discriminatedUnion('operation', [
   z
     .object({
@@ -275,7 +379,11 @@ const GitBodySchema = z.discriminatedUnion('operation', [
     })
     .strict(),
   z
-    .object({ operation: z.literal('add_commit'), paths: z.array(z.string()).min(1), message: z.string().min(1) })
+    .object({
+      operation: z.literal('add_commit'),
+      paths: z.array(z.string()).min(1),
+      message: z.string().min(1),
+    })
     .strict(),
 ]);
 const AtomicWriteBodySchema = z
@@ -285,10 +393,12 @@ const AtomicWriteBodySchema = z
         z
           .object({
             path: z.string().min(1),
-            dataBase64: z.string().refine(
-              (value) => Buffer.from(value, 'base64').toString('base64') === value,
-              'Expected canonical base64',
-            ),
+            dataBase64: z
+              .string()
+              .refine(
+                (value) => Buffer.from(value, 'base64').toString('base64') === value,
+                'Expected canonical base64',
+              ),
             expectedRevision: z.string().min(1).optional(),
           })
           .strict(),
@@ -306,7 +416,11 @@ const SearchBodySchema = z
   })
   .strict();
 const RenameBodySchema = z
-  .object({ source: z.string().min(1), destination: z.string().min(1), overwrite: z.literal('replace') })
+  .object({
+    source: z.string().min(1),
+    destination: z.string().min(1),
+    overwrite: z.literal('replace'),
+  })
   .strict();
 const DevServerBodySchema = z.object({ contract: ExecutionContractSchema }).strict();
 const ExecResultSchema = z
@@ -319,9 +433,26 @@ const ExecResultSchema = z
   })
   .strict();
 const ExecStreamRecordSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('started'), pid: z.number().int().positive(), executionId: z.string().uuid(), at: z.string().datetime() }).strict(),
-  z.object({ type: z.enum(['stdout', 'stderr']), data: z.string(), at: z.string().datetime() }).strict(),
-  z.object({ type: z.literal('exit'), exitCode: z.number().int(), durationMs: z.number().nonnegative(), truncated: z.boolean(), at: z.string().datetime() }).strict(),
+  z
+    .object({
+      type: z.literal('started'),
+      pid: z.number().int().positive(),
+      executionId: z.string().uuid(),
+      at: z.string().datetime(),
+    })
+    .strict(),
+  z
+    .object({ type: z.enum(['stdout', 'stderr']), data: z.string(), at: z.string().datetime() })
+    .strict(),
+  z
+    .object({
+      type: z.literal('exit'),
+      exitCode: z.number().int(),
+      durationMs: z.number().nonnegative(),
+      truncated: z.boolean(),
+      at: z.string().datetime(),
+    })
+    .strict(),
 ]);
 const KillResponseSchema = z.object({ killed: z.boolean() }).strict();
 const FileListResponseSchema = z.array(
@@ -350,7 +481,9 @@ const MetricsResponseSchema = z
   .object({
     at: z.string().datetime(),
     activeChildren: z.number().int().nonnegative(),
-    cpu: z.object({ userMicros: z.number().nonnegative(), systemMicros: z.number().nonnegative() }).strict(),
+    cpu: z
+      .object({ userMicros: z.number().nonnegative(), systemMicros: z.number().nonnegative() })
+      .strict(),
     memory: z
       .object({
         rssBytes: z.number().nonnegative(),
@@ -363,9 +496,7 @@ const MetricsResponseSchema = z
   })
   .strict();
 const OkResponseSchema = z.object({ ok: z.literal(true) }).strict();
-const DeleteResponseSchema = z
-  .object({ ok: z.literal(true), alreadyAbsent: z.boolean() })
-  .strict();
+const DeleteResponseSchema = z.object({ ok: z.literal(true), alreadyAbsent: z.boolean() }).strict();
 const DevServerResponseSchema = z
   .object({
     port: z.number().int().min(1).max(65_535),
@@ -460,16 +591,86 @@ export function registerWorkspaceRoutes(
     readonly previewMonitorStandbyPollIntervalMs?: number;
     readonly previewFailurePollIntervalMs?: number;
     readonly now: () => Date;
+    readonly storageMeasurements?: {
+      measureProjectBytes(input: {
+        readonly organizationId: string;
+        readonly projectId: string;
+      }): Promise<unknown>;
+    };
+    readonly snapshotDeletion?: {
+      remove(input: { readonly organizationId: string; readonly projectId: string }): Promise<void>;
+      absent(input: { readonly organizationId: string; readonly projectId: string }): Promise<boolean>;
+    };
+    readonly checkpointService?: {
+      checkpoint(input: unknown): Promise<CheckpointRecord>;
+    };
+    readonly costRecorder?: {
+      start(input: {
+        readonly workspaceId: string;
+        readonly providerWorkspaceId: string;
+        readonly organizationId: string;
+        readonly projectId: string;
+        readonly runId: string;
+        readonly taskId: string;
+        readonly operationKey?: string;
+        readonly profile: string;
+      }): Promise<ActiveCostRecording>;
+    };
   },
 ): void {
+  const fileEditor = createWorkspaceFileEditor(deps.provider);
   const failureMonitors = new Map<
     string,
     { readonly controller: AbortController; readonly leaseToken: string }
   >();
   const failureMonitorClaims = new Set<string>();
+  const activeCostRecordings = new Map<string, ActiveCostRecording>();
+  const costRecordingStarts = new Map<string, Promise<ActiveCostRecording | undefined>>();
+  const lifecycle = { closing: false };
+  const ensureCostRecording = async (
+    record: WorkspaceAttachmentRecord,
+    operationKey?: string,
+  ): Promise<ActiveCostRecording | undefined> => {
+    if (deps.costRecorder === undefined || record.row.providerWorkspaceId === null) {
+      return undefined;
+    }
+    const current = activeCostRecordings.get(record.row.id);
+    if (current !== undefined) return current;
+    const pending = costRecordingStarts.get(record.row.id);
+    if (pending !== undefined) return await pending;
+    const providerWorkspaceId = record.row.providerWorkspaceId;
+    const costRecorder = deps.costRecorder;
+    const start = (async () => {
+      const recording = await costRecorder.start({
+        workspaceId: record.row.id,
+        providerWorkspaceId,
+        organizationId: record.row.organizationId,
+        projectId: record.row.projectId,
+        runId: record.attachment.requiredTags.run_id,
+        taskId: record.attachment.requiredTags.task_id,
+        ...(operationKey === undefined ? {} : { operationKey }),
+        profile: record.row.resourceProfile,
+      });
+      if (lifecycle.closing) {
+        await recording.close();
+        return undefined;
+      }
+      activeCostRecordings.set(record.row.id, recording);
+      return recording;
+    })();
+    costRecordingStarts.set(record.row.id, start);
+    try {
+      return await start;
+    } finally {
+      if (costRecordingStarts.get(record.row.id) === start) {
+        costRecordingStarts.delete(record.row.id);
+      }
+    }
+  };
   const acquisitionController = new AbortController();
   let acquisitionLoop: Promise<void> | undefined;
-  const lifecycle = { closing: false };
+  const costRecoveryController = new AbortController();
+  let costRecoveryLoop: Promise<void> | undefined;
   app.addHook('onReady', () => {
     deps.governor.start();
   });
@@ -480,8 +681,9 @@ export function registerWorkspaceRoutes(
   const previewMonitorLeaseMs = deps.previewMonitorLeaseMs ?? 5_000;
   const previewMonitorStandbyPollIntervalMs =
     deps.previewMonitorStandbyPollIntervalMs ?? Math.max(250, previewMonitorLeaseMs / 2);
-  const waitFor = (milliseconds: number, signal: AbortSignal): Promise<boolean> =>
-    new Promise((resolve) => {
+  const waitFor = (milliseconds: number, signal: AbortSignal): Promise<boolean> => {
+    if (signal.aborted) return Promise.resolve(true);
+    return new Promise((resolve) => {
       const onAbort = (): void => {
         clearTimeout(timeout);
         resolve(true);
@@ -492,19 +694,35 @@ export function registerWorkspaceRoutes(
       }, milliseconds);
       signal.addEventListener('abort', onAbort, { once: true });
     });
+  };
   const waitForPoll = (signal: AbortSignal): Promise<boolean> =>
     waitFor(deps.previewFailurePollIntervalMs ?? 1_000, signal);
+  const settleOrAbort = async <T>(promise: Promise<T>, signal: AbortSignal): Promise<T> => {
+    if (signal.aborted) throw new Error('cost recording recovery aborted');
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => {
+        reject(new Error('cost recording recovery aborted'));
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      void promise.then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', onAbort);
+          reject(error instanceof Error ? error : new Error('cost recording recovery failed'));
+        },
+      );
+    });
+  };
   const resolveWorkspace = async (
     workspaceId: string,
     request: FastifyRequest,
   ): Promise<WorkspaceLifecycleRow> => {
     const scope = readWorkspaceScope(request);
     const row = await deps.rows.get(workspaceId, scope.organizationId, scope.projectId);
-    if (
-      row === undefined ||
-      row.providerWorkspaceId === null ||
-      row.status === 'terminated'
-    ) {
+    if (row === undefined || row.providerWorkspaceId === null || row.status === 'terminated') {
       throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
     }
     return row;
@@ -593,9 +811,7 @@ export function registerWorkspaceRoutes(
     }
     if (isClosing() || failureMonitorClaims.has(record.row.id)) return;
     failureMonitorClaims.add(record.row.id);
-    let monitor:
-      | { readonly controller: AbortController; readonly leaseToken: string }
-      | undefined;
+    let monitor: { readonly controller: AbortController; readonly leaseToken: string } | undefined;
     try {
       const leaseToken = await (activate
         ? deps.previewMonitors.activateAndClaim(
@@ -625,11 +841,7 @@ export function registerWorkspaceRoutes(
         if (await waitForPoll(controller.signal)) return;
         try {
           if (
-            !(await deps.previewMonitors.renew(
-              record.row.id,
-              leaseToken,
-              previewMonitorLeaseMs,
-            ))
+            !(await deps.previewMonitors.renew(record.row.id, leaseToken, previewMonitorLeaseMs))
           ) {
             return;
           }
@@ -641,11 +853,7 @@ export function registerWorkspaceRoutes(
           );
           cursor = page.nextCursor;
           if (
-            !(await deps.previewMonitors.renew(
-              record.row.id,
-              leaseToken,
-              previewMonitorLeaseMs,
-            ))
+            !(await deps.previewMonitors.renew(record.row.id, leaseToken, previewMonitorLeaseMs))
           ) {
             return;
           }
@@ -681,16 +889,40 @@ export function registerWorkspaceRoutes(
       }
     }
   };
+  const recoverCostRecordings = async (signal: AbortSignal): Promise<void> => {
+    const records = await settleOrAbort(deps.rows.listAttachments(), signal);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(8, records.length) }, async (): Promise<void> => {
+      while (!signal.aborted) {
+        const record = records[cursor];
+        cursor += 1;
+        if (record === undefined) return;
+        try {
+          await settleOrAbort(ensureCostRecording(record), signal);
+        } catch {
+          // Durable rows remain discoverable and are retried on the next pass.
+        }
+      }
+    });
+    await Promise.all(workers);
+  };
   app.addHook('onReady', async () => {
+    if (deps.costRecorder !== undefined) {
+      costRecoveryLoop = (async () => {
+        while (!costRecoveryController.signal.aborted) {
+          try {
+            await recoverCostRecordings(costRecoveryController.signal);
+          } catch {
+            // Startup/readiness does not inherit a transient provider or DB outage.
+          }
+          if (await waitFor(1_000, costRecoveryController.signal)) return;
+        }
+      })();
+    }
     await acquireEnabledFailureMonitors();
     acquisitionLoop = (async () => {
       while (!acquisitionController.signal.aborted) {
-        if (
-          await waitFor(
-            previewMonitorStandbyPollIntervalMs,
-            acquisitionController.signal,
-          )
-        ) {
+        if (await waitFor(previewMonitorStandbyPollIntervalMs, acquisitionController.signal)) {
           return;
         }
         try {
@@ -704,7 +936,9 @@ export function registerWorkspaceRoutes(
   });
   app.addHook('onClose', async () => {
     lifecycle.closing = true;
+    costRecoveryController.abort();
     acquisitionController.abort();
+    await costRecoveryLoop;
     await acquisitionLoop;
     const monitors = [...failureMonitors.entries()];
     for (const { controller } of failureMonitors.values()) controller.abort();
@@ -714,7 +948,128 @@ export function registerWorkspaceRoutes(
         await deps.previewMonitors.release(workspaceId, leaseToken);
       }),
     );
+    const recordings = [...activeCostRecordings.values()];
+    activeCostRecordings.clear();
+    await Promise.all(recordings.map(async (recording) => recording.close()));
   });
+  if (deps.storageMeasurements !== undefined) {
+    app.get(
+      '/internal/projects/:projectId/storage-measurement',
+      {
+        preHandler: app.requireService,
+        schema: {
+          params: ProjectParamsSchema,
+          response: { 200: StorageMeasurementSchema },
+        },
+      },
+      async (request: FastifyRequest) => {
+        if (request.authenticatedServiceClaims?.service !== 'control-api') {
+          throw Object.assign(new Error('Project was not found.'), { statusCode: 404 });
+        }
+        const { projectId } = ProjectParamsSchema.parse(request.params);
+        const scope = readWorkspaceScope(request);
+        if (scope.projectId !== projectId) {
+          throw Object.assign(new Error('Project scope does not match the request.'), {
+            statusCode: 400,
+          });
+        }
+        return StorageMeasurementSchema.parse(
+          await deps.storageMeasurements?.measureProjectBytes({
+            organizationId: scope.organizationId,
+            projectId,
+          }),
+        );
+      },
+    );
+  }
+  if (deps.snapshotDeletion !== undefined) {
+    const snapshotDeletion = deps.snapshotDeletion;
+    app.post(
+      '/internal/projects/:projectId/snapshots/delete',
+      {
+        preHandler: app.requireService,
+        schema: {
+          params: ProjectParamsSchema,
+          headers: z.object({ 'idempotency-key': OperationKeySchema }).passthrough(),
+          response: { 200: z.object({ absent: z.boolean() }).strict() },
+        },
+      },
+      async (request: FastifyRequest) => {
+        if (request.authenticatedServiceClaims?.service !== 'control-api') {
+          throw Object.assign(new Error('Project was not found.'), { statusCode: 404 });
+        }
+        const { projectId } = ProjectParamsSchema.parse(request.params);
+        const scope = readWorkspaceScope(request);
+        if (scope.projectId !== projectId) {
+          throw Object.assign(new Error('Project scope does not match the request.'), {
+            statusCode: 400,
+          });
+        }
+        await snapshotDeletion.remove(scope);
+        return { absent: await snapshotDeletion.absent(scope) };
+      },
+    );
+    app.get(
+      '/internal/projects/:projectId/snapshots/absent',
+      {
+        preHandler: app.requireService,
+        schema: {
+          params: ProjectParamsSchema,
+          response: { 200: z.object({ absent: z.boolean() }).strict() },
+        },
+      },
+      async (request: FastifyRequest) => {
+        if (request.authenticatedServiceClaims?.service !== 'control-api') {
+          throw Object.assign(new Error('Project was not found.'), { statusCode: 404 });
+        }
+        const { projectId } = ProjectParamsSchema.parse(request.params);
+        const scope = readWorkspaceScope(request);
+        if (scope.projectId !== projectId) {
+          throw Object.assign(new Error('Project scope does not match the request.'), {
+            statusCode: 400,
+          });
+        }
+        return { absent: await snapshotDeletion.absent(scope) };
+      },
+    );
+  }
+  if (deps.checkpointService !== undefined) {
+    const checkpointService = deps.checkpointService;
+    app.post(
+      '/internal/workspaces/:workspaceId/checkpoint',
+      {
+        preHandler: app.requireService,
+        schema: {
+          params: WorkspaceParamsSchema,
+          body: CheckpointBodySchema,
+          response: { 200: CheckpointResponseSchema },
+        },
+      },
+      async (request: FastifyRequest) => {
+        if (request.authenticatedServiceClaims?.service !== 'control-api') {
+          throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+        }
+        const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+        const body = CheckpointBodySchema.parse(request.body);
+        requireIdempotencyKey(request.headers['idempotency-key'], body.operationKey);
+        const row = await resolveWorkspace(workspaceId, request);
+        if (row.branchId === null) {
+          throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
+        }
+        const checkpoint = await checkpointService.checkpoint({
+          organizationId: row.organizationId,
+          projectId: row.projectId,
+          branchId: row.branchId,
+          workspaceId: row.id,
+          operationKey: body.operationKey,
+          kind: body.kind,
+          taskBoundary: true,
+          includeSnapshot: true,
+        });
+        return { snapshotRef: checkpoint.checkpointId };
+      },
+    );
+  }
   app.post(
     '/internal/workspaces',
     {
@@ -743,17 +1098,6 @@ export function registerWorkspaceRoutes(
       if (!(await deps.rows.projectOwnedBy(scope.projectId, scope.organizationId))) {
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }
-      await deps.networkPolicies.record(
-        NetworkPolicyRecordSchema.parse({
-          operationKey: body.operationKey,
-          organizationId: scope.organizationId,
-          projectId: scope.projectId,
-          workspaceId: body.workspace.id,
-          policy: resolveNetworkPolicy(body.networkProfile, body.integrationDomains),
-          providerEnforced: false,
-          recordedAt: deps.now(),
-        }),
-      );
       const key = WorkspaceRowIdempotencyKeySchema.parse({
         runId: body.runId,
         taskId: body.taskId,
@@ -806,6 +1150,13 @@ export function registerWorkspaceRoutes(
             statusCode: 502,
           });
         }
+        const record = await deps.rows.getAttachment(
+          claim.row.id,
+          claim.row.organizationId,
+          claim.row.projectId,
+        );
+        if (record === undefined) throw new Error('workspace attachment was not persisted');
+        await ensureCostRecording(record);
         return await reply.status(200).send({ workspace: claim.row });
       }
 
@@ -821,9 +1172,32 @@ export function registerWorkspaceRoutes(
       }
       let untrustedHandle: WorkspaceHandle;
       try {
-        untrustedHandle = await deps.provider.createWorkspace(input, async (providerWorkspaceId) => {
-          await deps.rows.bindProviderWorkspaceId(claim.row.id, providerWorkspaceId, 'provisioning');
-        });
+        untrustedHandle = await deps.provider.createWorkspace(
+          input,
+          async (providerWorkspaceId) => {
+            await deps.rows.bindProviderWorkspaceId(
+              claim.row.id,
+              providerWorkspaceId,
+              'provisioning',
+            );
+            await deps.provider.updateNetworkPolicy({
+              providerWorkspaceId,
+              profile: body.networkProfile,
+              allowedDomains: body.integrationDomains,
+            });
+            await deps.networkPolicies.record(
+              NetworkPolicyRecordSchema.parse({
+                operationKey: body.operationKey,
+                organizationId: scope.organizationId,
+                projectId: scope.projectId,
+                workspaceId: body.workspace.id,
+                policy: resolveNetworkPolicy(body.networkProfile, body.integrationDomains),
+                providerEnforced: true,
+                recordedAt: deps.now(),
+              }),
+            );
+          },
+        );
       } catch (error) {
         try {
           await deps.rows.transition(
@@ -872,6 +1246,13 @@ export function registerWorkspaceRoutes(
           operationKey: body.operationKey,
         });
         const ready = await deps.rows.transition(claim.row.id, 'ready');
+        const record = await deps.rows.getAttachment(
+          ready.id,
+          ready.organizationId,
+          ready.projectId,
+        );
+        if (record === undefined) throw new Error('workspace attachment was not persisted');
+        await ensureCostRecording(record, body.operationKey);
         return await reply.status(201).send({ workspace: ready });
       } catch (error) {
         await deps.provider.terminateWorkspace(providerWorkspaceId);
@@ -988,6 +1369,7 @@ export function registerWorkspaceRoutes(
         if (row.status === 'terminated') {
           throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
         }
+        await ensureCostRecording({ ...record, row });
         return { workspace: PublicWorkspaceLifecycleRowSchema.parse(row) };
       } catch (error) {
         if (error instanceof ModalWorkspaceTagMismatchError) {
@@ -1056,11 +1438,7 @@ export function registerWorkspaceRoutes(
     async (request: FastifyRequest) => {
       const params = WorkspaceParamsSchema.parse(request.params);
       const scope = readWorkspaceScope(request);
-      const row = await deps.rows.get(
-        params.workspaceId,
-        scope.organizationId,
-        scope.projectId,
-      );
+      const row = await deps.rows.get(params.workspaceId, scope.organizationId, scope.projectId);
       if (row === undefined) {
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }
@@ -1087,11 +1465,7 @@ export function registerWorkspaceRoutes(
       const body = TerminateBodySchema.parse(request.body);
       requireIdempotencyKey(request.headers['idempotency-key'], body.operationKey);
       const scope = readWorkspaceScope(request);
-      const row = await deps.rows.get(
-        params.workspaceId,
-        scope.organizationId,
-        scope.projectId,
-      );
+      const row = await deps.rows.get(params.workspaceId, scope.organizationId, scope.projectId);
       if (row === undefined) {
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }
@@ -1106,6 +1480,15 @@ export function registerWorkspaceRoutes(
         return { workspace: row };
       }
       if (row.providerWorkspaceId !== null) {
+        let recording = activeCostRecordings.get(row.id);
+        if (recording === undefined) {
+          const record = await deps.rows.getAttachment(row.id, row.organizationId, row.projectId);
+          if (record !== undefined) recording = await ensureCostRecording(record);
+        }
+        if (recording !== undefined) {
+          await recording.terminate();
+          activeCostRecordings.delete(row.id);
+        }
         await deps.provider.terminateWorkspace(row.providerWorkspaceId);
         if ((await deps.provider.getStatus(row.providerWorkspaceId)) !== 'terminated') {
           throw Object.assign(new Error('Workspace provider termination was not confirmed.'), {
@@ -1154,7 +1537,10 @@ export function registerWorkspaceRoutes(
 
   app.post(
     '/internal/workspaces/:workspaceId/exec',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, querystring: ExecQuerySchema, body: ExecBodySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, querystring: ExecQuerySchema, body: ExecBodySchema },
+    },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const query = ExecQuerySchema.parse(request.query);
@@ -1199,7 +1585,11 @@ export function registerWorkspaceRoutes(
       const stdout = createSecretStreamRedactor(registry);
       const stderr = createSecretStreamRedactor(registry);
       try {
-        for await (const untrustedRecord of deps.provider.execStream(input, key, controller.signal)) {
+        for await (const untrustedRecord of deps.provider.execStream(
+          input,
+          key,
+          controller.signal,
+        )) {
           const record = ExecStreamRecordSchema.parse(untrustedRecord);
           if (reply.raw.destroyed) break;
           if (record.type === 'stdout' || record.type === 'stderr') {
@@ -1211,10 +1601,14 @@ export function registerWorkspaceRoutes(
             const stdoutTail = stdout.finish();
             const stderrTail = stderr.finish();
             if (stdoutTail !== '') {
-              reply.raw.write(`${JSON.stringify({ type: 'stdout', data: stdoutTail, at: record.at })}\n`);
+              reply.raw.write(
+                `${JSON.stringify({ type: 'stdout', data: stdoutTail, at: record.at })}\n`,
+              );
             }
             if (stderrTail !== '') {
-              reply.raw.write(`${JSON.stringify({ type: 'stderr', data: stderrTail, at: record.at })}\n`);
+              reply.raw.write(
+                `${JSON.stringify({ type: 'stderr', data: stderrTail, at: record.at })}\n`,
+              );
             }
           }
           reply.raw.write(`${JSON.stringify(record)}\n`);
@@ -1234,18 +1628,23 @@ export function registerWorkspaceRoutes(
     async (request: FastifyRequest) => {
       const params = ExecParamsSchema.parse(request.params);
       const body = KillBodySchema.parse(request.body);
-      return KillResponseSchema.parse(await deps.provider.killExec(
-        await resolveProviderWorkspaceId(params.workspaceId, request),
-        params.pid,
-        body.executionId,
-        readIdempotencyKey(request.headers['idempotency-key']),
-      ));
+      return KillResponseSchema.parse(
+        await deps.provider.killExec(
+          await resolveProviderWorkspaceId(params.workspaceId, request),
+          params.pid,
+          body.executionId,
+          readIdempotencyKey(request.headers['idempotency-key']),
+        ),
+      );
     },
   );
 
   app.get(
     '/internal/workspaces/:workspaceId/files',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema },
+    },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const { path } = FileQuerySchema.parse(request.query);
@@ -1257,9 +1656,82 @@ export function registerWorkspaceRoutes(
     },
   );
 
+  app.get(
+    '/internal/workspaces/:workspaceId/editor/files',
+    {
+      preHandler: app.requireService,
+      schema: {
+        params: WorkspaceParamsSchema,
+        querystring: EditorListQuerySchema,
+        response: { 200: EditorListResponseSchema },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const query = EditorListQuerySchema.parse(request.query);
+      return EditorListResponseSchema.parse(await fileEditor.list(
+        await resolveProviderWorkspaceId(workspaceId, request),
+        query.path,
+        {
+          ...(query.glob === undefined ? {} : { glob: query.glob }),
+          ...(query.maxDepth === undefined ? {} : { maxDepth: query.maxDepth }),
+        },
+      ));
+    },
+  );
+
+  app.get(
+    '/internal/workspaces/:workspaceId/editor/file',
+    {
+      preHandler: app.requireService,
+      schema: {
+        params: WorkspaceParamsSchema,
+        querystring: EditorReadQuerySchema,
+        response: { 200: EditorReadResponseSchema },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const { path } = EditorReadQuerySchema.parse(request.query);
+      return EditorReadResponseSchema.parse(await fileEditor.read(
+        await resolveProviderWorkspaceId(workspaceId, request),
+        path,
+      ));
+    },
+  );
+
+  app.post(
+    '/internal/workspaces/:workspaceId/editor/edits',
+    {
+      preHandler: app.requireService,
+      schema: {
+        params: WorkspaceParamsSchema,
+        body: EditorEditBodySchema,
+        response: { 200: EditorEditResponseSchema },
+      },
+    },
+    async (request: FastifyRequest) => {
+      const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
+      const body = EditorEditBodySchema.parse(request.body);
+      return EditorEditResponseSchema.parse(await fileEditor.edit(
+        await resolveProviderWorkspaceId(workspaceId, request),
+        {
+          path: body.path,
+          data: Buffer.from(body.dataBase64, 'base64'),
+          expectedCompareToken: body.expectedCompareToken,
+          actorUserId: body.actorUserId,
+          operationKey: readIdempotencyKey(request.headers['idempotency-key']),
+        },
+      ));
+    },
+  );
+
   app.put(
     '/internal/workspaces/:workspaceId/files',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema },
+    },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const { path } = FileQuerySchema.parse(request.query);
@@ -1276,20 +1748,32 @@ export function registerWorkspaceRoutes(
 
   app.get(
     '/internal/workspaces/:workspaceId/files/list',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, querystring: ListQuerySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, querystring: ListQuerySchema },
+    },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const query = ListQuerySchema.parse(request.query);
-      return FileListResponseSchema.parse(await deps.provider.listFiles(await resolveProviderWorkspaceId(workspaceId, request), query.path, {
-        ...(query.glob === undefined ? {} : { glob: query.glob }),
-        ...(query.maxDepth === undefined ? {} : { maxDepth: query.maxDepth }),
-      }));
+      return FileListResponseSchema.parse(
+        await deps.provider.listFiles(
+          await resolveProviderWorkspaceId(workspaceId, request),
+          query.path,
+          {
+            ...(query.glob === undefined ? {} : { glob: query.glob }),
+            ...(query.maxDepth === undefined ? {} : { maxDepth: query.maxDepth }),
+          },
+        ),
+      );
     },
   );
 
   app.post(
     '/internal/workspaces/:workspaceId/git',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, body: GitBodySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, body: GitBodySchema },
+    },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const input = GitBodySchema.parse(request.body);
@@ -1329,7 +1813,9 @@ export function registerWorkspaceRoutes(
     { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema } },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
-      return HealthResponseSchema.parse(await deps.provider.health(await resolveProviderWorkspaceId(workspaceId, request)));
+      return HealthResponseSchema.parse(
+        await deps.provider.health(await resolveProviderWorkspaceId(workspaceId, request)),
+      );
     },
   );
 
@@ -1338,13 +1824,18 @@ export function registerWorkspaceRoutes(
     { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema } },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
-      return MetricsResponseSchema.parse(await deps.provider.metrics(await resolveProviderWorkspaceId(workspaceId, request)));
+      return MetricsResponseSchema.parse(
+        await deps.provider.metrics(await resolveProviderWorkspaceId(workspaceId, request)),
+      );
     },
   );
 
   app.get(
     '/internal/workspaces/:workspaceId/files/update-snapshot',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema },
+    },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const { path } = FileQuerySchema.parse(request.query);
@@ -1357,7 +1848,10 @@ export function registerWorkspaceRoutes(
 
   app.post(
     '/internal/workspaces/:workspaceId/files/atomic-write',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, body: AtomicWriteBodySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, body: AtomicWriteBodySchema },
+    },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const body = AtomicWriteBodySchema.parse(request.body);
@@ -1366,7 +1860,9 @@ export function registerWorkspaceRoutes(
         body.files.map((file) => ({
           path: file.path,
           data: Buffer.from(file.dataBase64, 'base64'),
-          ...(file.expectedRevision === undefined ? {} : { expectedRevision: file.expectedRevision }),
+          ...(file.expectedRevision === undefined
+            ? {}
+            : { expectedRevision: file.expectedRevision }),
         })),
         readIdempotencyKey(request.headers['idempotency-key']),
       );
@@ -1376,19 +1872,27 @@ export function registerWorkspaceRoutes(
 
   app.post(
     '/internal/workspaces/:workspaceId/search',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, body: SearchBodySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, body: SearchBodySchema },
+    },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
-      return ExecResultSchema.parse(await deps.provider.search(
-        await resolveProviderWorkspaceId(workspaceId, request),
-        SearchBodySchema.parse(request.body),
-      ));
+      return ExecResultSchema.parse(
+        await deps.provider.search(
+          await resolveProviderWorkspaceId(workspaceId, request),
+          SearchBodySchema.parse(request.body),
+        ),
+      );
     },
   );
 
   app.delete(
     '/internal/workspaces/:workspaceId/files',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema },
+    },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const { path } = FileQuerySchema.parse(request.query);
@@ -1403,7 +1907,10 @@ export function registerWorkspaceRoutes(
 
   app.post(
     '/internal/workspaces/:workspaceId/files/rename',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, body: RenameBodySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, body: RenameBodySchema },
+    },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       await deps.provider.renameFile(
@@ -1418,42 +1925,55 @@ export function registerWorkspaceRoutes(
   for (const action of ['start', 'restart'] as const) {
     app.post(
       `/internal/workspaces/:workspaceId/dev-server/${action}`,
-      { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, body: DevServerBodySchema } },
+      {
+        preHandler: app.requireService,
+        schema: { params: WorkspaceParamsSchema, body: DevServerBodySchema },
+      },
       async (request: FastifyRequest) => {
         const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
         const { contract } = DevServerBodySchema.parse(request.body);
         const key = readIdempotencyKey(request.headers['idempotency-key']);
         const record = await resolveAttachment(workspaceId, request);
         const providerWorkspaceId = z.string().min(1).parse(record.row.providerWorkspaceId);
-        await emitPreview(record, key, action, 'preview.starting');
-        let response: z.infer<typeof DevServerResponseSchema>;
-        try {
-          response = DevServerResponseSchema.parse(
-            await (action === 'start'
-              ? deps.provider.startDevServer(providerWorkspaceId, contract, key)
-              : deps.provider.restartDevServer(providerWorkspaceId, contract, key)),
-          );
-        } catch (error) {
-          try {
-            await emitPreview(record, key, action, 'preview.failed', {
-              code: 'dev_server_operation_failed',
+        return withObservabilitySpan(
+          `preview.readiness:${action}`,
+          {
+            'zapp.organization.id': record.row.organizationId,
+            'zapp.project.id': record.row.projectId,
+            'zapp.sandbox.id': workspaceId,
+          },
+          async () => {
+            await emitPreview(record, key, action, 'preview.starting');
+            let response: z.infer<typeof DevServerResponseSchema>;
+            try {
+              response = DevServerResponseSchema.parse(
+                await (action === 'start'
+                  ? deps.provider.startDevServer(providerWorkspaceId, contract, key)
+                  : deps.provider.restartDevServer(providerWorkspaceId, contract, key)),
+              );
+            } catch (error) {
+              try {
+                await emitPreview(record, key, action, 'preview.failed', {
+                  code: 'dev_server_operation_failed',
+                });
+              } catch (eventError) {
+                throw new AggregateError(
+                  [error, eventError],
+                  'Dev server operation and preview failure event both failed',
+                );
+              }
+              throw error;
+            }
+            await monitorTerminalPreviewFailure(record, providerWorkspaceId, true);
+            // Delivery failure is not a dev-server failure. The caller retries the
+            // same operation key; CP-13 and the agent both replay idempotently.
+            await emitPreview(record, key, action, 'preview.ready', {
+              port: response.port,
+              supervisorId: response.supervisorId,
             });
-          } catch (eventError) {
-            throw new AggregateError(
-              [error, eventError],
-              'Dev server operation and preview failure event both failed',
-            );
-          }
-          throw error;
-        }
-        await monitorTerminalPreviewFailure(record, providerWorkspaceId, true);
-        // Delivery failure is not a dev-server failure. The caller retries the
-        // same operation key; CP-13 and the agent both replay idempotently.
-        await emitPreview(record, key, action, 'preview.ready', {
-          port: response.port,
-          supervisorId: response.supervisorId,
-        });
-        return response;
+            return response;
+          },
+        );
       },
     );
   }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { resolve } from 'node:path';
 
@@ -10,15 +10,23 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 interface ModalSdkState {
   createCalls: unknown[][];
   experimentalCreateCalls: unknown[][];
+  imageDeleteCalls: string[];
+  imageMissing: boolean;
   sandbox: unknown;
   volumeCloseCount: number;
+  volumeFromNameCalls: unknown[][];
+  volumeMissing: boolean;
 }
 
 const modalSdkState = vi.hoisted<ModalSdkState>(() => ({
   createCalls: [],
   experimentalCreateCalls: [],
+  imageDeleteCalls: [],
+  imageMissing: false,
   sandbox: undefined,
   volumeCloseCount: 0,
+  volumeFromNameCalls: [],
+  volumeMissing: false,
 }));
 
 vi.mock('modal', async (importOriginal) => {
@@ -35,6 +43,7 @@ vi.mock('modal', async (importOriginal) => {
     tokenId: string;
     tokenSecret: string;
   }) => unknown;
+  const ActualNotFoundError = actualModule.NotFoundError as new (message: string) => Error;
 
   class MockModalClient {
     readonly apps = {
@@ -42,12 +51,24 @@ vi.mock('modal', async (importOriginal) => {
     };
 
     readonly images = {
-      fromId: (imageId: string) =>
-        Promise.resolve({
+      fromId: (imageId: string) => {
+        if (modalSdkState.imageMissing) {
+          return Promise.reject(new ActualNotFoundError('image not found'));
+        }
+        return Promise.resolve({
           imageId,
           build: () => Promise.resolve(),
-        }),
+        });
+      },
       fromName: () => Promise.resolve({ imageId: 'im-built0123' }),
+      delete: (imageId: string) => {
+        modalSdkState.imageDeleteCalls.push(imageId);
+        if (modalSdkState.imageMissing) {
+          return Promise.reject(new ActualNotFoundError('image not found'));
+        }
+        modalSdkState.imageMissing = true;
+        return Promise.resolve();
+      },
     };
 
     readonly volumes = {
@@ -57,10 +78,17 @@ vi.mock('modal', async (importOriginal) => {
             modalSdkState.volumeCloseCount += 1;
           },
         }),
-      fromName: () =>
-        Promise.resolve({
+      fromName: (...args: unknown[]) => {
+        modalSdkState.volumeFromNameCalls.push(args);
+        if (modalSdkState.volumeMissing) {
+          const error = new Error('volume not found');
+          error.name = 'NotFoundError';
+          return Promise.reject(error);
+        }
+        return Promise.resolve({
           withMountOptions: (options: unknown) => options,
-        }),
+        });
+      },
     };
 
     readonly sandboxes = {
@@ -267,11 +295,94 @@ function runDash(script: string): Promise<{ status: number; stdout: string; stde
 beforeEach(() => {
   modalSdkState.createCalls.length = 0;
   modalSdkState.experimentalCreateCalls.length = 0;
+  modalSdkState.imageDeleteCalls.length = 0;
+  modalSdkState.imageMissing = false;
   modalSdkState.sandbox = undefined;
   modalSdkState.volumeCloseCount = 0;
+  modalSdkState.volumeFromNameCalls.length = 0;
+  modalSdkState.volumeMissing = false;
 });
 
 describe('Modal workspace agent adapter', () => {
+  test('deletes snapshot images idempotently and verifies provider absence', async () => {
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: {
+        version: 1,
+        environments: {
+          dev: {
+            modalEnvironment: 'zapp-dev',
+            sourceRevision: 'c58a416cba65f57ea64ba3e3e90f3646efca9b62',
+            tag: '2026-08-08-c58a416',
+            images: {
+              'forge-node-base': {
+                appName: 'zapp-workspaces',
+                digest: 'im-9NCxx8merCgh67jj0YLM84',
+                publishedName: 'forge-node-base:2026-08-08-c58a416',
+              },
+              'forge-web-test': {
+                appName: 'zapp-browser-verify',
+                digest: 'im-eVxjg43Gv7bQrkH0CbwrrX',
+                publishedName: 'forge-web-test:2026-08-08-c58a416',
+              },
+            },
+          },
+        },
+      },
+      agentToken: 'agent-test-token',
+      credentials: { tokenId: 'test-modal-id', tokenSecret: 'test-modal-secret' },
+    });
+    const snapshotId = 'im-9NCxx8merCgh67jj0YLM84';
+
+    await expect(provider.snapshotExists(snapshotId)).resolves.toBe(true);
+    await expect(provider.deleteSnapshot(snapshotId)).resolves.toBeUndefined();
+    await expect(provider.deleteSnapshot(snapshotId)).resolves.toBeUndefined();
+    await expect(provider.snapshotExists(snapshotId)).resolves.toBe(false);
+    expect(modalSdkState.imageDeleteCalls).toEqual([snapshotId, snapshotId]);
+  });
+
+  test('does not create an absent project volume during a read-only billing probe', async () => {
+    modalSdkState.volumeMissing = true;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: {
+        version: 1,
+        environments: {
+          dev: {
+            modalEnvironment: 'zapp-dev',
+            sourceRevision: 'c58a416cba65f57ea64ba3e3e90f3646efca9b62',
+            tag: '2026-08-08-c58a416',
+            images: {
+              'forge-node-base': {
+                appName: 'zapp-workspaces',
+                digest: 'im-9NCxx8merCgh67jj0YLM84',
+                publishedName: 'forge-node-base:2026-08-08-c58a416',
+              },
+              'forge-web-test': {
+                appName: 'zapp-browser-verify',
+                digest: 'im-eVxjg43Gv7bQrkH0CbwrrX',
+                publishedName: 'forge-web-test:2026-08-08-c58a416',
+              },
+            },
+          },
+        },
+      },
+      agentToken: 'agent-test-token',
+      credentials: { tokenId: 'test-modal-id', tokenSecret: 'test-modal-secret' },
+    });
+
+    await expect(
+      provider.measureProjectVolumeBytes({
+        organizationId: newId('org'),
+        projectId: newId('proj'),
+      }),
+    ).resolves.toBe('0');
+    expect(modalSdkState.volumeFromNameCalls).toEqual([
+      [expect.stringMatching(/^vol-proj_/u), { environment: 'zapp-dev', createIfMissing: false }],
+    ]);
+    expect(modalSdkState.createCalls).toHaveLength(0);
+  });
+
   test('streams an allowed 8 MiB agent envelope through stdin instead of one argv entry', async () => {
     let command: string[] = [];
     let stdin = '';
@@ -1681,29 +1792,25 @@ jq() {
   });
 });
 
-async function findTypeScriptFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const paths = await Promise.all(
-    entries.map(async (entry) => {
-      const path = resolve(directory, entry.name);
-      if (entry.isDirectory()) {
-        if (['node_modules', 'dist', '.next', '.turbo'].includes(entry.name)) {
-          return [];
-        }
-        return findTypeScriptFiles(path);
-      }
-      return entry.isFile() && /\.[cm]?ts$/u.test(entry.name) ? [path] : [];
-    }),
+function trackedTypeScriptFiles(repositoryRoot: string): string[] {
+  const result = spawnSync(
+    'git',
+    ['-C', repositoryRoot, 'ls-files', '-z', '--', 'apps', 'infra', 'packages', 'sandbox', 'services'],
+    { encoding: 'utf8' },
   );
-  return paths.flat();
+  if (result.status !== 0) {
+    throw new Error(`Could not enumerate tracked TypeScript sources: ${result.stderr}`);
+  }
+
+  return result.stdout
+    .split('\0')
+    .filter((path) => /\.[cm]?ts$/u.test(path))
+    .map((path) => resolve(repositoryRoot, path));
 }
 
 test('the Modal SDK is imported only by the sandbox-service provider boundary', async () => {
   const repositoryRoot = resolve(import.meta.dirname, '../../..');
-  const roots = ['apps', 'infra', 'packages', 'sandbox', 'services'];
-  const files = (
-    await Promise.all(roots.map((root) => findTypeScriptFiles(resolve(repositoryRoot, root))))
-  ).flat();
+  const files = trackedTypeScriptFiles(repositoryRoot);
   const packageName = ['mo', 'dal'].join('');
   const staticImport = new RegExp(`\\bfrom\\s*['\"]${packageName}['\"]`, 'u');
   const dynamicImport = new RegExp(`\\bimport\\s*\\(\\s*['\"]${packageName}['\"]`, 'u');

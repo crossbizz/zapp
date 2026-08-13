@@ -1,6 +1,6 @@
 import { newId } from '@zapp/contracts';
 import { createHash } from 'node:crypto';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import {
   createCheckpointService,
@@ -142,13 +142,25 @@ function fixture(overrides: Partial<CheckpointServiceDependencies> = {}) {
         events.push('snapshot-create');
         const providerSnapshotId = `snap-${input.checkpointId}`;
         snapshots.add(providerSnapshotId);
-        return Promise.resolve({ providerSnapshotId });
+        return Promise.resolve({ providerSnapshotId, logicalBytes: '19' });
       },
       restore(input) {
         events.push('snapshot-restore');
         if (!snapshots.has(input.providerSnapshotId)) return Promise.resolve(false);
         restoredFile = 'hello from checkpoint';
         return Promise.resolve(true);
+      },
+    },
+    snapshotMeasurements: {
+      record(input) {
+        events.push('snapshot-measurement-save');
+        expect(input).toMatchObject({
+          organizationId,
+          projectId,
+          logicalBytes: '19',
+          createdAt: '2026-08-08T12:00:00.000Z',
+        });
+        return Promise.resolve();
       },
     },
     records: {
@@ -267,9 +279,11 @@ describe('WS-7 checkpoint and snapshot-free restore', () => {
       'encrypt',
       'artifact-put',
       'snapshot-create',
+      'snapshot-measurement-save',
       'record-save',
     ]);
     expect(checkpoint.snapshot?.expiresAt).toBe('2026-09-07T12:00:00.000Z');
+    expect(checkpoint.snapshot?.logicalBytes).toBe('19');
     expect(state.artifacts.get(checkpoint.artifact.key)?.bytes).not.toEqual(
       text('tar:hello from checkpoint'),
     );
@@ -312,6 +326,7 @@ describe('WS-7 checkpoint and snapshot-free restore', () => {
     ['release_evidence', 30],
   ] as const)('records the %s snapshot with the exact %i-day TTL', async (kind, days) => {
     const state = fixture();
+    const recordMeasurement = vi.spyOn(state.dependencies.snapshotMeasurements, 'record');
     const service = createCheckpointService(state.dependencies);
     const checkpoint = await service.checkpoint({
       organizationId: state.organizationId,
@@ -326,6 +341,9 @@ describe('WS-7 checkpoint and snapshot-free restore', () => {
 
     expect(checkpoint.snapshot?.expiresAt).toBe(
       new Date(Date.parse('2026-08-08T12:00:00.000Z') + days * 86_400_000).toISOString(),
+    );
+    expect(recordMeasurement).toHaveBeenCalledWith(
+      expect.objectContaining({ kind, createdAt: '2026-08-08T12:00:00.000Z' }),
     );
   });
 
@@ -413,6 +431,48 @@ describe('WS-7 checkpoint and snapshot-free restore', () => {
 
     expect(checkpoint.snapshot).toBeNull();
     expect(state.records.get(checkpoint.checkpointId)).toEqual(checkpoint);
+  });
+
+  test('fails closed when created snapshot logical bytes cannot be persisted', async () => {
+    const state = fixture();
+    state.dependencies.snapshotMeasurements.record = () =>
+      Promise.reject(new Error('measurement database unavailable'));
+    const service = createCheckpointService(state.dependencies);
+
+    await expect(
+      service.checkpoint({
+        organizationId: state.organizationId,
+        projectId: state.projectId,
+        branchId: state.branchId,
+        workspaceId: state.workspaceId,
+        operationKey: state.operationKey,
+        kind: 'active',
+        taskBoundary: false,
+        includeSnapshot: true,
+      }),
+    ).rejects.toThrow('measurement database unavailable');
+    expect(state.events).not.toContain('record-save');
+  });
+
+  test('fails closed when the provider reports a created snapshot with an invalid measurement', async () => {
+    const state = fixture();
+    state.dependencies.snapshots.create = () =>
+      Promise.resolve({ providerSnapshotId: 'snap-created', logicalBytes: 'not-bytes' });
+    const service = createCheckpointService(state.dependencies);
+
+    await expect(
+      service.checkpoint({
+        organizationId: state.organizationId,
+        projectId: state.projectId,
+        branchId: state.branchId,
+        workspaceId: state.workspaceId,
+        operationKey: state.operationKey,
+        kind: 'active',
+        taskBoundary: false,
+        includeSnapshot: true,
+      }),
+    ).rejects.toThrow();
+    expect(state.events).not.toContain('record-save');
   });
 
   test('rejects cross-tenant and tampered artifacts before mutating the restore target', async () => {

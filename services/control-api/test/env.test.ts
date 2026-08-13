@@ -4,15 +4,22 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { loadAuthEnv } from '../src/auth/config.js';
+import { loadSupportAdminConfig } from '../src/routes/admin.js';
 import {
   loadEnv,
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
+  requireFlexpriceForEnvironment,
+  loadStripeBillingEnv,
+  requireStripeBillingForEnvironment,
   loadGitHubAppEnv,
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
   loadPreviewEnv,
   loadModelGatewayUrl,
+  loadNotificationEnv,
+  loadPostHogEnv,
+  loadIncidentWebhookSecret,
   loadRedisUrl,
   loadRunIntentHmacKey,
   loadServiceTokenConfig,
@@ -38,6 +45,9 @@ import {
  */
 
 const TEMPLATE_PATH = fileURLToPath(new URL('../../../.env.example', import.meta.url));
+const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformonly'].join('_');
+const GENERATED_APP_STRIPE_SECRET = ['rk', 'test', 'generatedapp'].join('_');
+const PLATFORM_STRIPE_WEBHOOK_SECRET = ['whsec', 'platformonly'].join('_');
 
 /** `KEY=value` lines, comments and blanks dropped. Values are taken verbatim. */
 function readTemplate(): Record<string, string> {
@@ -92,10 +102,15 @@ describe('the shipped .env.example', () => {
     expect(() => loadPreviewEnv(environment)).not.toThrow();
     expect(() => loadModelGatewayUrl(environment)).not.toThrow();
     expect(() => loadUsageQueueEnv(environment)).not.toThrow();
+    expect(() => loadNotificationEnv(environment)).not.toThrow();
     expect(() => loadGitHubAppEnv(environment)).not.toThrow();
     expect(() => loadGitHubWebhookQueueEnv(environment)).not.toThrow();
     expect(() => loadArtifactStorageEnv(environment)).not.toThrow();
+    expect(() => loadPostHogEnv(environment)).not.toThrow();
+    expect(loadIncidentWebhookSecret(environment, 'development')).toBeUndefined();
+    expect(() => loadSupportAdminConfig(environment)).not.toThrow();
     expect(loadFlexpriceEnv(environment)).toBeUndefined();
+    expect(loadStripeBillingEnv(environment)).toBeUndefined();
   });
 
   it('leaves every rotation variable empty, and empty is accepted', () => {
@@ -152,21 +167,30 @@ describe('the shipped .env.example', () => {
       'PREVIEW_SHARE_SIGNING_KEY',
       'PREVIEW_SHARE_KEY_VERSION',
       'SANDBOX_SERVICE_URL',
+      'VERIFICATION_SERVICE_URL',
       'MODEL_GATEWAY_URL',
       'AWS_REGION',
       'AWS_ENDPOINT_URL',
+      'SQS_NOTIFICATION_QUEUE_NAME',
+      'SES_NOTIFICATION_SOURCE',
+      'SNS_NOTIFICATION_TOPIC_ARN',
       'GITHUB_APP_ID',
       'GITHUB_APP_SLUG',
       'GITHUB_APP_PRIVATE_KEY',
       'GITHUB_APP_CLIENT_ID',
       'GITHUB_APP_CLIENT_SECRET',
       'GITHUB_WEBHOOK_SECRET',
+      'GRAFANA_ALERT_WEBHOOK_SECRET',
       'GITHUB_API_BASE_URL',
       'ARTIFACT_ENDPOINT',
       'ARTIFACT_REGION',
       'ARTIFACT_BUCKET',
       'ARTIFACT_KEY',
       'ARTIFACT_SECRET',
+      'POSTHOG_KEY',
+      'POSTHOG_HOST',
+      'SUPPORT_ADMIN_ENABLED',
+      'SUPPORT_ADMIN_USER_IDS',
     ]) {
       expect(template, name).toHaveProperty(name);
     }
@@ -184,6 +208,104 @@ describe('the shipped .env.example', () => {
     ]) {
       expect(template, name).toHaveProperty(name, '');
     }
+  });
+});
+
+describe('support admin configuration', () => {
+  it('is disabled by default and accepts an exact staff user allowlist', () => {
+    expect(loadSupportAdminConfig({})).toEqual({ enabled: false, staffUserIds: [] });
+    expect(
+      loadSupportAdminConfig({
+        SUPPORT_ADMIN_ENABLED: 'true',
+        SUPPORT_ADMIN_USER_IDS:
+          'user_00000000000000000000000001,user_00000000000000000000000002',
+      }),
+    ).toEqual({
+      enabled: true,
+      staffUserIds: [
+        'user_00000000000000000000000001',
+        'user_00000000000000000000000002',
+      ],
+    });
+  });
+
+  it('refuses malformed staff identifiers without exposing their values', () => {
+    expect(() =>
+      loadSupportAdminConfig({
+        SUPPORT_ADMIN_ENABLED: 'true',
+        SUPPORT_ADMIN_USER_IDS: 'not-a-user-id',
+      }),
+    ).toThrow(new Error('Invalid environment: SUPPORT_ADMIN_USER_IDS'));
+  });
+});
+describe('PostHog configuration', () => {
+  it('loads the server project key and normalizes the host', () => {
+    expect(
+      loadPostHogEnv({
+        POSTHOG_KEY: 'phc_test-project-key',
+        POSTHOG_HOST: 'https://us.i.posthog.com/',
+      }),
+    ).toEqual({ projectKey: 'phc_test-project-key', host: 'https://us.i.posthog.com' });
+  });
+});
+
+describe('Flexprice production admission', () => {
+  it('permits an absent gate only in test or development and refuses production startup', () => {
+    expect(() => requireFlexpriceForEnvironment({ NODE_ENV: 'production' }, undefined)).toThrow(
+      'FLEXPRICE_API_KEY is required in production',
+    );
+    expect(requireFlexpriceForEnvironment({ NODE_ENV: 'test' }, undefined)).toBeUndefined();
+    expect(requireFlexpriceForEnvironment({ NODE_ENV: 'development' }, undefined)).toBeUndefined();
+  });
+});
+
+describe('Stripe platform billing configuration', () => {
+  it('loads only the platform credential scope and a complete price catalog', () => {
+    expect(
+      loadStripeBillingEnv({
+        PLATFORM_BILLING_STRIPE_SECRET_KEY: PLATFORM_STRIPE_SECRET,
+        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
+        STRIPE_PLAN_PRICE_IDS_JSON: '{"builder":"price_builder123","studio":"price_studio123"}',
+        STRIPE_CREDIT_PACK_PRICE_IDS_JSON:
+          '{"starter":"price_starter123","scale":"price_scale123"}',
+        FLEXPRICE_STRIPE_WEBHOOK_URL:
+          'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+      }),
+    ).toEqual({
+      platformSecretKey: PLATFORM_STRIPE_SECRET,
+      webhookSecret: PLATFORM_STRIPE_WEBHOOK_SECRET,
+      prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      creditPackPrices: { starter: 'price_starter123', scale: 'price_scale123' },
+      flexpriceStripeWebhookUrl:
+        'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+    });
+    expect(() =>
+      loadStripeBillingEnv({
+        PLATFORM_BILLING_STRIPE_SECRET_KEY: GENERATED_APP_STRIPE_SECRET,
+        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
+        STRIPE_PLAN_PRICE_IDS_JSON: '{"builder":"price_builder123","studio":"price_studio123"}',
+        STRIPE_CREDIT_PACK_PRICE_IDS_JSON:
+          '{"starter":"price_starter123","scale":"price_scale123"}',
+        FLEXPRICE_STRIPE_WEBHOOK_URL:
+          'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+      }),
+    ).toThrow('PLATFORM_BILLING_STRIPE_SECRET_KEY');
+    expect(() =>
+      loadStripeBillingEnv({
+        PLATFORM_BILLING_STRIPE_SECRET_KEY: PLATFORM_STRIPE_SECRET,
+        PLATFORM_BILLING_STRIPE_WEBHOOK_SECRET: PLATFORM_STRIPE_WEBHOOK_SECRET,
+        STRIPE_PLAN_PRICE_IDS_JSON: '{"builder":"price_builder123","studio":"price_studio123"}',
+        FLEXPRICE_STRIPE_WEBHOOK_URL:
+          'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+      }),
+    ).toThrow('STRIPE_CREDIT_PACK_PRICE_IDS_JSON');
+  });
+
+  it('refuses production without platform billing and permits an absent local provider', () => {
+    expect(() => requireStripeBillingForEnvironment({ NODE_ENV: 'production' }, undefined)).toThrow(
+      'PLATFORM_BILLING_STRIPE_SECRET_KEY is required in production',
+    );
+    expect(requireStripeBillingForEnvironment({ NODE_ENV: 'test' }, undefined)).toBeUndefined();
   });
 });
 
@@ -243,6 +365,27 @@ describe('the rotation variables', () => {
     expect(() => loadServiceTokenConfig({ ...base, SERVICE_TOKEN_SECRET: 'replace-me' })).toThrow(
       new Error('Invalid environment: SERVICE_TOKEN_SECRET'),
     );
+  });
+});
+
+describe('the Grafana incident webhook credential', () => {
+  it('allows an empty development value and fails closed in production', () => {
+    expect(
+      loadIncidentWebhookSecret({ GRAFANA_ALERT_WEBHOOK_SECRET: '' }, 'development'),
+    ).toBeUndefined();
+    expect(() =>
+      loadIncidentWebhookSecret({ GRAFANA_ALERT_WEBHOOK_SECRET: '' }, 'production'),
+    ).toThrow(new Error('GRAFANA_ALERT_WEBHOOK_SECRET is required in production'));
+  });
+
+  it('accepts only a dedicated high-entropy-sized credential', () => {
+    const secret = 'g'.repeat(32);
+    expect(loadIncidentWebhookSecret({ GRAFANA_ALERT_WEBHOOK_SECRET: secret }, 'production')).toBe(
+      secret,
+    );
+    expect(() =>
+      loadIncidentWebhookSecret({ GRAFANA_ALERT_WEBHOOK_SECRET: 'short' }, 'development'),
+    ).toThrow(new Error('Invalid environment: GRAFANA_ALERT_WEBHOOK_SECRET'));
   });
 });
 

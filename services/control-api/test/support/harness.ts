@@ -1,10 +1,16 @@
-import type { ServiceName } from '@zapp/config';
+import { createTemplateRegistry, type FeatureFlagEvaluator, type ProductAnalytics, type ServiceName, type TemplateRegistry } from '@zapp/config';
 import { capabilityScanArtifactStorageRef, type CapabilityScanPort } from '@zapp/project-adapters';
 
 import type { AuthIdentity } from '../../src/auth/port.js';
-import type { UserProfile, UserStore } from '../../src/auth/users.js';
+import type { UserProfile, UserStore, UserUpsertResult } from '../../src/auth/users.js';
 import type { AuthConfig } from '../../src/auth/config.js';
-import { buildApp, type AppInstance, type LocalAgentDeps } from '../../src/app.js';
+import {
+  buildApp,
+  type AppInstance,
+  type BillingDeps,
+  type LocalAgentDeps,
+  type NotificationDeps,
+} from '../../src/app.js';
 import { CSRF_COOKIE, CSRF_HEADER } from '../../src/auth/cookies.js';
 import { createInMemoryTokenDenylist } from '../../src/auth/denylist.js';
 import { createInMemoryDeviceStore } from '../../src/auth/device.js';
@@ -18,21 +24,35 @@ import {
 import type { GitServicePort } from '../../src/git/port.js';
 import type { LoggerConfig } from '../../src/logging.js';
 import type { OrchestratorPort } from '../../src/orchestrator/port.js';
-import type { SandboxServicePort } from '../../src/sandbox/port.js';
-import type { ReleasePort } from '../../src/routes/releases.js';
+import type {
+  BuilderPreviewSandboxPort,
+  SandboxServicePort,
+  SupportSandboxServicePort,
+} from '../../src/sandbox/port.js';
+import type { ReleaseForkPort, ReleasePort } from '../../src/routes/releases.js';
+import type { IncidentStore } from '../../src/routes/incidents.js';
 import type { AttachmentStoragePort } from '../../src/routes/attachments.js';
+import type { RunArtifactReaderPort } from '../../src/routes/run-artifacts.js';
+import type { AdminRoutesConfig } from '../../src/routes/admin.js';
 import type { ForkActivity } from '../../src/activities/fork.js';
-import type { IntegrationPort } from '../../src/routes/integrations.js';
+import type { GitHubControlsPort, IntegrationPort } from '../../src/routes/integrations.js';
 import type { PreviewRoutesDeps } from '../../src/routes/preview.js';
+import type { ProjectExportDeps } from '../../src/routes/export.js';
+import type { BuilderArtifactPort } from '../../src/routes/builder-artifacts.js';
+import type { BuilderPreviewScreenshotStore } from '../../src/routes/builder-preview.js';
 import type { ServiceTokenVerifier } from '../../src/internal/service-auth.js';
 import { loadPricingConfig, type PricingConfig } from '../../src/usage/pricing.js';
+import type { PlanLimitsConfig } from '../../src/usage/limits.js';
+import type { CreditBalanceGate } from '../../src/usage/limits.js';
 import type { ModelCompletionRepository } from '../../src/usage/model-completions.js';
-import type { UsageService } from '../../src/usage/ledger.js';
+import type { UsageLedgerRepository } from '../../src/usage/ledger.js';
+import type { DeploymentUsagePort } from '../../src/usage/collectors/git.js';
 import { createInMemoryRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
 import { createEnvMasterKey, KEY_BYTES, type MasterKeyPort } from '../../src/secrets/crypto.js';
 import type { TenantDbFactory } from '../../src/tenant/db.js';
 import type { GitHubInstallDependencies } from '../../src/integrations/github/install.js';
 import type { GitHubWebhookDependencies } from '../../src/integrations/github/webhooks.js';
+import type { ProjectDeletionRequestStore } from '../../src/jobs/deletion.js';
 import { FakeAuthPort } from './fake-auth-port.js';
 import { InMemoryOrganizationStore } from './org-store.js';
 import { TestServiceTokens } from './service-tokens.js';
@@ -113,6 +133,20 @@ export const TEST_AUTH_CONFIG: AuthConfig = {
   apiBaseUrl: 'https://api.zapp.test',
 };
 
+const TEST_TEMPLATE_REGISTRY = createTemplateRegistry([
+  {
+    slug: 'next-starter',
+    name: 'Next.js Starter',
+    description: 'A clean starter for product apps.',
+    pagesIncluded: ['Home'],
+    highlights: ['Responsive shell'],
+    demoUrl: 'https://templates.zapp.build/next-starter/a57bb2926674/',
+    stack: ['Next.js', 'TypeScript'],
+    repoRef: 'https://github.com/dyad-sh/nextjs-template.git',
+    commitSha: 'a57bb2926674275a84f651c64e5c995a42519b5e',
+  },
+]);
+
 /**
  * Limits high enough to be out of the way, because every request a suite makes
  * comes from one address and — for the auth class — the shipped ceiling of ten
@@ -141,6 +175,9 @@ export const TEST_PRICING: PricingConfig = loadPricingConfig({
   version: 'm1-test',
   defaultRunCreditCeiling: '1000.0000',
   creditsPerUsd: '100.0000',
+  creditPacks: {
+    starter: { credits: '500.0000', amountUsd: '5.00' },
+  },
   models: {
     'anthropic/claude-sonnet-5': {
       inputUsdPerMillion: '3.000000',
@@ -164,7 +201,7 @@ export class InMemoryUserStore implements UserStore {
   /** Bumped on every upsert, so a test can tell "linked" from "created". */
   upsertCount = 0;
 
-  upsertFromIdentity(identity: AuthIdentity): Promise<UserProfile['user']> {
+  upsertFromIdentity(identity: AuthIdentity): Promise<UserUpsertResult> {
     this.upsertCount += 1;
     const existing = [...this.users.values()].find((user) => user.email === identity.email);
     const user = {
@@ -174,7 +211,7 @@ export class InMemoryUserStore implements UserStore {
       avatarUrl: identity.avatarUrl ?? null,
     };
     this.users.set(user.id, user);
-    return Promise.resolve(user);
+    return Promise.resolve({ user, created: existing === undefined });
   }
 
   profile(userId: string): Promise<UserProfile | undefined> {
@@ -234,13 +271,24 @@ export interface HarnessOptions {
    * the shipping record-only implementation.
    */
   readonly git?: GitServicePort;
+  readonly templates?: TemplateRegistry;
   /** CP-9's workflow boundary, normally a recording fake in route tests. */
   readonly orchestrator?: OrchestratorPort;
   readonly capabilityScan?: CapabilityScanPort;
   readonly sandbox?: SandboxServicePort;
+  readonly supportSandbox?: SupportSandboxServicePort;
+  readonly builderPreviewSandbox?: BuilderPreviewSandboxPort;
+  readonly builderPreviewProxy?: PreviewRoutesDeps['proxy'];
+  readonly builderPreviewScreenshotStore?: BuilderPreviewScreenshotStore;
+  readonly builderPreviewRecheckIntervalMs?: number;
   readonly fork?: ForkActivity;
   readonly releasePort?: ReleasePort;
+  readonly releaseFork?: ReleaseForkPort;
+  readonly incidentStore?: IncidentStore;
+  readonly incidentWebhookSecret?: string;
+  readonly deploymentUsage?: DeploymentUsagePort;
   readonly integrationPort?: IntegrationPort;
+  readonly githubControls?: GitHubControlsPort;
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
   /**
    * Which services may call `/internal/secrets/decrypt`. Defaults to the
@@ -257,12 +305,24 @@ export interface HarnessOptions {
   readonly serviceTokenVerifier?: ServiceTokenVerifier;
   /** `null` exercises a tenant surface that fails closed with no pricing config. */
   readonly pricing?: PricingConfig | null;
+  readonly planLimits?: PlanLimitsConfig;
+  readonly creditBalance?: CreditBalanceGate;
   readonly modelCompletions?: ModelCompletionRepository;
-  readonly usage?: UsageService;
+  readonly usageLedger?: UsageLedgerRepository;
   readonly localAgent?: LocalAgentDeps;
   readonly attachmentStorage?: AttachmentStoragePort;
+  readonly artifactReader?: RunArtifactReaderPort;
   readonly github?: GitHubInstallDependencies;
   readonly githubWebhook?: GitHubWebhookDependencies;
+  readonly billing?: BillingDeps;
+  readonly productAnalytics?: ProductAnalytics;
+  readonly featureFlags?: FeatureFlagEvaluator;
+  readonly notificationState?: NotificationDeps['state'];
+  readonly notificationEnqueue?: NotificationDeps['enqueue'];
+  readonly admin?: AdminRoutesConfig;
+  readonly projectDeletions?: ProjectDeletionRequestStore;
+  readonly projectExport?: ProjectExportDeps;
+  readonly builderArtifacts?: BuilderArtifactPort;
 }
 
 /**
@@ -303,18 +363,59 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
             tenantDb: options.tenantDb,
             runIntentHmacKey: options.runIntentHmacKey ?? TEST_RUN_INTENT_HMAC_KEY,
             ...(options.pricing === null ? {} : { pricing: options.pricing ?? TEST_PRICING }),
+            ...(options.planLimits === undefined ? {} : { planLimits: options.planLimits }),
+            ...(options.creditBalance === undefined
+              ? {}
+              : { creditBalance: options.creditBalance }),
             ...(options.git === undefined ? {} : { git: options.git }),
+            templates: options.templates ?? TEST_TEMPLATE_REGISTRY,
             ...(options.orchestrator === undefined ? {} : { orchestrator: options.orchestrator }),
             ...(options.attachmentStorage === undefined
               ? {}
               : { attachmentStorage: options.attachmentStorage }),
+            ...(options.artifactReader === undefined
+              ? {}
+              : { runArtifactReader: options.artifactReader }),
             capabilityScan: options.capabilityScan ?? TEST_CAPABILITY_SCAN,
             ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
+            ...(options.supportSandbox === undefined
+              ? {}
+              : { supportSandbox: options.supportSandbox }),
+            ...(options.builderPreviewSandbox === undefined
+              ? {}
+              : { builderPreviewSandbox: options.builderPreviewSandbox }),
+            ...(options.builderPreviewProxy === undefined
+              ? {}
+              : { builderPreviewProxy: options.builderPreviewProxy }),
+            ...(options.builderPreviewScreenshotStore === undefined
+              ? {}
+              : { builderPreviewScreenshotStore: options.builderPreviewScreenshotStore }),
+            ...(options.builderPreviewRecheckIntervalMs === undefined
+              ? {}
+              : { builderPreviewRecheckIntervalMs: options.builderPreviewRecheckIntervalMs }),
             ...(options.fork === undefined ? {} : { fork: options.fork }),
             ...(options.releasePort === undefined ? {} : { releasePort: options.releasePort }),
+            ...(options.releaseFork === undefined ? {} : { releaseFork: options.releaseFork }),
+            ...(options.incidentStore === undefined ? {} : { incidents: options.incidentStore }),
+            ...(options.incidentWebhookSecret === undefined
+              ? {}
+              : { incidentWebhookSecret: options.incidentWebhookSecret }),
+            ...(options.deploymentUsage === undefined
+              ? {}
+              : { deploymentUsage: options.deploymentUsage }),
             ...(options.integrationPort === undefined
               ? {}
               : { integrationPort: options.integrationPort }),
+            ...(options.githubControls === undefined ? {} : { githubControls: options.githubControls }),
+            ...(options.projectDeletions === undefined
+              ? {}
+              : { projectDeletions: options.projectDeletions }),
+            ...(options.projectExport === undefined
+              ? {}
+              : { projectExport: options.projectExport }),
+            ...(options.builderArtifacts === undefined
+              ? {}
+              : { builderArtifacts: options.builderArtifacts }),
           },
           // Wired whenever the tenant surface is, so every route suite runs
           // against an app that has the vault registered — a secrets route that
@@ -332,10 +433,24 @@ export function buildHarness(options: HarnessOptions = {}): Harness {
     ...(options.modelCompletions === undefined
       ? {}
       : { modelCompletions: options.modelCompletions }),
-    ...(options.usage === undefined ? {} : { usage: options.usage }),
+    ...(options.usageLedger === undefined ? {} : { usageLedger: options.usageLedger }),
     ...(options.localAgent === undefined ? {} : { localAgent: options.localAgent }),
     ...(options.github === undefined ? {} : { github: options.github }),
     ...(options.githubWebhook === undefined ? {} : { githubWebhook: options.githubWebhook }),
+    ...(options.billing === undefined ? {} : { billing: options.billing }),
+    ...(options.productAnalytics === undefined
+      ? {}
+      : { productAnalytics: options.productAnalytics }),
+    ...(options.featureFlags === undefined ? {} : { featureFlags: options.featureFlags }),
+    ...(options.admin === undefined ? {} : { admin: options.admin }),
+    ...(options.notificationState === undefined
+      ? {}
+      : {
+          notifications: {
+            state: options.notificationState,
+            enqueue: options.notificationEnqueue ?? (() => Promise.resolve()),
+          },
+        }),
     limits: {
       config: { ...TEST_RATE_LIMITS, ...options.rateLimits },
       proxy: options.proxy ?? TEST_PROXY_TRUST,

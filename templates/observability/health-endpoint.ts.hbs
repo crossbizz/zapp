@@ -1,0 +1,28 @@
+export interface ManagedHealthPayload {
+  readonly status: 'ok';
+  readonly projectId: string | undefined;
+  readonly release: string | undefined;
+  readonly checkedAt: string;
+}
+
+export function managedHealthPayload(now = new Date()): ManagedHealthPayload {
+  return {
+    status: 'ok',
+    projectId: process.env.ZAPP_PROJECT_ID,
+    release: process.env.ZAPP_RELEASE,
+    checkedAt: now.toISOString(),
+  };
+}
+
+/** Web-standard handler for Next, SvelteKit, Astro, and compatible server routes at /api/health. */
+export function GET(): Response {
+  return Response.json(managedHealthPayload(), {
+    status: 200,
+    headers: { 'cache-control': 'no-store' },
+  });
+}
+
+/** Framework-neutral payload helper for Express, Fastify, Nest, Nuxt, and adapter wrappers. */
+export function healthResponse(): ManagedHealthPayload {
+  return managedHealthPayload();
+}

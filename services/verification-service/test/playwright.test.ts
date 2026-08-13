@@ -6,6 +6,7 @@ import {
   BrowserRunInputSchema,
   browserRunIdempotencyKey,
   browserRunLeaseExpired,
+  classifyTestArtifacts,
   createR2EvidenceObjectStore,
   type BrowserRunInput,
 } from '../src/runner/playwright.js';
@@ -36,6 +37,39 @@ function input(): BrowserRunInput {
 }
 
 describe('VF-7 browser-run boundaries', () => {
+  it('classifies every browser artifact explicitly for the 30-day test TTL', () => {
+    const organizationId = newId('org');
+    const projectId = newId('proj');
+    const artifactId = newId('art');
+    const createdAt = new Date('2026-08-12T00:00:00.000Z');
+    expect(
+      classifyTestArtifacts(
+        [
+          {
+            id: artifactId,
+            organizationId,
+            projectId,
+            runId: newId('run'),
+            taskId: null,
+            type: 'playwright_json_report',
+            storageRef: `org/${organizationId}/project/${projectId}/test/report.json`,
+            contentHash: 'a'.repeat(64),
+            metadataJson: {},
+          },
+        ],
+        createdAt,
+      ),
+    ).toEqual([
+      {
+        artifactId,
+        organizationId,
+        projectId,
+        retentionClass: 'test',
+        expiresAt: new Date('2026-09-11T00:00:00.000Z'),
+      },
+    ]);
+  });
+
   it('binds the idempotency key to the tenant, project, and test run', () => {
     const run = input();
     expect(BrowserRunInputSchema.parse(run)).toEqual(run);

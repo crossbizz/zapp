@@ -1,7 +1,25 @@
 {
   "version": "m1-2026-08-09",
   "defaultRunCreditCeiling": "1000.0000",
+  "walletBalanceGraceFloor": "10.0000",
   "creditsPerUsd": "100.0000",
+  "creditPacks": {
+    "starter": {
+      "credits": "500.0000",
+      "amountUsd": "5.00"
+    },
+    "scale": {
+      "credits": "2500.0000",
+      "amountUsd": "25.00"
+    }
+  },
+  "usageRates": {
+    "sandbox_cpu_seconds": { "unit": "cpu_seconds", "usdPerUnit": "0.000010" },
+    "sandbox_mem_gib_seconds": { "unit": "gib_seconds", "usdPerUnit": "0.000005" },
+    "storage_gib_hours": { "unit": "gib_hours", "usdPerUnit": "0.000100" },
+    "deploy_provider": { "unit": "deployment", "usdPerUnit": "0.010000" },
+    "artifact_storage": { "unit": "gib", "usdPerUnit": "0.000100" }
+  },
   "models": {
     "anthropic/claude-sonnet-5": {
       "inputUsdPerMillion": "3.000000",
@@ -44,23 +62,6 @@
       "outputUsdPerMillion": "2.500000",
       "cacheReadUsdPerMillion": "0.030000",
       "cacheWriteUsdPerMillion": "0.300000"
-    }
-  },
-  "usageRates": {
-    "sandbox_cpu_seconds": {
-      "usdPerUnit": "0.002000"
-    },
-    "sandbox_mem_gib_seconds": {
-      "usdPerUnit": "0.000500"
-    },
-    "storage_gib_hours": {
-      "usdPerUnit": "0.000100"
-    },
-    "deploy_provider": {
-      "usdPerUnit": "0.001000"
-    },
-    "artifact_storage": {
-      "usdPerUnit": "0.000100"
     }
   }
 }

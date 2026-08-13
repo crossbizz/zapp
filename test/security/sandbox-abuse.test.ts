@@ -36,6 +36,12 @@ async function runGate(workspace: string, file: string, name: string): Promise<s
 }
 
 describe('OPS-12 permanent local sandbox-abuse gate', () => {
+  const hasModalCredentials =
+    typeof process.env.MODAL_TOKEN_ID === 'string' &&
+    process.env.MODAL_TOKEN_ID !== '' &&
+    typeof process.env.MODAL_TOKEN_SECRET === 'string' &&
+    process.env.MODAL_TOKEN_SECRET !== '';
+
   it('contains a process group and leaves no descendant after timeout', async () => {
     const output = await runGate(
       '@zapp/workspace-agent',
@@ -50,6 +56,15 @@ describe('OPS-12 permanent local sandbox-abuse gate', () => {
       '@zapp/workspace-agent',
       'test/cgroup.test.ts',
       'kills and re-observes the authoritative empty signal before cleanup ownership ends',
+    );
+    expect(output).toContain('1 passed');
+  }, 60_000);
+
+  it('maps OOM and unexpected termination to checkpoint recovery with an abnormal terminal record', async () => {
+    const output = await runGate(
+      '@zapp/sandbox-service',
+      'test/lifecycle.test.ts',
+      'defines a closed recovery action for every PRD failure case',
     );
     expect(output).toContain('1 passed');
   }, 60_000);
@@ -83,4 +98,17 @@ describe('OPS-12 permanent local sandbox-abuse gate', () => {
     );
     expect(workflow).toContain('pnpm exec vitest run test/security --no-file-parallelism');
   });
+
+  it.skipIf(!hasModalCredentials)(
+    'runs provider-enforced egress, process-fanout, and memory-exhaustion containment on Modal [skipped without MODAL_TOKEN_ID and MODAL_TOKEN_SECRET]',
+    async () => {
+      const output = await runGate(
+        '@zapp/sandbox-service',
+        'test/integration/modal-e2e.test.ts',
+        'blocks non-allowlisted egress and survives bounded process and memory exhaustion',
+      );
+      expect(output).toContain('1 passed');
+    },
+    240_000,
+  );
 });

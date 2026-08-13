@@ -69,12 +69,21 @@ function containsSecretReference(value: unknown): boolean {
 }
 
 describe('the Git backup workflow', () => {
+  it('bounds Git-heavy unit-test workers so the repository cold gate remains reliable', async () => {
+    const manifest = JSON.parse(await readFile(gitServicePackagePath, 'utf8')) as {
+      readonly scripts?: Readonly<Record<string, string>>;
+    };
+
+    expect(manifest.scripts?.['test']).toBe('vitest run --maxWorkers=1 --testTimeout=20000');
+  });
+
   it('fails an always-running non-secret guard unless the protected default branch is executing', async () => {
     const workflow = parse(await readFile(workflowPath, 'utf8')) as Workflow;
     const guard = workflow.jobs?.guard;
     const guardedRun = workflow.jobs?.run;
-    const script = guard?.steps?.find((step) => step.name === 'Validate protected default branch')
-      ?.run;
+    const script = guard?.steps?.find(
+      (step) => step.name === 'Validate protected default branch',
+    )?.run;
 
     expect(guard, 'missing always-running workflow guard').toBeDefined();
     expect(guard?.if).toBeUndefined();
@@ -93,9 +102,11 @@ describe('the Git backup workflow', () => {
       ACTUAL_REF: 'refs/heads/main',
       REF_PROTECTED: 'true',
     };
-    await expect(execute('bash', ['-c', script], { env: guardEnvironment })).resolves.toMatchObject({
-      stderr: '',
-    });
+    await expect(execute('bash', ['-c', script], { env: guardEnvironment })).resolves.toMatchObject(
+      {
+        stderr: '',
+      },
+    );
     await expect(
       execute('bash', ['-c', script], {
         env: { ...guardEnvironment, ACTUAL_REF: 'refs/heads/review-controlled' },
@@ -181,9 +192,10 @@ describe('the Git backup workflow', () => {
       'export ARTIFACT_BUCKET="zapp-artifacts"',
     ] as const;
 
-    expect(verifyCommandIndex, 'pre-push does not invoke the root verification gate').toBeGreaterThan(
-      0,
-    );
+    expect(
+      verifyCommandIndex,
+      'pre-push does not invoke the root verification gate',
+    ).toBeGreaterThan(0);
     for (const line of requiredHookLines) {
       const lineIndex = hook.indexOf(line);
       expect(lineIndex, `missing pre-push arm: ${line}`).toBeGreaterThanOrEqual(0);

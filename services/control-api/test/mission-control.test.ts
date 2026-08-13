@@ -64,6 +64,7 @@ async function seedRun(): Promise<SeededRun> {
     temporalWorkflowId: newId('run'),
     startedBy: owner.userId,
     budgetJson: { maxCredits: 100 },
+    planMaxCredits: '1000.0000',
     startedAt: new Date('2026-08-09T18:00:00.000Z'),
     completedAt: null,
   };
@@ -382,6 +383,27 @@ describe('GET /v1/runs/:runId/mission-control', () => {
     expect(response.body).not.toContain('must not be returned');
     expect(response.json()).toMatchInlineSnapshot(`
       {
+        "actions": {
+          "retryFailedTasks": [
+            {
+              "eligible": false,
+              "reason": "task_not_failed",
+              "taskId": "${taskOne}",
+            },
+            {
+              "eligible": false,
+              "reason": "task_not_failed",
+              "taskId": "${taskTwo}",
+            },
+          ],
+          "skipOptionalPhases": [
+            {
+              "eligible": false,
+              "phaseId": "${phaseId}",
+              "reason": "phase_required",
+            },
+          ],
+        },
         "activeAgents": [
           {
             "agentId": "builder-primary",
@@ -497,6 +519,7 @@ describe('GET /v1/runs/:runId/mission-control', () => {
           "mode": "build",
           "model": "anthropic/claude-sonnet-5",
           "organizationId": "${seeded.organizationId}",
+          "planMaxCredits": "1000.0000",
           "projectId": "${seeded.projectId}",
           "startedAt": "2026-08-09T18:00:00.000Z",
           "startedBy": "${seeded.run.startedBy}",
@@ -664,5 +687,51 @@ describe('GET /v1/runs/:runId/mission-control', () => {
     });
     expect(response.statusCode, response.body).toBe(404);
     expect(response.json<{ error: { code: string } }>().error.code).toBe('run_not_found');
+  });
+
+  it('returns server-computed retry and optional-phase eligibility with stable reasons', async () => {
+    const seeded = await seedRun();
+    seeded.run.mode = 'autonomous';
+    const requiredPhaseId = newId('phase');
+    const optionalPhaseId = newId('phase');
+    const completedTaskId = newId('task');
+    const failedTaskId = newId('task');
+    addEvent(seeded, 'artifact.created', {
+      artifactId: newId('art'),
+      artifactType: 'implementation_plan',
+      phases: [
+        { phaseId: requiredPhaseId, optional: false },
+        { phaseId: optionalPhaseId, optional: true },
+      ],
+    });
+    addEvent(seeded, 'phase.created', {
+      phaseId: requiredPhaseId, sequence: 1, title: 'Required', status: 'running',
+    }, { phaseId: requiredPhaseId });
+    addEvent(seeded, 'task.created', {
+      taskId: completedTaskId, phaseId: requiredPhaseId, title: 'Foundation', status: 'completed',
+      riskLevel: 'low', dependencies: [],
+    }, { phaseId: requiredPhaseId, taskId: completedTaskId });
+    addEvent(seeded, 'task.created', {
+      taskId: failedTaskId, phaseId: requiredPhaseId, title: 'Failed child', status: 'failed',
+      riskLevel: 'low', dependencies: [completedTaskId],
+    }, { phaseId: requiredPhaseId, taskId: failedTaskId });
+
+    const response = await seeded.harness.app.inject({
+      method: 'GET',
+      url: `/v1/runs/${seeded.run.id}/mission-control`,
+      headers: seeded.headers,
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<{ actions: unknown }>().actions).toEqual({
+      retryFailedTasks: [
+        { taskId: completedTaskId, eligible: false, reason: 'task_not_failed' },
+        { taskId: failedTaskId, eligible: true, reason: 'eligible' },
+      ],
+      skipOptionalPhases: [
+        { phaseId: requiredPhaseId, eligible: false, reason: 'phase_required' },
+        { phaseId: optionalPhaseId, eligible: true, reason: 'eligible' },
+      ],
+    });
   });
 });

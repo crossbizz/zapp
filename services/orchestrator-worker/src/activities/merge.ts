@@ -60,7 +60,7 @@ export const TaskWorkspaceResultSchema = z
 export type TaskWorkspaceResult = z.infer<typeof TaskWorkspaceResultSchema>;
 
 export const TransitionTaskStateInputSchema = TaskScopeSchema.extend({
-  status: TaskStateSchema.extract(['running', 'verifying', 'blocked']),
+  status: TaskStateSchema.extract(['running', 'verifying', 'blocked', 'failed']),
   idempotencyKey: OperationKeySchema,
 }).strict();
 

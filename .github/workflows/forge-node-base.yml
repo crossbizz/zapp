@@ -1,0 +1,55 @@
+name: Publish forge-node-base
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/ws17-publish']
+    paths:
+      - '.github/workflows/forge-node-base.yml'
+      - 'infra/modal/**'
+      - 'services/workspace-agent/**'
+      - 'services/preview-proxy/**'
+      - 'pnpm-lock.yaml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - run: corepack enable
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build recipe contracts
+        run: pnpm turbo run build --filter=@zapp/sandbox-service...
+      - name: Render provider-neutral recipe
+        env:
+          ZAPP_SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
+          ZAPP_SOURCE_REVISION: ${{ github.sha }}
+        run: pnpm --filter @zapp/modal-infra exec tsx render-oci.ts > /tmp/forge-node-base.Dockerfile
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: /tmp/forge-node-base.Dockerfile
+          push: true
+          tags: ghcr.io/crossbizz/zapp-forge-node-base:ws17-${{ github.sha }}
+          platforms: linux/amd64
+          provenance: false
+      - name: Report immutable reference
+        run: echo "ghcr.io/crossbizz/zapp-forge-node-base:ws17-${GITHUB_SHA}@${{ steps.image.outputs.digest }}"

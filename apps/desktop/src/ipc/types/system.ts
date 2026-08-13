@@ -69,6 +69,12 @@ export const SystemDebugInfoSchema = z.object({
   selectedLanguageModel: z.string(),
 });
 
+export const DockerAvailabilitySchema = z.object({
+  available: z.boolean(),
+  diagnosticsUrl: z.string().url(),
+  reason: z.string().nullable(),
+});
+
 export type SystemDebugInfo = z.infer<typeof SystemDebugInfoSchema>;
 
 export const SelectNodeFolderResultSchema = z.object({
@@ -281,6 +287,12 @@ export const systemContracts = {
     channel: "get-node-path",
     input: z.void(),
     output: z.string().nullable(),
+  }),
+
+  getDockerAvailability: defineContract({
+    channel: "docker-availability",
+    input: z.void(),
+    output: DockerAvailabilitySchema,
   }),
 
   // File/folder selection

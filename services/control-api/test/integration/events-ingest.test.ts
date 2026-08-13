@@ -72,6 +72,10 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
             await realAudit.recordDetached(event);
             if (auditFails) throw new Error('forced CP-13 audit failure');
           },
+          async recordDetachedOnce(key, event) {
+            await realAudit.recordDetachedOnce(key, event);
+            if (auditFails) throw new Error('forced CP-13 audit failure');
+          },
         },
       },
       tenant: { tenantDb: createTenantDbFactory(database.db) },
@@ -134,6 +138,7 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       temporalWorkflowId: runId,
       startedBy: userId,
       budgetJson: null,
+      planMaxCredits: '1000.0000',
     });
     await database.db.insert(agentPhases).values({
       id: phaseId,
@@ -793,6 +798,7 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       temporalWorkflowId: foreignRunId,
       startedBy: (await database.sql<{ id: string }[]>`select id from users limit 1`)[0]?.id ?? '',
       budgetJson: null,
+      planMaxCredits: '1000.0000',
     });
 
     const cases = [
@@ -850,6 +856,7 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       temporalWorkflowId: otherRunId,
       startedBy: owner?.id ?? '',
       budgetJson: null,
+      planMaxCredits: '1000.0000',
     });
     await database.db.insert(agentPhases).values({
       id: otherPhaseId,

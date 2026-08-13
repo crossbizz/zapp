@@ -5,6 +5,7 @@ import type { AuthIdentity } from '../src/auth/port.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import { buildHarness, signIn, type Harness } from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
+import { CreditBalanceExhaustedError } from '../src/usage/limits.js';
 
 const OWNER: AuthIdentity = {
   externalId: 'local-agent-owner',
@@ -170,6 +171,66 @@ describe('desktop local-agent public boundary', () => {
         taskId: scope.taskId,
       }),
     ]);
+  });
+
+  it('gates a desktop completion at its request boundary before the provider call', async () => {
+    const data = new InMemoryTenantData();
+    const sessionId = '01912f8f-6cb0-7a52-9d3d-2b24f32062b9';
+    const gatewayRequests: unknown[] = [];
+    const built = buildHarness({
+      tenantDb: data.factory,
+      localAgent: {
+        sessions: {
+          ensure() { throw new Error('not used'); },
+          get(input: { organizationId: string }) {
+            return Promise.resolve({
+              sessionId,
+              organizationId: input.organizationId,
+              projectId: newId('proj'),
+              runId: newId('run'),
+              taskId: newId('task'),
+            });
+          },
+        },
+        gateway: {
+          async *stream(input: unknown) {
+            await Promise.resolve();
+            gatewayRequests.push(input);
+          },
+        },
+        creditBalance: {
+          availableCredits: () => Promise.reject(new Error('not used')),
+          requireRunAdmission: () => Promise.reject(new CreditBalanceExhaustedError()),
+        },
+      },
+    });
+    harnesses.push(built);
+    const owner = await signIn(built, OWNER);
+    const organization = await built.app.inject({
+      method: 'POST',
+      url: '/v1/organizations',
+      headers: owner.headers,
+      payload: { name: 'Local Credits' },
+    });
+    const organizationId = organization.json<{ organization: { id: string } }>().organization.id;
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: `/v1/local-agent/sessions/${sessionId}/completions`,
+      headers: { ...owner.headers, [ORGANIZATION_HEADER]: organizationId, accept: 'text/event-stream' },
+      payload: {
+        completionId: `cmp_${'c'.repeat(64)}`,
+        agentRole: 'builder',
+        messages: [{ role: 'user', content: 'One more change' }],
+        cacheBreakpointMessageIndexes: [],
+        maxInputTokens: 8,
+        maxOutputTokens: 64,
+      },
+    });
+
+    expect(response.statusCode).toBe(402);
+    expect(response.json()).toMatchObject({ error: { code: 'credit_balance_exhausted' } });
+    expect(gatewayRequests).toEqual([]);
   });
 
   it('returns 404 without gateway access when the session belongs to another tenant', async () => {

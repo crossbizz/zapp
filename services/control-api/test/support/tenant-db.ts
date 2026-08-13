@@ -59,6 +59,7 @@ import {
   type UpdateProjectInput,
   type UpdatedProject,
 } from '../../src/tenant/db.js';
+import { PlanLimitConcurrentRunsError } from '../../src/usage/limits.js';
 import {
   ProjectDashboardPreviewEventSchema,
   ProjectDashboardSummarySourceSchema,
@@ -70,6 +71,33 @@ import {
   INTERNAL_PROVIDER,
   NO_SYNC,
 } from '../../src/tenant/vocabulary.js';
+
+export const EMPTY_WORKSPACE_USAGE = {
+  usageOperationKey: null,
+  usageLastSampleAt: null,
+  usageLastCpuMicros: null,
+  usageCpuSeconds: null,
+  usageMemoryGibSeconds: null,
+  usageCpuSecondUsd: null,
+  usageMemoryGibSecondUsd: null,
+  usageCreditsPerUsd: null,
+  usageFinalizedAt: null,
+  usageCpuDeliveredAt: null,
+  usageMemoryDeliveredAt: null,
+} as const satisfies Pick<
+  Workspace,
+  | 'usageOperationKey'
+  | 'usageLastSampleAt'
+  | 'usageLastCpuMicros'
+  | 'usageCpuSeconds'
+  | 'usageMemoryGibSeconds'
+  | 'usageCpuSecondUsd'
+  | 'usageMemoryGibSecondUsd'
+  | 'usageCreditsPerUsd'
+  | 'usageFinalizedAt'
+  | 'usageCpuDeliveredAt'
+  | 'usageMemoryDeliveredAt'
+>;
 
 /**
  * The tenant handle, in memory, for the route suites.
@@ -95,6 +123,8 @@ import {
 
 /** Rows shared by every handle the factory hands out, as one database would be. */
 export class InMemoryTenantData {
+  /** Mirrors CP-17's durable organization deletion fence. */
+  organizationDeleting = false;
   readonly projects: Project[] = [];
   readonly repositories: Repository[] = [];
   readonly branches: Branch[] = [];
@@ -306,6 +336,36 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
     organizationId: orgId,
 
     integrations: {
+      list() {
+        return Promise.resolve(
+          mine(orgId, data.integrationConnections).map((row) => IntegrationConnectionSchema.parse({
+            id: row.id,
+            organizationId: row.organizationId,
+            projectId: row.projectId,
+            provider: row.provider,
+            status: row.status,
+            credentialRef: row.credentialRef,
+            configuration: row.configurationJson,
+          })),
+        );
+      },
+      async disconnect(input) {
+        const row = mine(orgId, data.integrationConnections).find((connection) => connection.id === input.connectionId);
+        if (row === undefined) return undefined;
+        row.status = 'disconnected';
+        row.credentialRef = null;
+        const view = IntegrationConnectionSchema.parse({
+          id: row.id,
+          organizationId: row.organizationId,
+          projectId: row.projectId,
+          provider: row.provider,
+          status: row.status,
+          credentialRef: row.credentialRef,
+          configuration: row.configurationJson,
+        });
+        await input.audit(NO_TRANSACTION, view);
+        return view;
+      },
       getGitHubInstallation(installationId) {
         const row = mine(orgId, data.integrationConnections).find(
           (connection) =>
@@ -518,6 +578,9 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
 
       async create(input: NewProjectInput): Promise<CreatedProject> {
+        if (data.organizationDeleting) {
+          return 'organization_deleting';
+        }
         const taken = mine(orgId, data.projects).some((project) => project.slug === input.slug);
         if (taken) {
           return 'slug_taken';
@@ -780,6 +843,13 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           mine(orgId, data.repositories).find((row) => row.projectId === projectId),
         );
       },
+      async setSyncPolicy(input) {
+        const row = mine(orgId, data.repositories).find((repository) => repository.projectId === input.projectId);
+        if (row === undefined) return undefined;
+        row.syncPolicy = input.syncPolicy;
+        await input.audit(NO_TRANSACTION, row);
+        return row;
+      },
     },
 
     branches: {
@@ -1017,15 +1087,45 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
     },
 
+    runArtifacts: {
+      getForRun(runId, artifactId) {
+        return Promise.resolve(
+          mine(orgId, data.artifacts).find(
+            (row) => row.runId === runId && row.id === artifactId,
+          ),
+        );
+      },
+    },
+
     runs: {
-      byProject(projectId): Promise<AgentRun[]> {
-        return Promise.resolve(mine(orgId, data.runs).filter((row) => row.projectId === projectId));
+      byProject(projectId, limit): Promise<AgentRun[]> {
+        const rows = mine(orgId, data.runs).filter((row) => row.projectId === projectId);
+        return Promise.resolve(limit === undefined ? rows : rows.slice(0, limit));
+      },
+      countActiveAutonomousRuns(): Promise<number> {
+        return Promise.resolve(
+          mine(orgId, data.runs).filter(
+            (row) =>
+              row.mode === 'autonomous' &&
+              ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+          ).length,
+        );
+      },
+      listActiveRunIds(): Promise<readonly string[]> {
+        return Promise.resolve(
+          mine(orgId, data.runs)
+            .filter((row) => ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status))
+            .map((row) => row.id),
+        );
       },
       getById(runId): Promise<AgentRun | undefined> {
         return Promise.resolve(mine(orgId, data.runs).find((row) => row.id === runId));
       },
       async create(input) {
-        return await withRunCreateLock(data, `${orgId}:${input.id}`, async () => {
+        return await withRunCreateLock(
+          data,
+          `${orgId}:${input.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined ? 'autonomous-admission' : input.id}`,
+          async () => {
           const existing = mine(orgId, data.runs).find((row) => row.id === input.id);
           if (existing !== undefined) {
             return {
@@ -1036,6 +1136,16 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
               run: existing,
             } as const;
           }
+          if (
+            input.mode === 'autonomous' &&
+            input.concurrentAutonomousLimit !== undefined &&
+            mine(orgId, data.runs).filter(
+              (row) =>
+                row.mode === 'autonomous' &&
+                ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+            ).length >= input.concurrentAutonomousLimit
+          )
+            throw new PlanLimitConcurrentRunsError();
           const run: AgentRun = {
             id: input.id,
             organizationId: orgId,
@@ -1050,6 +1160,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
             temporalWorkflowId: input.workflowId,
             startedBy: input.startedBy,
             budgetJson: input.budget,
+            planMaxCredits: input.planMaxCredits,
             startedAt: input.now,
             completedAt: null,
           };
@@ -1058,7 +1169,41 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           data.runs.push(run);
           data.runAccounting.set(run.id, input.accounting);
           return { outcome: 'created', run } as const;
+          },
+        );
+      },
+      async readmitDispatch(input) {
+        return await withRunCreateLock(data, `${orgId}:dispatch-readmission`, async () => {
+          const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
+          if (existing === undefined) return undefined;
+          if (existing.requestFingerprint !== input.requestFingerprint) {
+            return { outcome: 'conflict', run: existing } as const;
+          }
+          if (existing.status !== 'dispatch_failed') {
+            return { outcome: 'recovered', run: existing } as const;
+          }
+          if (
+            existing.mode === 'autonomous' &&
+            input.concurrentAutonomousLimit !== undefined &&
+            mine(orgId, data.runs).filter(
+              (row) =>
+                row.mode === 'autonomous' &&
+                ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+            ).length >= input.concurrentAutonomousLimit
+          ) throw new PlanLimitConcurrentRunsError();
+          const readmitted = { ...existing, status: 'queued' };
+          await input.audit(NO_TRANSACTION, readmitted);
+          data.runs.splice(data.runs.indexOf(existing), 1, readmitted);
+          return { outcome: 'recovered', run: readmitted } as const;
         });
+      },
+      async markDispatchFailed(input) {
+        const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
+        if (existing === undefined || existing.status !== 'queued') return undefined;
+        const failed = { ...existing, status: 'dispatch_failed' };
+        await input.audit(NO_TRANSACTION, failed);
+        data.runs.splice(data.runs.indexOf(existing), 1, failed);
+        return failed;
       },
       async claimOperation(input) {
         const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
@@ -1111,6 +1256,11 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
     },
 
     approvals: {
+      get(runId, approvalId) {
+        return Promise.resolve(
+          mine(orgId, data.approvals).find((approval) => approval.runId === runId && approval.id === approvalId),
+        );
+      },
       async resolve(input) {
         const existing = mine(orgId, data.approvals).find(
           (row) =>
@@ -1142,6 +1292,14 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       getById(id) {
         return Promise.resolve(mine(orgId, data.workspaces).find((row) => row.id === id));
       },
+      byProject(projectId, limit) {
+        return Promise.resolve(
+          mine(orgId, data.workspaces)
+            .filter((row) => row.projectId === projectId)
+            .sort((left, right) => right.id.localeCompare(left.id))
+            .slice(0, limit),
+        );
+      },
       async create(input) {
         const base: Workspace = {
           id: input.id,
@@ -1161,6 +1319,7 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           previewMonitorOwnerId: null,
           previewMonitorLeaseExpiresAt: null,
           snapshotRef: null,
+          ...EMPTY_WORKSPACE_USAGE,
           createdAt: input.now,
           lastActiveAt: null,
           terminatedAt: null,

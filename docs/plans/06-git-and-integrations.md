@@ -8,7 +8,7 @@
 
 **Tech Stack:** Forgejo 9 (Fly.io + volume), simple-git/isomorphic-git (service-side ops), Octokit + GitHub App JWT, Supabase Management API, Neon API, Stripe SDK.
 
-**Milestone:** GIT-1..4 (M0–M1), INT-1..2 (M1 pull-forward), INT-3..9 (M4). **Depends on:** Plans 01, 02. **Consumed by:** 03 (clone/push), 07 (release commits), 04 (fix-mode restore).
+**Milestone:** GIT-1..4 (M0–M1), INT-1..2 (M1 pull-forward), GIT-5..6 (M2), INT-10 (M3), INT-3..9 + GIT-7 (M4). **Depends on:** Plans 01, 02. **Consumed by:** 03 (clone/push), 07 (release commits), 04 (fix-mode restore), 08 (templates/settings), 09 (desktop sync).
 
 ## Global Constraints
 
@@ -234,11 +234,66 @@ be built:
 
 ### Task INT-9 [M4]: Stripe adapter integration tests
 
-**Files:** Create: `test/integration/stripe-flow.test.ts` (Stripe test mode, env-gated)
+**Files:** Create: `packages/agent-tools/test/integration/stripe-flow.test.ts` (Stripe test mode, env-gated). Modify: `packages/agent-tools/package.json`, `templates/stripe/{webhook,sync}.ts.hbs`, `turbo.json` (review-required checkout completion, resource cleanup, and integration-gate wiring).
 **Effort:** M
 
-- [ ] Binding behavior: full loop in a fixture next app: seed products → checkout session (test card via Stripe test clock/API, not browser) → webhook `checkout.session.completed` → sync row `active` → access middleware admits; cancel → webhook → access revoked. This suite is what VF's `integration_tests` gate runs for Stripe-enabled Managed projects (PRD §24.2).
-- [ ] Commit: `test(integrations): stripe subscription end-to-end in test mode`
+- [x] Binding behavior: full loop in a fixture next app: seed products → checkout session (test card via Stripe test clock/API, not browser) → webhook `checkout.session.completed` → sync row `active` → access middleware admits; cancel → webhook → access revoked. This suite is what VF's `integration_tests` gate runs for Stripe-enabled Managed projects (PRD §24.2).
+- [x] Commit: `test(integrations): stripe subscription end-to-end in test mode`
+
+### Task GIT-6 [M2]: Approved template source registry
+
+**Files:** Create `config/templates.json`; modify config schema/tests and required server loader.
+**Effort:** S. **[expand-at-execution]**
+
+- [x] Binding behavior: strict unique slugs, immutable source identity, approved internal refs kept server-side, validated demo URLs and presentation metadata.
+- [x] Commit: `feat(templates): approved source registry`
+
+Execution expansion (2026-08-12):
+
+- [x] **6a RED — strict registry:** reject duplicate/unsafe slugs, mutable or credential-bearing source refs, non-SHA releases, and unsafe demo URLs.
+- [x] **6b GREEN — approved releases:** check in the official starter entries with exact source commits and complete public presentation metadata.
+- [x] **6c RED/GREEN — server-only loader:** load/index the registry by slug and return a public projection that structurally omits repository identity.
+- [x] **6d verification:** run config tests plus lint/typecheck/build, diff checks, tracker/log bookkeeping, and one commit.
+
+### Task GIT-5 [M2]: Commit comparison + approved template seeding
+
+**Files:** Modify git-service provider/routes/ports/tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: bounded before/after patch plus idempotent repository seed from server-approved template refs; reject arbitrary sources and preserve tenant/project scope.
+- [x] Commit: `feat(git-service): commit diff and template seeding`
+
+Execution expansion (2026-08-12):
+
+- [x] **5a RED — comparison:** require service auth and derived tenant repository identity; compare two exact SHAs and bound both file metadata and UTF-8 patch bytes.
+- [x] **5b RED — approved seed:** accept only a registry slug plus operation key, resolve source URL/SHA server-side, and mint a repository-scoped target credential.
+- [x] **5c GREEN — idempotent Git transaction:** fetch the exact approved commit, reject divergent/nonempty target history, push one default branch, and recover an equal retry without another push; always revoke credentials and remove temporary state.
+- [x] **5d verification:** run git-service unit/integration/static gates and architecture, then tracker/log bookkeeping and one commit; no live provider call.
+
+### Task INT-10 [M3]: Public GitHub sync controls
+
+**Files:** Modify control-api GitHub integration routes/composition, DB if required, OpenAPI/SDK/tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [x] **10a RED/GREEN — state/policy:** expose the tenant repository's GitHub link, policy, durable heads/relation/conflict state, and update only the closed policy vocabulary.
+- [x] **10b RED/GREEN — keyed operations:** route manual inbound refresh and export through the existing INT-3/INT-4 engines with stable operation identity, RBAC, audit, and typed stale-base/conflict responses.
+- [x] **10c production/SDK:** compose provider and Git boundaries, regenerate OpenAPI/SDK, and verify focused control/Git gates without a live provider call.
+- [x] Binding behavior: sync policy/state, keyed manual sync and export over the existing engines; stale-base/conflict surfacing and no last-writer-wins.
+- [x] Commit: `feat(integrations): public GitHub sync controls`
+
+### Task GIT-7 [M4]: Public short-lived repository credential lease
+
+**Files:** Modify git-service token boundary, control-api project route/client, OpenAPI/SDK/tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: session-authenticated, audited, `edit_code`-authorized, `no-store`, repository-scoped credential lease with maximum 300-second TTL; never persist tokens in remotes or desktop state.
+- [x] Commit: `feat(git): public short-lived repository lease`
+
+Execution expansion (2026-08-12):
+
+- [x] **7a RED — public boundary:** require session, CSRF, tenant membership, project ownership, and `edit_code`; reject TTLs outside 1–300 seconds.
+- [x] **7b GREEN — scoped lease:** wrap the service-authenticated repository-derived mint, attribute the requesting user in its non-secret audit metadata, and return the credential once with `cache-control: no-store`.
+- [x] **7c generated client/security:** regenerate OpenAPI/SDK and prove foreign/viewer denial, exact scope/expiry, and absence from persisted project/repository state.
 
 ---
 
@@ -253,6 +308,11 @@ be built:
 - Repo-scoped 300 s tokens; per-org Forgejo namespaces; installation tokens never stored raw (exchanged per operation); integration credentials only in vault with scope labels; credential separation (platform vs generated-app Stripe) has a dedicated permanent test.
 
 ## Execution log
+
+- 2026-08-12 GIT-7 done — Added a session-authenticated edit-code lease API over the existing repository-derived 300-second mint, with no-store responses, user-attributed non-secret audit metadata, generated SDK coverage, and no credential persistence.
+- 2026-08-12 GIT-6 done — Added three exact-SHA official template releases with strict source/demo validation and a server-only registry projection that omits repository identity.
+- 2026-08-12 GIT-5 done — Added exact-SHA bounded commit comparison and service-authenticated, registry-only idempotent template seeding with scoped credential cleanup; no provider call.
+- 2026-08-12 INT-10 done — Published GitHub sync state/policy/manual-refresh/export APIs over the existing divergence-safe engines and composed the server Git boundary; focused control 22/22, local-Git 5/5, SDK 56/56, lint/typecheck/build passed without a provider call.
 
 - (empty)
 - 2026-08-04: GIT-1/2/3 done (90aa3c5+c6175d7+282a1f0 + fix f9c0198, review Approved). Cross-repo denial is now a CI gate (`git isolation (repository-scoped tokens)`, real forgejo:9 container) — resists filtering three ways: own job, integration excludes the package, module-level throw fails rather than greens if the container is removed. Tokens expire on an in-process 60s sweep. Note for later: ci.yml resolves the container by `docker ps --filter ancestor=` rather than service name — wrong container if a second Forgejo ever runs on a runner.
@@ -276,3 +336,4 @@ be built:
 - 2026-08-11 INT-6 done — Supabase migrations now stage keyed monotonic repo files, apply only to linked non-production projects, feed pending history through the VF-16 shadow receipt recorded in release evidence, and generate owner-scoped RLS plus pgTAP denial tests; one capped review fixed fixture-vacuity and migration-ordering risks, local PostgreSQL proved cross-user denial, no blockers or plan deviations occurred, and live Supabase verification skipped because `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are unset.
 - 2026-08-11 INT-7 done — Neon API connect now vaults explicit-database app/migration URLs for default and dedicated preview branches, VF-16 validates on TTL verification branches with response-loss reconciliation and cleanup, schema SQL and real DDL denial passed, and one capped review fixed concurrent password persistence, post-create compensation, explicit database targeting, and cursor pagination; no blockers or plan deviations, while live Neon skipped because `NEON_API_KEY` and `NEON_PROJECT_ID` are unset.
 - 2026-08-11 INT-8 done — Generated-app Stripe credentials now use an audited vault scope isolated from platform billing, and the installer emits typechecked Next or Express Checkout, portal, signed webhook, atomic stale-safe sync, access-control, and migration artifacts; one capped review fixed authenticated portal ownership, current Stripe item periods, stale-event fencing, migration installation, and explicit Express/Fastify handling, while the first pre-push run exposed and bounded the compiler-heavy test's default timeout; no blockers or plan deviations, and live Stripe skipped because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.
+- 2026-08-12 INT-9 done — The generated Next fixture now exercises checkout completion, signed subscription sync, real isolated Postgres state, admission, cancellation, and revocation through the discoverable integration gate; one capped review exposed and drove the provider/DB/gate remediation, and the live Stripe proof skipped visibly because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.

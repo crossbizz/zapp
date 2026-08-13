@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createReleaseRecordService,
+  releaseIncidentResolutionId,
   ReleaseSchema,
   ReleaseServiceError,
   type Actor,
@@ -33,6 +34,7 @@ class MemoryReleaseStore implements ReleaseStore {
   createCalls = 0;
   transitionCalls = 0;
   readonly waivers: CreateCandidateStoreInput['specificationWaiver'][] = [];
+  readonly audits: CreateCandidateStoreInput['audit'][] = [];
 
   createCandidate(input: CreateCandidateStoreInput): Promise<Release> {
     const operation = this.operations.get(`create:${input.operationKey}`);
@@ -48,6 +50,7 @@ class MemoryReleaseStore implements ReleaseStore {
     }
     this.createCalls += 1;
     this.waivers.push(input.specificationWaiver);
+    this.audits.push(input.audit);
     this.rows.set(input.release.id, input.release);
     this.operations.set(`create:${input.operationKey}`, {
       fingerprint: input.fingerprint,
@@ -108,6 +111,7 @@ class MemoryReleaseStore implements ReleaseStore {
       );
     }
     this.transitionCalls += 1;
+    if (input.audit !== undefined) this.audits.push(input.audit);
     const changed = { ...current, status: input.to };
     this.rows.set(changed.id, changed);
     this.operations.set(`transition:${input.operationKey}`, {
@@ -120,14 +124,24 @@ class MemoryReleaseStore implements ReleaseStore {
 
 class RecordingGit implements ReleaseGitPort {
   commitExists = true;
-  readonly tags: Array<{ readonly projectId: string; readonly tag: string; readonly sha: string }> = [];
+  readonly tags: Array<{
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly tag: string;
+    readonly sha: string;
+  }> = [];
 
-  getCommit(input: { readonly projectId: string; readonly sha: string }): Promise<boolean> {
+  getCommit(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly sha: string;
+  }): Promise<boolean> {
     void input;
     return Promise.resolve(this.commitExists);
   }
 
   createTag(input: {
+    readonly organizationId: string;
     readonly projectId: string;
     readonly tag: string;
     readonly sha: string;
@@ -172,6 +186,7 @@ function candidate(operationKey = OPERATION) {
     specificationId: SPECIFICATION,
     actorId: OWNER_ID,
     operationKey,
+    resolvedFixRunIds: [],
   };
 }
 
@@ -200,6 +215,12 @@ async function releaseAt(
 }
 
 describe('release records', () => {
+  it('uses the control-plane incident resolution identity for release retries', () => {
+    expect(releaseIncidentResolutionId(`aud_${ULID}`, RELEASE_ID)).toBe(
+      'aud_F8SWYNA0S3KVDRE0N1Z9SV1SXA',
+    );
+  });
+
   it('decodes a completed JSONB idempotency replay back into the release boundary type', () => {
     const replay = ReleaseSchema.parse({
       id: RELEASE_ID,
@@ -289,10 +310,21 @@ describe('release records', () => {
     expect(replay).toEqual(first);
     expect(built.store.createCalls).toBe(1);
     expect(built.git.tags).toEqual([
-      { projectId: PROJECT, tag: RELEASE_ID, sha: COMMIT },
-      { projectId: PROJECT, tag: RELEASE_ID, sha: COMMIT },
+      { organizationId: ORG, projectId: PROJECT, tag: RELEASE_ID, sha: COMMIT },
+      { organizationId: ORG, projectId: PROJECT, tag: RELEASE_ID, sha: COMMIT },
     ]);
     expect(Object.keys(first)).not.toContain('updateCommit');
+    expect(built.store.audits).toEqual([
+      {
+        actorId: OWNER_ID,
+        action: 'release.created',
+        metadata: {
+          projectId: PROJECT,
+          environmentId: ENVIRONMENT,
+          operationKey: OPERATION,
+        },
+      },
+    ]);
   });
 
   it('enforces the release status transition table without a commit mutation surface', async () => {
@@ -373,6 +405,11 @@ describe('release records', () => {
     });
     expect(approved.status).toBe('approved');
     expect(approved.commitSha).toBe(COMMIT);
+    expect(denied.store.audits.at(-1)).toEqual({
+      actorId: OWNER_ID,
+      action: 'release.approved',
+      metadata: { operationKey: `op_${'1'.repeat(64)}` },
+    });
   });
 
   it('allows a builder only when the organization enables deploy approval', async () => {
@@ -398,6 +435,35 @@ describe('release records', () => {
         operationKey: `op_${'3'.repeat(64)}`,
       }),
     ).resolves.toMatchObject({ status: 'approved', commitSha: COMMIT });
+  });
+
+  it('keyedly persists approved to deploying with the deployment-request audit', async () => {
+    const built = await releaseAt('approved');
+    const operationKey = `op_${'6'.repeat(64)}`;
+    const input = {
+      organizationId: ORG,
+      releaseId: RELEASE_ID,
+      actorId: OWNER_ID,
+      operationKey,
+      deploymentType: 'first_deploy' as const,
+      confirmation: { dataDisposition: null },
+    };
+
+    const started = await built.service.beginDeployment(input);
+    const replay = await built.service.beginDeployment(input);
+
+    expect(started).toMatchObject({ status: 'deploying', commitSha: COMMIT });
+    expect(replay).toEqual(started);
+    expect(built.store.transitionCalls).toBe(1);
+    expect(built.store.audits.at(-1)).toEqual({
+      actorId: OWNER_ID,
+      action: 'release.deploy_requested',
+      metadata: {
+        operationKey,
+        deploymentType: 'first_deploy',
+        dataDisposition: null,
+      },
+    });
   });
 
   it('guards the internal HTTP boundary and maps an unknown commit to 422', async () => {

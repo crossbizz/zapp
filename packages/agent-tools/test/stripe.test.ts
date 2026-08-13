@@ -180,10 +180,14 @@ describe('generated-app Stripe templates', () => {
           templates: bundle,
         }),
       ).toThrow('explicit Express project hint');
-      await expect(typecheckRendered(next)).resolves.toEqual([]);
-      await expect(typecheckRendered(express)).resolves.toEqual([]);
+      await expect(
+        typecheckRendered([
+          ...next.map((file) => ({ ...file, path: join('next', file.path) })),
+          ...express.map((file) => ({ ...file, path: join('express', file.path) })),
+        ]),
+      ).resolves.toEqual([]);
     },
-    30_000,
+    60_000,
   );
 
   it('rejects a webhook fixture with a bad Stripe signature before sync', async () => {

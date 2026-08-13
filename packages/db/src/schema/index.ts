@@ -10,3 +10,5 @@ export * from './planning.js'; // PRD §23.3
 export * from './execution.js'; // PRD §23.4
 export * from './releases.js'; // PRD §23.5
 export * from './security.js'; // PRD §23.6
+export * from './incidents.js'; // OPS-11 operational diagnosis
+export * from './lifecycle.js'; // CP-17 retention and verified deletion state

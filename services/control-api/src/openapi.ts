@@ -1,6 +1,11 @@
 import swagger from '@fastify/swagger';
-import { AgentEventSchema, ApiErrorSchema } from '@zapp/contracts';
+import {
+  AgentEventSchema,
+  ApiErrorSchema,
+  BuilderPreviewEventSchema,
+} from '@zapp/contracts';
 import { jsonSchemaTransform } from 'fastify-type-provider-zod';
+import { DeploymentProgressEventSchema } from '@zapp/release-service/deployment-progress';
 import { z } from 'zod';
 
 import {
@@ -82,6 +87,22 @@ function finalizeOpenApiDocument<Document extends object>(document: Document): D
       },
     };
   }
+
+  const screenshot = objectRecord(
+    objectRecord(paths['/v1/workspaces/{workspaceId}/preview/screenshot'])?.['post'],
+  );
+  const screenshotSuccess = objectRecord(
+    objectRecord(screenshot?.['responses'])?.['200'],
+  );
+  if (screenshotSuccess !== undefined) {
+    screenshotSuccess['content'] = {
+      'image/png': { schema: { type: 'string', format: 'binary' } },
+    };
+  }
+  for (const status of ['501', '503']) {
+    const response = objectRecord(objectRecord(screenshot?.['responses'])?.[status]);
+    if (response !== undefined) delete response['content'];
+  }
   return document;
 }
 
@@ -102,10 +123,11 @@ function publicRouteTransform(
     return { schema: { hide: true }, url: input.url };
   }
 
+  const streamSchema = eventStreamSchema(input.url);
   const response = {
-    ...(isEventStreamRoute(input.url) ? { 200: AgentEventSchema } : {}),
+    ...(streamSchema === undefined ? {} : { 200: streamSchema }),
     ...responseSchemas(input.schema.response),
-    ...(input.schema.response === undefined && !isEventStreamRoute(input.url)
+    ...(input.schema.response === undefined && streamSchema === undefined
       ? schemaLessResponseSchemas(input.url, input.route.method)
       : {}),
     '4XX': ApiErrorSchema,
@@ -141,6 +163,13 @@ function schemaLessResponseSchemas(
     && (url === '/v1/auth/login' || url === '/v1/auth/callback')
   ) {
     return { 302: z.void() };
+  }
+  if (
+    methods.length === 1 &&
+    methods[0] === 'POST' &&
+    url === '/v1/workspaces/:workspaceId/preview/screenshot'
+  ) {
+    return { 200: z.string(), 501: z.void(), 503: z.void() };
   }
   throw new Error(`Public route ${methods.join(',')} ${url} must declare its response schema.`);
 }
@@ -191,8 +220,16 @@ function hasPreHandler(value: unknown, expected: unknown): boolean {
 function isEventStreamRoute(url: string): boolean {
   return (
     url === '/v1/runs/:runId/events' ||
-    url === '/v1/local-agent/sessions/:sessionId/completions'
+    url === '/v1/deployments/:deploymentId/events' ||
+    url === '/v1/local-agent/sessions/:sessionId/completions' ||
+    url === '/v1/workspaces/:workspaceId/preview/events'
   );
+}
+
+function eventStreamSchema(url: string): z.ZodTypeAny | undefined {
+  if (url === '/v1/workspaces/:workspaceId/preview/events') return BuilderPreviewEventSchema;
+  if (url === '/v1/deployments/:deploymentId/events') return DeploymentProgressEventSchema;
+  return isEventStreamRoute(url) ? AgentEventSchema : undefined;
 }
 
 function withEventStreamContent(schema: object): object {

@@ -2,17 +2,14 @@
 
 import { Avatar, CreditsPill, Tabs, Tooltip } from '@zapp/ui';
 import Link from 'next/link';
-import { useEffect, useState, type KeyboardEvent, type ReactElement } from 'react';
+import { useState, type KeyboardEvent, type ReactElement } from 'react';
 
 import {
   createControlPlaneClient,
   type CreateRunInput,
   type MeResponse,
 } from '../../lib/api';
-import {
-  subscribeToHomeFeatureFlags,
-  type HomeFeatureFlags,
-} from '../../lib/feature-flags';
+import type { HomeFeatureFlags } from '../../lib/feature-flags';
 import { activeMemberships } from '../../lib/session';
 import { PromptComposer } from './PromptComposer';
 import { SuggestionChips } from './SuggestionChips';
@@ -39,6 +36,7 @@ function configuredCredits(): number {
 
 export interface HeroProps {
   readonly allowedModels: readonly string[];
+  readonly flags: HomeFeatureFlags;
   readonly invalidOrganization: boolean;
   readonly organizationId: string;
   readonly organizationName: string;
@@ -47,6 +45,7 @@ export interface HeroProps {
 
 export function Hero({
   allowedModels,
+  flags,
   invalidOrganization,
   organizationId,
   organizationName,
@@ -57,12 +56,6 @@ export function Hero({
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
   const [signOutFailed, setSignOutFailed] = useState(false);
-  const [flags, setFlags] = useState<HomeFeatureFlags>({ mobileApp: false, voiceInput: false });
-
-  useEffect(() => {
-    return subscribeToHomeFeatureFlags(organizationId, setFlags);
-  }, [organizationId]);
-
   const composer = (
     <PromptComposer
       allowedModels={allowedModels}

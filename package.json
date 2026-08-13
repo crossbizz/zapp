@@ -3,7 +3,12 @@
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.12.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@electron/rebuild": "4.2.0"
+    }
   },
   "scripts": {
     "build": "turbo run build",
@@ -11,9 +16,14 @@
     "lint": "pnpm lint:architecture && turbo run lint",
     "lint:architecture": "pnpm test:architecture && node scripts/check-model-provider-boundary.mjs",
     "test:architecture": "node --test scripts/model-provider-boundary.test.mjs",
+    "test:validation": "node --test validation/benchmarks/*.test.mjs validation/beta/*.test.mjs validation/exit-criteria/*.test.mjs validation/go-no-go/*.test.mjs",
+    "validation:beta-policy": "node validation/beta/validate.mjs",
+    "validation:benchmarks": "node validation/benchmarks/validate.mjs",
+    "validation:exit-criteria": "node validation/exit-criteria/validate.mjs",
+    "validation:go-no-go-policy": "node validation/go-no-go/evaluate.mjs",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "test:integration": "turbo run test:integration",
+    "test:integration": "turbo run test:integration --concurrency=1",
     "modal:publish": "pnpm --filter @zapp/modal-infra modal:publish",
     "modal:smoke": "pnpm --filter @zapp/modal-infra modal:smoke",
     "db:generate": "pnpm --filter @zapp/db db:generate",
@@ -23,6 +33,9 @@
     "verify:cold": "rm -rf packages/*/dist services/*/dist .turbo && pnpm verify"
   },
   "devDependencies": {
+    "@zapp/config": "workspace:*",
+    "@zapp/contracts": "workspace:*",
+    "@zapp/verification-engine": "workspace:*",
     "eslint": "9.39.5",
     "jscpd": "4.2.5",
     "knip": "6.14.2",

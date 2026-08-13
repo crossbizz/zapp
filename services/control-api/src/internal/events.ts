@@ -1,8 +1,19 @@
-import { AgentEventInputSchema, AgentEventSchema, idSchema } from '@zapp/contracts';
+import type { ProductAnalytics } from '@zapp/config';
+import {
+  AgentEventInputSchema,
+  AgentEventSchema,
+  idSchema,
+  type AgentEvent,
+} from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance, TenantDeps } from '../app.js';
 import { ApiError } from '../errors.js';
+import { projectAgentEvent } from '../analytics/events.js';
+import {
+  projectAgentEventNotification,
+  type NotificationTrigger,
+} from '../notifications/service.js';
 import { serviceOf } from './service-auth.js';
 
 /** The route-specific audience prevents a token for another internal operation being reused here. */
@@ -21,13 +32,73 @@ const ControlMetadataSchema = z
     acknowledgementDeadlineAt: z.string().datetime(),
   })
   .strict();
+type StoredAgentEvent = Awaited<
+  ReturnType<ReturnType<TenantDeps['tenantDb']>['events']['byRun']>
+>[number];
 
 export interface InternalEventRoutesDeps {
   readonly tenantDb: TenantDeps['tenantDb'];
+  readonly productAnalytics?: ProductAnalytics;
+  readonly enqueueNotification?: (trigger: NotificationTrigger) => Promise<void>;
 }
 
 function runNotFound(): ApiError {
   return new ApiError('run_not_found', 404, 'That run does not exist.');
+}
+
+function toAgentEvent(event: StoredAgentEvent): AgentEvent {
+  return AgentEventSchema.parse({
+    id: event.id,
+    runId: event.runId,
+    sequence: event.sequence,
+    occurredAt: event.occurredAt.toISOString(),
+    organizationId: event.organizationId,
+    projectId: event.projectId,
+    ...(event.phaseId === null ? {} : { phaseId: event.phaseId }),
+    ...(event.taskId === null ? {} : { taskId: event.taskId }),
+    ...(event.agentId === null ? {} : { agentId: event.agentId }),
+    type: event.type,
+    visibility: event.visibility,
+    payload: event.payloadJson,
+  });
+}
+
+async function captureStoredAnalytics(
+  deps: InternalEventRoutesDeps,
+  organizationId: string,
+  runId: string,
+  stored: readonly StoredAgentEvent[],
+): Promise<void> {
+  if (deps.productAnalytics === undefined) return;
+  try {
+    const tenant = deps.tenantDb(organizationId);
+    const [run, project, allEvents] = await Promise.all([
+      tenant.runs.getById(runId),
+      tenant.projects.getById(stored[0]?.projectId ?? ''),
+      tenant.events.byRun(runId),
+    ]);
+    if (run === undefined || project === undefined) return;
+    const firstPreviewSequence = allEvents
+      .filter((event) => event.type === 'preview.ready')
+      .reduce<number | undefined>(
+        (first, event) => (first === undefined || event.sequence < first ? event.sequence : first),
+        undefined,
+      );
+    await Promise.all(
+      stored.map(async (row) => {
+        const event = toAgentEvent(row);
+        const projected = projectAgentEvent(event, {
+          mode: run.mode,
+          supportLevel: project.supportLevel,
+          isFirstPreview: event.sequence === firstPreviewSequence,
+        });
+        if (projected !== undefined) await deps.productAnalytics?.capture(projected);
+      }),
+    );
+  } catch {
+    // Analytics is observational. A projection or provider failure cannot turn
+    // a durably stored operational event into a failed ingestion response.
+  }
 }
 
 /** CP-13's sole production insertion path for `agent_events`. */
@@ -164,24 +235,16 @@ export function registerInternalEventRoutes(app: AppInstance, deps: InternalEven
         );
       }
       const { events: stored } = result;
+      await captureStoredAnalytics(deps, first.organizationId, request.params.runId, stored);
+      if (deps.enqueueNotification !== undefined) {
+        for (const row of stored) {
+          const notification = projectAgentEventNotification(toAgentEvent(row));
+          if (notification !== undefined) await deps.enqueueNotification(notification);
+        }
+      }
 
       return await reply.status(201).send({
-        events: stored.map((event) =>
-          AgentEventSchema.parse({
-            id: event.id,
-            runId: event.runId,
-            sequence: event.sequence,
-            occurredAt: event.occurredAt.toISOString(),
-            organizationId: event.organizationId,
-            projectId: event.projectId,
-            ...(event.phaseId === null ? {} : { phaseId: event.phaseId }),
-            ...(event.taskId === null ? {} : { taskId: event.taskId }),
-            ...(event.agentId === null ? {} : { agentId: event.agentId }),
-            type: event.type,
-            visibility: event.visibility,
-            payload: event.payloadJson,
-          }),
-        ),
+        events: stored.map(toAgentEvent),
       });
     },
   );

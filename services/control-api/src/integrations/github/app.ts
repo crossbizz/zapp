@@ -20,6 +20,8 @@ import {
   GitHubRepositoryPageSchema,
   type GitHubProviderConfig,
 } from './schemas.js';
+import type { GitHubSyncProviderPort } from './sync.js';
+import type { GitHubExportProviderPort } from './export.js';
 
 const InstallationTokenSchema = z.object({ token: z.string().min(1) }).strict();
 const UserTokenExchangeResponseSchema = z
@@ -99,7 +101,7 @@ function oauthEndpoint(baseUrl: string | undefined): string {
 
 export function createGitHubProvider(
   rawConfig: GitHubProviderConfig,
-): GitHubProviderPort & GitHubImportProviderPort {
+): GitHubProviderPort & GitHubImportProviderPort & GitHubSyncProviderPort & GitHubExportProviderPort {
   const config = GitHubProviderConfigSchema.parse(rawConfig);
   const base = config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl.replace(/\/+$/u, '') };
 
@@ -149,6 +151,42 @@ export function createGitHubProvider(
   }
 
   return {
+    async prepareRepository(input) {
+      const [owner, repo] = z.tuple([z.string().min(1), z.string().min(1)]).parse(input.externalRepoRef.split('/'));
+      const access = await installationAccess(input.installationId);
+      const response = await access.client.rest.repos.get({ owner, repo });
+      return { cloneUrl: z.string().url().parse(response.data.clone_url), token: access.token };
+    },
+    async openPullRequest(input) {
+      const [owner, repo] = z.tuple([z.string().min(1), z.string().min(1)]).parse(input.externalRepoRef.split('/'));
+      const client = await installationClient(input.installationId);
+      const response = await client.rest.pulls.create({ owner, repo, head: input.head, base: input.base, title: input.title });
+      return { number: response.data.number, url: z.string().url().parse(response.data.html_url) };
+    },
+    async createRepository(input) {
+      const app = await appClient();
+      const installation = await app.rest.apps.getInstallation({ installation_id: Number(input.installationId) });
+      const account = z.object({ login: z.string().min(1), type: z.string().min(1) }).parse(installation.data.account);
+      const access = await installationAccess(input.installationId);
+      let repository;
+      try {
+        repository = await access.client.rest.repos.get({ owner: account.login, repo: input.name });
+      } catch (error) {
+        if (errorStatus(error) !== 404) throw error;
+        repository = account.type === 'Organization'
+          ? await access.client.rest.repos.createInOrg({ org: account.login, name: input.name, private: input.private })
+          : await access.client.rest.repos.createForAuthenticatedUser({ name: input.name, private: input.private });
+      }
+      return {
+        fullName: z.string().min(1).parse(repository.data.full_name),
+        repositoryUrl: z.string().url().parse(repository.data.html_url),
+        cloneUrl: z.string().url().parse(repository.data.clone_url),
+        token: access.token,
+      };
+    },
+    repositoryUrl(externalRepoRef) {
+      return new URL(externalRepoRef, 'https://github.com/').toString();
+    },
     async completeInstallation(rawInput) {
       try {
         const input = GitHubCompleteInstallationInputSchema.parse(rawInput);

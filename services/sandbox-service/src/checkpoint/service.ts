@@ -39,6 +39,7 @@ const ArtifactRefSchema = z
 const SnapshotRefSchema = z
   .object({
     providerSnapshotId: z.string().min(1),
+    logicalBytes: z.string().regex(/^\d+$/u),
     expiresAt: z.string().datetime(),
   })
   .strict();
@@ -138,7 +139,7 @@ export interface CheckpointServiceDependencies {
       projectId: string;
       branchId: string;
       ttlMs: number;
-    }): Promise<{ providerSnapshotId: string }>;
+    }): Promise<{ providerSnapshotId: string; logicalBytes: string }>;
     restore(input: {
       providerSnapshotId: string;
       targetWorkspaceId: string;
@@ -146,6 +147,17 @@ export interface CheckpointServiceDependencies {
       projectId: string;
       branchId: string;
     }): Promise<boolean>;
+  };
+  snapshotMeasurements: {
+    record(input: {
+      readonly providerSnapshotId: string;
+      readonly organizationId: string;
+      readonly projectId: string;
+      readonly logicalBytes: string;
+      readonly kind: z.infer<typeof CheckpointKindSchema>;
+      readonly createdAt: string;
+      readonly expiresAt: string;
+    }): Promise<void>;
   };
   records: {
     findByOperationKey(input: {
@@ -333,20 +345,35 @@ export function createCheckpointService(dependencies: CheckpointServiceDependenc
       const ttlMs = snapshotTtlMs(input.kind);
       let snapshot: z.infer<typeof SnapshotRefSchema> | null = null;
       if (input.includeSnapshot) {
+        let createdSnapshot: unknown;
         try {
-          snapshot = SnapshotRefSchema.parse({
-            ...(await dependencies.snapshots.create({
+          createdSnapshot = await dependencies.snapshots.create({
               checkpointId,
               workspaceId: input.workspaceId,
               organizationId: input.organizationId,
               projectId: input.projectId,
               branchId: input.branchId,
               ttlMs,
-            })),
-            expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
           });
         } catch {
-          snapshot = null;
+          createdSnapshot = undefined;
+        }
+        if (createdSnapshot !== undefined) {
+          snapshot = SnapshotRefSchema.parse({
+            ...z.object({ providerSnapshotId: z.string(), logicalBytes: z.string() })
+              .passthrough()
+              .parse(createdSnapshot),
+            expiresAt: new Date(createdAt.getTime() + ttlMs).toISOString(),
+          });
+          await dependencies.snapshotMeasurements.record({
+            providerSnapshotId: snapshot.providerSnapshotId,
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+            logicalBytes: snapshot.logicalBytes,
+            kind: input.kind,
+            createdAt: createdAt.toISOString(),
+            expiresAt: snapshot.expiresAt,
+          });
         }
       }
       const record = CheckpointRecordSchema.parse({

@@ -1,4 +1,58 @@
 export { defineEnv } from './env.js';
+export {
+  OBSERVABILITY_METRICS,
+  buildOpenTelemetryConfig,
+  createHttpServerTelemetry,
+  createObservabilityInstruments,
+  createSpanMetricsProcessor,
+  getOpenTelemetryRuntime,
+  publicOpenTelemetryConfig,
+  startObservabilitySpan,
+  startOpenTelemetry,
+  startOpenTelemetryFromEnv,
+  tenantSafeTelemetryAttributes,
+  withObservabilitySpan,
+  type DeploymentEnvironment,
+  type HttpServerTelemetry,
+  type HttpServerTelemetryFinish,
+  type ObservabilityInstruments,
+  type ObservabilityMetric,
+  type ObservabilitySpan,
+  type OpenTelemetryConfig,
+  type OpenTelemetryRuntime,
+  type PublicOpenTelemetryConfig,
+} from './otel.js';
+export {
+  createTenantSafeLogger,
+  redactLogValue,
+  tenantSafePinoOptions,
+  type LogSecretValue,
+  type TenantSafeLoggerOptions,
+} from './logger.js';
+export {
+  ANALYTICS_EVENT_NAMES,
+  AnalyticsCaptureInputSchema,
+  AnalyticsEventNameSchema,
+  POSTHOG_DASHBOARDS,
+  createProductAnalytics,
+  type AnalyticsCaptureInput,
+  type AnalyticsEventName,
+  type ProductAnalytics,
+  type ProductAnalyticsProvider,
+} from './analytics.js';
+export {
+  FEATURE_FLAGS,
+  ClientFeatureFlagsResponseSchema,
+  FeatureFlagNameSchema,
+  clientFeatureFlagDefaults,
+  createFeatureFlagEvaluator,
+  staleFeatureFlags,
+  type FeatureFlagEvaluationContext,
+  type FeatureFlagEvaluator,
+  type FeatureFlagName,
+  type FeatureFlagProvider,
+  type ClientFeatureFlagsResponse,
+} from './flags.js';
 
 // Plan 02 CP-8 — the credential one zapp service presents to another. Here
 // rather than in the control plane because signing and verification have to
@@ -21,3 +75,13 @@ export {
   type ServiceTokenVerdict,
   type SignServiceTokenInput,
 } from './service-token.js';
+export {
+  PublicTemplateSchema,
+  TemplateRegistryEntrySchema,
+  TemplateRegistrySchema,
+  createTemplateRegistry,
+  loadTemplateRegistryFile,
+  type PublicTemplate,
+  type TemplateRegistryEntry,
+  type TemplateRegistry,
+} from './templates.js';

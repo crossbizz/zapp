@@ -20,6 +20,7 @@ import type { CompletionBackend } from './app.js';
 import { ModelTerminalError, ProviderAttemptError } from './providers/types.js';
 import {
   BackendStreamEventSchema,
+  type AccountingReplay,
   type BackendStreamEvent,
   type CompleteRequest,
 } from './schemas.js';
@@ -100,7 +101,9 @@ export function createControlPlaneUsageClient(
       throw new Error('The completion accounting service could not be reached.', { cause: error });
     }
     if (response.status !== 200) {
-      throw new Error(`The completion accounting service refused the request (${String(response.status)}).`);
+      throw new Error(
+        `The completion accounting service refused the request (${String(response.status)}).`,
+      );
     }
     return await responseJson(response);
   };
@@ -127,19 +130,21 @@ function requestFingerprint(request: CompleteRequest): string {
   return createHash('sha256').update(JSON.stringify(request)).digest('hex');
 }
 
-function identity(request: CompleteRequest) {
+function identity(request: CompleteRequest, accountingReplay?: AccountingReplay) {
   return {
     completionId: request.completionId,
     organizationId: request.organizationId,
     projectId: request.projectId,
     runId: request.runId,
     ...(request.taskId === undefined ? {} : { taskId: request.taskId }),
-    requestFingerprint: requestFingerprint(request),
+    requestFingerprint: accountingReplay?.requestFingerprint ?? requestFingerprint(request),
   };
 }
 
 function terminalError(terminal: CompletionRecord['terminal']): ModelTerminalError | undefined {
-  return terminal.type === 'error' ? new ModelTerminalError(terminal.code, terminal.message) : undefined;
+  return terminal.type === 'error'
+    ? new ModelTerminalError(terminal.code, terminal.message)
+    : undefined;
 }
 
 function recordedEvent(
@@ -154,7 +159,10 @@ function recordedEvent(
   });
 }
 
-function usageFrom(event: Extract<BackendStreamEvent, { type: 'usage' }>, now: Date): CompletionUsage {
+function usageFrom(
+  event: Extract<BackendStreamEvent, { type: 'usage' }>,
+  now: Date,
+): CompletionUsage {
   return {
     provider: event.provider,
     model: event.model,
@@ -198,7 +206,12 @@ export function createUsageAccountedCompletion(options: {
   readonly observe?: (event: { readonly type: 'usage.recorded' }) => void;
 }): CompletionBackend {
   const claimOwnerPrefix = z.string().trim().min(1).max(160).parse(options.claimOwner);
-  const leaseMs = z.number().int().min(1_000).max(300_000).parse(options.leaseMs ?? LEASE_MS);
+  const leaseMs = z
+    .number()
+    .int()
+    .min(1_000)
+    .max(300_000)
+    .parse(options.leaseMs ?? LEASE_MS);
   const leaseRenewalIntervalMs = z
     .number()
     .int()
@@ -207,11 +220,13 @@ export function createUsageAccountedCompletion(options: {
     .parse(options.leaseRenewalIntervalMs ?? Math.floor(leaseMs / 2));
   const now = options.now ?? (() => new Date());
   return {
-    stream(request, signal) {
+    stream(request, signal, suppliedAccountingReplay) {
       return (async function* () {
         const claimOwner = `${claimOwnerPrefix}:${randomUUID()}`;
-        const completionIdentity = identity(request);
-        const prepared = await options.backend.prepare(request);
+        const { accountingReplay: embeddedAccountingReplay, ...providerRequest } = request;
+        const accountingReplay = suppliedAccountingReplay ?? embeddedAccountingReplay;
+        const completionIdentity = identity(providerRequest, accountingReplay);
+        const prepared = await options.backend.prepare(providerRequest);
         const claimInput = ModelCompletionClaimRequestSchema.parse({
           ...completionIdentity,
           claimOwner,

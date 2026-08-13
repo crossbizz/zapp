@@ -65,6 +65,7 @@ interface OverlayProps {
   readonly defaultOpen?: boolean;
   readonly description?: ReactNode;
   readonly onOpenChange?: (open: boolean) => void;
+  readonly onCloseAutoFocus?: DialogPrimitive.DialogContentProps['onCloseAutoFocus'];
   readonly open?: boolean;
   readonly title: ReactNode;
   readonly trigger: ReactElement;
@@ -91,6 +92,7 @@ export function Dialog(props: DialogProps): ReactNode {
         <DialogPrimitive.Overlay className="zapp-overlay" />
         <DialogPrimitive.Content
           className={clsx('zapp-dialog', props.className)}
+          onCloseAutoFocus={props.onCloseAutoFocus}
           {...(props.description === undefined ? { 'aria-describedby': undefined } : {})}
         >
           <DialogPrimitive.Title className="zapp-overlay-panel__title">
@@ -121,6 +123,7 @@ export function Drawer(props: DrawerProps): ReactNode {
         <DialogPrimitive.Overlay className="zapp-overlay" />
         <DialogPrimitive.Content
           className={clsx('zapp-drawer', props.className)}
+          onCloseAutoFocus={props.onCloseAutoFocus}
           {...(props.description === undefined ? { 'aria-describedby': undefined } : {})}
         >
           <DialogPrimitive.Title className="zapp-overlay-panel__title">

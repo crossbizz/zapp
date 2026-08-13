@@ -100,6 +100,27 @@ void client.request('/v1/runs/{runId}/events', {
   path: { runId: 'run_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
 });
 
+void client.request('/v1/workspaces/{workspaceId}/dev-server/logs', {
+  method: 'GET',
+  path: { workspaceId: 'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+  query: { after: 0, limit: 100 },
+});
+void client.request('/v1/workspaces/{workspaceId}/dev-server/restart', {
+  method: 'POST',
+  path: { workspaceId: 'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+  headers: { 'idempotency-key': 'preview-restart-types-01' },
+});
+void client.request('/v1/workspaces/{workspaceId}/preview/screenshot', {
+  method: 'POST',
+  path: { workspaceId: 'ws_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+  headers: { 'idempotency-key': 'preview-screenshot-types-01' },
+});
+client.subscribePreviewEvents('ws_01J8ME7YQZJ2V9Q0X3T5B6K7NC', {
+  onEvent(event) {
+    void event.type;
+  },
+});
+
 // @ts-expect-error only generated public path keys are accepted
 void client.request('https://attacker.example/collect', { method: 'GET' });
 

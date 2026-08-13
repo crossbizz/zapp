@@ -14,6 +14,11 @@ const apps: AppInstance[] = [];
 
 function documentedApp(): AppInstance {
   const built = buildHarness({
+    admin: { enabled: false, staffUserIds: [] },
+    usageLedger: {
+      recordUsage: () => Promise.reject(new Error('OpenAPI must not record usage.')),
+      getUsageSummary: () => Promise.reject(new Error('OpenAPI must not read usage.')),
+    },
     // Route registration is declarative; this sentinel makes an accidental
     // database access during document creation loud without supplying a fake
     // data surface the routes could accidentally use.
@@ -106,6 +111,8 @@ describe('GET /v1/openapi.json', () => {
     );
     expect(Object.keys(document.paths)).toEqual(expect.arrayContaining([
       '/v1/projects',
+      '/v1/templates',
+      '/v1/templates/{slug}',
       '/v1/projects/summaries',
       '/v1/organizations/{orgId}/audit-events',
       '/v1/organizations/{orgId}/settings',
@@ -120,17 +127,46 @@ describe('GET /v1/openapi.json', () => {
       '/v1/local-agent/sessions',
       '/v1/local-agent/sessions/{sessionId}/completions',
       '/v1/runs/{runId}/messages',
+      '/v1/runs/{runId}/tasks/{taskId}/retry',
+      '/v1/runs/{runId}/phases/{phaseId}/skip',
+      '/v1/runs/{runId}/conversation-responses',
+      '/v1/runs/{runId}/specifications/{specificationId}',
+      '/v1/runs/{runId}/plans/{artifactId}',
+      '/v1/runs/{runId}/artifacts/{artifactId}',
+      '/v1/projects/{projectId}/workspaces',
+      '/v1/workspaces/{workspaceId}/files',
+      '/v1/workspaces/{workspaceId}/file',
+      '/v1/workspaces/{workspaceId}/edits',
+      '/v1/projects/{projectId}/compare',
+      '/v1/runs/{runId}/tests',
+      '/v1/runs/{runId}/evidence/{artifactId}',
       '/v1/projects/{projectId}/attachments',
+      '/v1/projects/{projectId}/export',
       '/v1/attachments/{attachmentId}',
+      '/v1/workspaces/{workspaceId}/dev-server/logs',
+      '/v1/workspaces/{workspaceId}/dev-server/restart',
+      '/v1/workspaces/{workspaceId}/preview/events',
+      '/v1/workspaces/{workspaceId}/preview/screenshot',
       '/v1/integrations/github/install/authorize',
       '/v1/integrations/github/install',
       '/v1/integrations/github/repositories',
       '/v1/integrations/github/repositories/{repositoryId}/branches',
       '/v1/projects/{projectId}/import/github',
       '/v1/webhooks/github',
+      '/v1/feature-flags',
       '/v1/forks',
+      '/v1/admin/support-sessions',
+      '/v1/admin/organizations/{organizationId}/overview',
+      '/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics',
+      '/v1/admin/organizations/{organizationId}/runs/{runId}/terminate',
+      '/v1/admin/organizations/{organizationId}/workspaces/{workspaceId}/terminate',
+      '/v1/admin/organizations/{organizationId}/terminate-all',
+      '/v1/releases/{releaseId}/fork',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(69);
+    expect(Object.keys(document.paths)).toHaveLength(115);
+    expect(document.paths).toHaveProperty('/v1/projects/{projectId}/deletion');
+    expect(document.paths['/v1/projects/{projectId}']).toHaveProperty('delete');
+    expect(document.paths['/v1/organizations/{orgId}']).toHaveProperty('delete');
     expect(Object.keys(document.paths).every((path) => path.startsWith('/v1/'))).toBe(true);
   });
 

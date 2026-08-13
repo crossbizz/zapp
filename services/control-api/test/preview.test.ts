@@ -11,7 +11,7 @@ import {
 } from '../src/routes/preview.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import { buildHarness, signIn, type Harness } from './support/harness.js';
-import { InMemoryTenantData } from './support/tenant-db.js';
+import { EMPTY_WORKSPACE_USAGE, InMemoryTenantData } from './support/tenant-db.js';
 
 const harnesses: Harness[] = [];
 
@@ -120,6 +120,7 @@ describe('WS-12 public preview shares', () => {
       previewMonitorOwnerId: null,
       previewMonitorLeaseExpiresAt: null,
       snapshotRef: null,
+      ...EMPTY_WORKSPACE_USAGE,
       createdAt: built.now(),
       lastActiveAt: built.now(),
       terminatedAt: null,

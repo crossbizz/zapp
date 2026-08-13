@@ -109,6 +109,7 @@ export interface ClaimInput<T> {
 
 export interface InviteStore {
   issue(invite: NewInvite): Promise<void>;
+  list(organizationId: string): Promise<readonly InviteRecord[]>;
   /**
    * Spends the invite named by `tokenHash`, if `email` is the address it was
    * issued to, and runs {@link ClaimInput.complete} while it is spent. A
@@ -134,6 +135,7 @@ interface StoredInvite extends InviteRecord {
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const KEY_PREFIX = 'invite:';
+const DIRECTORY_PREFIX = 'invite-directory:';
 
 /**
  * Read the invite and spend it in one server-side step.
@@ -225,14 +227,17 @@ export function createRedisInviteStore(
   return {
     async issue(invite) {
       const key = `${KEY_PREFIX}${invite.tokenHash}`;
+      const directoryKey = `${DIRECTORY_PREFIX}${invite.organizationId}`;
       const ttl = invite.expiresAt.getTime() - now().getTime() + RETENTION_MS;
       await redis.eval(
         `redis.call('HSET', KEYS[1],
            'organizationId', ARGV[1], 'email', ARGV[2], 'role', ARGV[3],
            'invitedBy', ARGV[4], 'expiresAt', ARGV[5])
          redis.call('PEXPIRE', KEYS[1], ARGV[6])
+         redis.call('HSET', KEYS[2], ARGV[7], ARGV[8])
+         redis.call('PEXPIRE', KEYS[2], ARGV[6])
          return 1`,
-        [key],
+        [key, directoryKey],
         [
           invite.organizationId,
           invite.email,
@@ -240,8 +245,39 @@ export function createRedisInviteStore(
           invite.invitedBy,
           String(invite.expiresAt.getTime()),
           String(Math.max(1, Math.ceil(ttl))),
+          invite.tokenHash,
+          JSON.stringify({
+            organizationId: invite.organizationId,
+            email: invite.email,
+            role: invite.role,
+            invitedBy: invite.invitedBy,
+            expiresAt: invite.expiresAt.toISOString(),
+          }),
         ],
       );
+    },
+
+    async list(organizationId) {
+      const raw = await redis.eval(
+        `return redis.call('HVALS', KEYS[1])`,
+        [`${DIRECTORY_PREFIX}${organizationId}`],
+        [],
+      );
+      if (!Array.isArray(raw)) throw new Error('invite directory returned an unreadable reply');
+      return raw.flatMap((value) => {
+        if (typeof value !== 'string') return [];
+        const parsed = JSON.parse(value) as Partial<Record<keyof InviteRecord, unknown>>;
+        if (
+          parsed.organizationId !== organizationId ||
+          typeof parsed.email !== 'string' ||
+          typeof parsed.role !== 'string' ||
+          typeof parsed.invitedBy !== 'string' ||
+          typeof parsed.expiresAt !== 'string'
+        ) return [];
+        const expiresAt = new Date(parsed.expiresAt);
+        if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= now().getTime()) return [];
+        return [{ organizationId, email: parsed.email, role: toRole(parsed.role), invitedBy: parsed.invitedBy, expiresAt }];
+      });
     },
 
     async claim({ tokenHash, email, complete }) {
@@ -266,7 +302,13 @@ export function createRedisInviteStore(
       }
 
       try {
-        return { status: 'claimed', invite, result: await complete(invite) };
+        const result = await complete(invite);
+        await redis.eval(
+          `return redis.call('HDEL', KEYS[1], ARGV[1])`,
+          [`${DIRECTORY_PREFIX}${invite.organizationId}`],
+          [tokenHash],
+        );
+        return { status: 'claimed', invite, result };
       } catch (error) {
         // The invite goes back exactly as it was. Whatever failed is the
         // caller's to report; what must not happen is the invitee losing the
@@ -302,6 +344,18 @@ export function createInMemoryInviteStore(now: () => Date = () => new Date()): I
       sweep(now().getTime());
       invites.set(tokenHash, { ...record, usedAt: undefined });
       return Promise.resolve();
+    },
+
+    list(organizationId) {
+      const at = now().getTime();
+      sweep(at);
+      return Promise.resolve(
+        [...invites.values()].flatMap(({ usedAt, ...invite }) =>
+          invite.organizationId === organizationId && usedAt === undefined && invite.expiresAt.getTime() > at
+            ? [invite]
+            : [],
+        ),
+      );
     },
 
     async claim({ tokenHash, email, complete }) {

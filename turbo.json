@@ -61,6 +61,8 @@
         "ARTIFACT_BUCKET",
         "ARTIFACT_REGION",
         "GIT_BACKUP_LIVE",
+        "STRIPE_GENERATED_APP_RESTRICTED_KEY",
+        "STRIPE_GENERATED_APP_ACCOUNT_ID",
         "CI"
       ]
     },

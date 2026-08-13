@@ -25,6 +25,11 @@ import {
   type TokenService,
 } from './tokens.js';
 import { serviceOf } from './internal/service-auth.js';
+import type { GitBundleExporter } from './export.js';
+import type { CommitComparisonProvider } from './provider/types.js';
+import type { GitTemplateSeeder } from './template-seeder.js';
+import { GitTemplateSeedConflictError } from './template-seeder.js';
+import type { PublicTemplate, TemplateRegistryEntry } from '@zapp/config';
 
 /**
  * `/internal/git/*` — the whole surface of this service (plan 06 GIT-2).
@@ -145,6 +150,7 @@ const MintTokenBody = z
     /** Attribution, when the caller has a run or a task to attribute to. */
     runId: idSchema('run').optional(),
     taskId: idSchema('task').optional(),
+    requestedBy: idSchema('user').optional(),
   })
   .strict();
 
@@ -184,6 +190,34 @@ const ImportedRepository = z
   })
   .strict();
 
+const CompareCommitsQuery = z.object({
+  before: z.string().regex(/^[0-9a-f]{40}$/u),
+  after: z.string().regex(/^[0-9a-f]{40}$/u),
+}).strict();
+const CommitComparisonResponse = z.object({
+  beforeSha: z.string().regex(/^[0-9a-f]{40}$/u),
+  afterSha: z.string().regex(/^[0-9a-f]{40}$/u),
+  changedFiles: z.number().int().nonnegative(),
+  files: z.array(z.object({
+    path: z.string().max(1_024),
+    status: z.string().max(32),
+    additions: z.number().int().nonnegative(),
+    deletions: z.number().int().nonnegative(),
+  }).strict()).max(1_000),
+  filesTruncated: z.boolean(),
+  patch: z.string().refine((value) => Buffer.byteLength(value, 'utf8') <= 1_048_576),
+  patchTruncated: z.boolean(),
+}).strict();
+const SeedTemplateBody = z.object({ templateSlug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u).max(80) }).strict();
+const SeedTemplateHeaders = z.object({
+  'idempotency-key': z.string().min(8).max(255).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+}).passthrough();
+const SeedTemplateResponse = z.object({
+  templateSlug: z.string(),
+  branch: z.literal('main'),
+  headCommitSha: z.string().regex(/^[0-9a-f]{40}$/u),
+}).strict();
+
 export interface ImportGitProvider extends GitProvider {
   setDefaultBranch(ref: string, branch: string): Promise<void>;
 }
@@ -205,6 +239,13 @@ export interface GitRoutesDeps {
   readonly callers?: readonly ServiceName[];
   readonly mirror?: GitMirror;
   readonly importPoll?: ImportBranchPoll;
+  readonly bundleExporter?: GitBundleExporter;
+  readonly comparison?: CommitComparisonProvider;
+  readonly templates?: {
+    getApproved(slug: string): TemplateRegistryEntry | undefined;
+    getPublic(slug: string): PublicTemplate | undefined;
+  };
+  readonly templateSeeder?: GitTemplateSeeder;
 }
 
 export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
@@ -216,6 +257,40 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
     attempts: 20,
     delay: () => new Promise<void>((resolve) => setTimeout(resolve, 100)),
   };
+
+  app.post(
+    '/internal/git/repositories/:organizationId/:projectId/export-bundle',
+    {
+      preHandler: [app.requireService({ callers: ['control-api'] })],
+      schema: {
+        params: ProjectParams,
+        headers: z
+          .object({
+            'idempotency-key': z
+              .string()
+              .min(8)
+              .max(255)
+              .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+          })
+          .passthrough(),
+      },
+    },
+    async (request, reply) => {
+      if (deps.bundleExporter === undefined) {
+        throw new ApiError('git_export_unavailable', 503, 'Git bundle export is unavailable.');
+      }
+      let bundle: Buffer;
+      try {
+        bundle = await deps.bundleExporter.bundle({
+          ...request.params,
+          operationKey: request.headers['idempotency-key'],
+        });
+      } catch (error) {
+        return refuse(request, error, 'exportBundle');
+      }
+      return await reply.header('content-type', 'application/x-git-bundle').send(bundle);
+    },
+  );
 
   /**
    * Turns a provider failure into an answer, having logged the cause.
@@ -246,6 +321,116 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
       'The git provider could not complete that operation.',
     );
   }
+
+  app.get(
+    '/internal/git/repositories/:organizationId/:projectId/compare',
+    {
+      preHandler: [guard()],
+      schema: {
+        params: ProjectParams,
+        querystring: CompareCommitsQuery,
+        response: { 200: CommitComparisonResponse },
+      },
+    },
+    async (request) => {
+      if (deps.comparison === undefined) {
+        throw new ApiError('git_compare_unavailable', 503, 'Git comparison is unavailable.');
+      }
+      let comparison;
+      try {
+        comparison = await deps.comparison.compareCommits(
+          internalRepoRef(request.params), request.query.before, request.query.after,
+        );
+      } catch (error) {
+        return refuse(request, error, 'compareCommits');
+      }
+      if (comparison === undefined) {
+        throw new ApiError('commit_comparison_not_found', 404, 'That comparison does not exist.');
+      }
+      return CommitComparisonResponse.parse(comparison);
+    },
+  );
+
+  app.post(
+    '/internal/git/repositories/:organizationId/:projectId/seed-template',
+    {
+      preHandler: [app.requireService({ callers: ['control-api'] })],
+      schema: {
+        params: ProjectParams,
+        headers: SeedTemplateHeaders,
+        body: SeedTemplateBody,
+        response: { 200: SeedTemplateResponse },
+      },
+    },
+    async (request) => {
+      if (deps.templates === undefined || deps.templateSeeder === undefined) {
+        throw new ApiError('template_seed_unavailable', 503, 'Template seeding is unavailable.');
+      }
+      const approved = deps.templates.getApproved(request.body.templateSlug);
+      if (approved === undefined) {
+        throw new ApiError('template_not_found', 404, 'That template does not exist.');
+      }
+      const caller = serviceOf(request);
+      let credential: Awaited<ReturnType<TokenService['mint']>> | undefined;
+      let result: { readonly headCommitSha: string } | undefined;
+      let failure: unknown;
+      try {
+        credential = await tokens.mint({
+          ...request.params,
+          access: 'write',
+          ttlSec: DEFAULT_TOKEN_TTL_SECONDS,
+          requestingService: caller.service,
+        });
+        result = await deps.templateSeeder.seed({
+          sourceCloneUrl: approved.repoRef,
+          sourceCommitSha: approved.commitSha,
+          targetCloneUrl: credential.cloneUrl,
+          targetUsername: credential.username,
+          targetToken: credential.token,
+          targetBranch: 'main',
+        });
+        let visible = false;
+        for (let attempt = 0; attempt < importPoll.attempts; attempt += 1) {
+          const branch = await provider.getBranch(internalRepoRef(request.params), 'main');
+          if (branch?.headSha === result.headCommitSha) {
+            visible = true;
+            break;
+          }
+          await importPoll.delay();
+        }
+        if (!visible) throw new Error('seeded branch did not reach the approved head');
+      } catch (error) {
+        failure = error;
+      }
+      let revokeFailed = false;
+      if (credential !== undefined) {
+        try {
+          await tokens.revokeEphemeral({
+            ...request.params,
+            username: credential.username,
+            requestingService: caller.service,
+          });
+        } catch {
+          revokeFailed = true;
+        }
+      }
+      if (failure instanceof GitTemplateSeedConflictError) {
+        throw new ApiError('template_seed_conflict', 409, 'The repository contains different history.');
+      }
+      if (failure !== undefined || revokeFailed || result === undefined) {
+        request.log.error(
+          { errorCode: 'template_seed_failed', operation: 'seedTemplate' },
+          'template seed failed',
+        );
+        throw new ApiError('template_seed_failed', 502, 'The template could not be seeded.');
+      }
+      return SeedTemplateResponse.parse({
+        templateSlug: request.body.templateSlug,
+        branch: 'main',
+        headCommitSha: result.headCommitSha,
+      });
+    },
+  );
 
   app.post(
     '/internal/git/repositories',
@@ -372,6 +557,24 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
   );
 
   app.get(
+    '/internal/git/repositories/:organizationId/:projectId/exists',
+    {
+      preHandler: [guard()],
+      schema: {
+        params: ProjectParams,
+        response: { 200: z.object({ exists: z.boolean() }).strict() },
+      },
+    },
+    async (request) => {
+      try {
+        return { exists: await provider.repositoryExists(internalRepoRef(request.params)) };
+      } catch (error) {
+        return refuse(request, error, 'repositoryExists');
+      }
+    },
+  );
+
+  app.get(
     '/internal/git/repositories/:organizationId/:projectId/branches',
     {
       preHandler: [guard()],
@@ -492,7 +695,7 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
     },
     async (request, reply) => {
       const caller = serviceOf(request);
-      const { organizationId, projectId, access, ttlSec, runId, taskId } = request.body;
+      const { organizationId, projectId, access, ttlSec, runId, taskId, requestedBy } = request.body;
 
       let minted;
       try {
@@ -507,6 +710,7 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
           requestingService: caller.service,
           ...(runId === undefined ? {} : { runId }),
           ...(taskId === undefined ? {} : { taskId }),
+          ...(requestedBy === undefined ? {} : { requestedBy }),
         });
       } catch (error) {
         return refuse(request, error, 'mintToken');

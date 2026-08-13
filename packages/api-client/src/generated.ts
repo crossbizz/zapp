@@ -1,4 +1,598 @@
 export interface paths {
+    "/v1/admin/organizations/{organizationId}/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    from: string;
+                    to: string;
+                };
+                header: {
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            organization: {
+                                id: string;
+                                name: string;
+                                plan: string;
+                                slug: string;
+                            };
+                            projects: {
+                                /** Format: date-time */
+                                archivedAt: string | null;
+                                deploymentStatus: string | null;
+                                id: string;
+                                /** Format: date-time */
+                                lastActivityAt: string | null;
+                                name: string;
+                                releaseStatus: string | null;
+                                runs: {
+                                    /** Format: date-time */
+                                    completedAt: string | null;
+                                    id: string;
+                                    mode: string;
+                                    projectId: string;
+                                    /** Format: date-time */
+                                    startedAt: string;
+                                    status: string;
+                                }[];
+                                slug: string;
+                                supportLevel: string;
+                                workspaces: {
+                                    /** Format: date-time */
+                                    createdAt: string;
+                                    id: string;
+                                    /** Format: date-time */
+                                    lastActiveAt: string | null;
+                                    projectId: string;
+                                    provider: string;
+                                    resourceProfile: string;
+                                    runId: string | null;
+                                    /** @enum {string} */
+                                    status: "requested" | "provisioning" | "started" | "ready" | "active" | "checkpointing" | "idle" | "terminated";
+                                    /** Format: date-time */
+                                    terminatedAt: string | null;
+                                }[];
+                            }[];
+                            usage: {
+                                byCategory: {
+                                    category: string;
+                                    quantity: string;
+                                }[];
+                                byProject: {
+                                    projectId: string | null;
+                                    quantity: string;
+                                }[];
+                                byRun: {
+                                    quantity: string;
+                                    runId: string | null;
+                                }[];
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header: {
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            artifacts: {
+                                contentHash: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                id: string;
+                                type: string;
+                            }[];
+                            events: {
+                                agentId: string | null;
+                                id: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                payload: {
+                                    [key: string]: unknown;
+                                };
+                                phaseId: string | null;
+                                sequence: number;
+                                taskId: string | null;
+                                type: string;
+                            }[];
+                            run: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                mode: string;
+                                projectId: string;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                            };
+                            sourceInspection: {
+                                /** @enum {boolean} */
+                                allowed: false;
+                                /** @enum {boolean} */
+                                requiresCustomerGrant: true;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/organizations/{organizationId}/runs/{runId}/terminate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            run: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                mode: string;
+                                projectId: string;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/organizations/{organizationId}/terminate-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            terminated: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/organizations/{organizationId}/workspaces/{workspaceId}/terminate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                    "x-zapp-support-session": string;
+                };
+                path: {
+                    organizationId: string;
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            workspace: {
+                                /** Format: date-time */
+                                createdAt: string;
+                                id: string;
+                                /** Format: date-time */
+                                lastActiveAt: string | null;
+                                projectId: string;
+                                provider: string;
+                                resourceProfile: string;
+                                runId: string | null;
+                                /** @enum {string} */
+                                status: "requested" | "provisioning" | "started" | "ready" | "active" | "checkpointing" | "idle" | "terminated";
+                                /** Format: date-time */
+                                terminatedAt: string | null;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/support-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        organizationId: string;
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: date-time */
+                            expiresAt: string;
+                            id: string;
+                            organizationId: string;
+                            token: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/attachments/{attachmentId}": {
         parameters: {
             query?: never;
@@ -695,6 +1289,1070 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/billing/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        planId: "builder" | "studio";
+                        seats: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uri */
+                            url: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        items: {
+                            /** @enum {string} */
+                            category: "model_input_tokens" | "model_output_tokens" | "model_cached_tokens" | "sandbox_cpu_seconds" | "sandbox_mem_gib_seconds" | "storage_gib_hours" | "deploy_provider" | "artifact_storage";
+                            model?: string;
+                            provider?: string;
+                            quantity: string;
+                        }[];
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                costUsd: string;
+                                credits: string;
+                            }[];
+                            pricingVersion: string;
+                            total: {
+                                costUsd: string;
+                                credits: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/portal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uri */
+                            url: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            billing: {
+                                customerId: string | null;
+                                dunning: {
+                                    /** @enum {string} */
+                                    state: "current";
+                                } | {
+                                    failedInvoiceId: string;
+                                    /** Format: date-time */
+                                    graceEndsAt: string;
+                                    /** @enum {string} */
+                                    state: "grace";
+                                } | {
+                                    failedInvoiceId: string;
+                                    /** Format: date-time */
+                                    graceEndsAt: string;
+                                    /** @enum {string} */
+                                    state: "downgraded";
+                                };
+                                planId: string;
+                                seats: number | null;
+                                subscriptionId: string | null;
+                                subscriptionStatus: string | null;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        seats: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {boolean} */
+                            accepted: true;
+                        };
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/v1/billing/topups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            packs: {
+                                amountUsd: string;
+                                credits: string;
+                                id: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/topups/checkout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        packId: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uri */
+                            url: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/deployments/{deploymentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    deploymentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deploymentId: string;
+                            environmentId: string;
+                            events: {
+                                elapsedMs: number;
+                                evidenceArtifactId: string | null;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                sequence: number;
+                                /** @enum {string} */
+                                stage: "readiness_check" | "build_artifact" | "configure_secrets" | "apply_migrations" | "provision_runtime" | "start_services" | "production_health_check" | "go_live";
+                                /** @enum {string} */
+                                status: "running" | "passed" | "failed";
+                                summary: string;
+                            }[];
+                            projectId: string;
+                            releaseId: string;
+                            status: string;
+                            terminalSuccess: {
+                                customDomainAction: {
+                                    href: string;
+                                    /** @enum {string} */
+                                    method: "POST";
+                                };
+                                evidence: {
+                                    statusLink: string;
+                                };
+                                monitoring: {
+                                    /** Format: uri */
+                                    faroAppLink: string;
+                                    grafanaDashboardLinks: string[];
+                                    /** Format: uri */
+                                    posthogAnnotationLink: string;
+                                };
+                                /** Format: uri */
+                                permanentUrl: string;
+                                previewChanges: {
+                                    /** @enum {string} */
+                                    note: "Preview changes require a new release and redeploy before they reach production.";
+                                    /** @enum {boolean} */
+                                    requireRedeploy: true;
+                                };
+                                previousHealthyRelease: {
+                                    commitSha: string;
+                                    deploymentId: string;
+                                    releaseId: string;
+                                    rollbackAction: {
+                                        body: {
+                                            toDeploymentId: string;
+                                        };
+                                        href: string;
+                                        /** @enum {string} */
+                                        method: "POST";
+                                    };
+                                } | null;
+                                productionHealth: {
+                                    /** @enum {string} */
+                                    status: "healthy";
+                                };
+                                release: {
+                                    commitSha: string;
+                                    id: string;
+                                };
+                                /** @enum {string} */
+                                status: "succeeded";
+                            } | null;
+                            /** Format: uri */
+                            url: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/deployments/{deploymentId}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    deploymentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        action: "retry" | "fix" | "ask";
+                        prompt?: string;
+                        stage?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            status: "dispatched";
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/deployments/{deploymentId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    deploymentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": {
+                            elapsedMs: number;
+                            evidenceArtifactId: string | null;
+                            /** Format: date-time */
+                            occurredAt: string;
+                            sequence: number;
+                            /** @enum {string} */
+                            stage: "readiness_check" | "build_artifact" | "configure_secrets" | "apply_migrations" | "provision_runtime" | "start_services" | "production_health_check" | "go_live";
+                            /** @enum {string} */
+                            status: "running" | "passed" | "failed";
+                            summary: string;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/desktop-notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    after?: number;
+                    deviceId: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            nextCursor: number;
+                            notifications: {
+                                /** @enum {string} */
+                                channel: "in_app" | "desktop_push";
+                                cursor: number;
+                                /** Format: uri */
+                                desktopUrl: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                organizationId: string;
+                                subject: string;
+                                text: string;
+                                triggerId: string;
+                                /** @enum {string} */
+                                type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "production_incident" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
+                                userId: string;
+                                /** Format: uri */
+                                webUrl: string;
+                            }[];
+                            reconnectAfterMs: number;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/feature-flags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            flags: {
+                                "mobile-app-tab": boolean;
+                                "visual-editing": boolean;
+                                "voice-input": boolean;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/forks": {
         parameters: {
             query?: never;
@@ -845,6 +2503,189 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/integrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            connections: {
+                                configuration: {
+                                    installationId: string;
+                                } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
+                                    projectRef: string;
+                                } | {
+                                    databaseName: string;
+                                    previewBranchId?: string;
+                                    productionBranchId?: string;
+                                    projectId: string;
+                                } | {
+                                    accountId: string;
+                                    /** @enum {string} */
+                                    mode: "test" | "live";
+                                } | {
+                                    projectId: string;
+                                    projectName: string;
+                                    teamId?: string;
+                                };
+                                id: string;
+                                organizationId: string;
+                                projectId: string | null;
+                                /** @enum {string} */
+                                provider: "github" | "supabase" | "neon" | "stripe" | "vercel";
+                                status: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/integrations/{connectionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    connectionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/integrations/github/install": {
         parameters: {
             query?: never;
@@ -918,6 +2759,20 @@ export interface paths {
                                 configuration: {
                                     installationId: string;
                                 } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
                                     projectRef: string;
                                 } | {
                                     databaseName: string;
@@ -928,13 +2783,17 @@ export interface paths {
                                     accountId: string;
                                     /** @enum {string} */
                                     mode: "test" | "live";
+                                } | {
+                                    projectId: string;
+                                    projectName: string;
+                                    teamId?: string;
                                 };
                                 credentialRef: string | null;
                                 id: string;
                                 organizationId: string;
                                 projectId: string | null;
                                 /** @enum {string} */
-                                provider: "github" | "supabase" | "neon" | "stripe";
+                                provider: "github" | "supabase" | "neon" | "stripe" | "vercel";
                                 status: string;
                             };
                         };
@@ -1264,6 +3123,20 @@ export interface paths {
                                 configuration: {
                                     installationId: string;
                                 } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
                                     projectRef: string;
                                 } | {
                                     databaseName: string;
@@ -1274,13 +3147,17 @@ export interface paths {
                                     accountId: string;
                                     /** @enum {string} */
                                     mode: "test" | "live";
+                                } | {
+                                    projectId: string;
+                                    projectName: string;
+                                    teamId?: string;
                                 };
                                 credentialRef: string | null;
                                 id: string;
                                 organizationId: string;
                                 projectId: string | null;
                                 /** @enum {string} */
-                                provider: "github" | "supabase" | "neon" | "stripe";
+                                provider: "github" | "supabase" | "neon" | "stripe" | "vercel";
                                 status: string;
                             };
                         };
@@ -1371,6 +3248,20 @@ export interface paths {
                                 configuration: {
                                     installationId: string;
                                 } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
                                     projectRef: string;
                                 } | {
                                     databaseName: string;
@@ -1381,13 +3272,17 @@ export interface paths {
                                     accountId: string;
                                     /** @enum {string} */
                                     mode: "test" | "live";
+                                } | {
+                                    projectId: string;
+                                    projectName: string;
+                                    teamId?: string;
                                 };
                                 credentialRef: string | null;
                                 id: string;
                                 organizationId: string;
                                 projectId: string | null;
                                 /** @enum {string} */
-                                provider: "github" | "supabase" | "neon" | "stripe";
+                                provider: "github" | "supabase" | "neon" | "stripe" | "vercel";
                                 status: string;
                             };
                         };
@@ -1476,6 +3371,20 @@ export interface paths {
                                 configuration: {
                                     installationId: string;
                                 } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
                                     projectRef: string;
                                 } | {
                                     databaseName: string;
@@ -1486,13 +3395,142 @@ export interface paths {
                                     accountId: string;
                                     /** @enum {string} */
                                     mode: "test" | "live";
+                                } | {
+                                    projectId: string;
+                                    projectName: string;
+                                    teamId?: string;
                                 };
                                 credentialRef: string | null;
                                 id: string;
                                 organizationId: string;
                                 projectId: string | null;
                                 /** @enum {string} */
-                                provider: "github" | "supabase" | "neon" | "stripe";
+                                provider: "github" | "supabase" | "neon" | "stripe" | "vercel";
+                                status: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/integrations/vercel/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        accessToken: string;
+                        configuration: {
+                            projectId: string;
+                            projectName: string;
+                            teamId?: string;
+                        };
+                        projectId: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            connection: {
+                                configuration: {
+                                    installationId: string;
+                                } | {
+                                    blockedTaskIds: string[];
+                                    branch: string;
+                                    conflictCreated: boolean;
+                                    conflictTaskId: string | null;
+                                    externalHeadSha: string;
+                                    externalRepoRef: string;
+                                    installationId: string;
+                                    internalHeadSha: string;
+                                    lastDeliveryId: string | null;
+                                    /** @enum {string} */
+                                    state: "in_sync" | "ahead" | "behind" | "diverged";
+                                    /** Format: date-time */
+                                    updatedAt: string;
+                                } | {
+                                    projectRef: string;
+                                } | {
+                                    databaseName: string;
+                                    previewBranchId?: string;
+                                    productionBranchId?: string;
+                                    projectId: string;
+                                } | {
+                                    accountId: string;
+                                    /** @enum {string} */
+                                    mode: "test" | "live";
+                                } | {
+                                    projectId: string;
+                                    projectName: string;
+                                    teamId?: string;
+                                };
+                                credentialRef: string | null;
+                                id: string;
+                                organizationId: string;
+                                projectId: string | null;
+                                /** @enum {string} */
+                                provider: "github" | "supabase" | "neon" | "stripe" | "vercel";
                                 status: string;
                             };
                         };
@@ -2095,6 +4133,178 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/notification-preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            preferences: {
+                                desktopPush: boolean;
+                                email: boolean;
+                                inApp: boolean;
+                                organizationId: string;
+                                /** @enum {string} */
+                                type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "production_incident" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
+                                userId: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notification-preferences/{type}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "production_incident" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        desktopPush: boolean;
+                        email: boolean;
+                        inApp: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            preference: {
+                                desktopPush: boolean;
+                                email: boolean;
+                                inApp: boolean;
+                                organizationId: string;
+                                /** @enum {string} */
+                                type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "production_incident" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
+                                userId: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/organizations": {
         parameters: {
             query?: never;
@@ -2350,7 +4560,86 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path: {
+                    orgId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deletions: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                projectId: string;
+                                /** Format: date-time */
+                                requestedAt: string;
+                                /** @enum {string} */
+                                status: "queued" | "running" | "failed" | "completed";
+                                targets: {
+                                    /** @enum {string} */
+                                    git: "pending" | "verified";
+                                    /** @enum {string} */
+                                    objects: "pending" | "verified";
+                                    /** @enum {string} */
+                                    postgres: "pending" | "verified";
+                                    /** @enum {string} */
+                                    snapshots: "pending" | "verified";
+                                };
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch: {
@@ -2437,7 +4726,7 @@ export interface paths {
         get: {
             parameters: {
                 query?: {
-                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                    action?: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.conversation_response_requested" | "run.conversation_response_signalled" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "integration.disconnected" | "integration.github_policy_updated" | "integration.github_sync_requested" | "integration.github_exported" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                     actorId?: string;
                     cursor?: string;
                     from?: string;
@@ -2499,7 +4788,7 @@ export interface paths {
                         "application/json": {
                             items: {
                                 /** @enum {string} */
-                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.message_created" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "integration.connected" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
+                                action: "organization.created" | "organization.updated" | "organization.settings_updated" | "member.invited" | "member.joined" | "member.role_changed" | "member.removed" | "project.created" | "project.updated" | "project.scan_requested" | "project.deletion_requested" | "project.exported" | "specification.created" | "specification.updated" | "specification.approved" | "run.created" | "run.dispatch_failed" | "run.dispatch_retried" | "run.message_created" | "run.conversation_response_requested" | "run.conversation_response_signalled" | "run.events_ingested" | "run.pause_requested" | "run.paused" | "run.pause_rejected" | "run.resume_requested" | "run.resumed" | "run.resume_rejected" | "run.cancel_requested" | "run.cancelled" | "run.cancel_rejected" | "run.redirect_requested" | "run.redirected" | "run.redirect_rejected" | "run.task_retry_requested" | "run.task_retry_signalled" | "run.task_retry_rejected" | "run.phase_skip_requested" | "run.phase_skip_signalled" | "run.phase_skip_rejected" | "run.approval_resolved" | "workspace.create_requested" | "workspace.created" | "workspace.start_requested" | "workspace.started" | "workspace.start_rejected" | "workspace.checkpoint_requested" | "workspace.checkpointed" | "workspace.checkpoint_rejected" | "workspace.terminate_requested" | "workspace.terminated" | "workspace.terminate_rejected" | "workspace.preview_requested" | "workspace.previewed" | "workspace.preview_rejected" | "secret.created" | "secret.rotated" | "secret.deleted" | "attachment.created" | "release.created" | "release.approved" | "release.deploy_requested" | "release.rollback_requested" | "incident.created" | "incident.fix_run_created" | "incident.resolved" | "support.impersonation" | "integration.connected" | "integration.disconnected" | "integration.github_policy_updated" | "integration.github_sync_requested" | "integration.github_exported" | "secret.decrypted" | "git_token.minted" | "git_token.revoked";
                                 actorId: string;
                                 /** @enum {string} */
                                 actorType: "user" | "service" | "agent" | "support";
@@ -2613,6 +4902,102 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/organizations/{orgId}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    orgId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            members: {
+                                /** @enum {string} */
+                                role: "owner" | "builder" | "viewer";
+                                /** @enum {string} */
+                                status: "active";
+                                user: {
+                                    avatarUrl: string | null;
+                                    displayName: string;
+                                    /** Format: email */
+                                    email: string;
+                                    id: string;
+                                };
+                            }[];
+                            pendingInvites: {
+                                /** Format: email */
+                                email: string;
+                                /** Format: date-time */
+                                expiresAt: string;
+                                invitedBy: string;
+                                /** @enum {string} */
+                                role: "owner" | "builder" | "viewer";
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2827,6 +5212,24 @@ export interface paths {
                     content: {
                         "application/json": {
                             settings: {
+                                billing?: {
+                                    dunning: {
+                                        /** @enum {string} */
+                                        state: "current";
+                                    } | {
+                                        failedInvoiceId: string;
+                                        /** Format: date-time */
+                                        graceEndsAt: string;
+                                        /** @enum {string} */
+                                        state: "grace";
+                                    } | {
+                                        failedInvoiceId: string;
+                                        /** Format: date-time */
+                                        graceEndsAt: string;
+                                        /** @enum {string} */
+                                        state: "downgraded";
+                                    };
+                                };
                                 /** @default false */
                                 builderCanDeploy: boolean;
                                 defaultModelPolicy?: string | number | boolean | ("null" | null) | unknown[] | {
@@ -2914,6 +5317,24 @@ export interface paths {
                     content: {
                         "application/json": {
                             settings: {
+                                billing?: {
+                                    dunning: {
+                                        /** @enum {string} */
+                                        state: "current";
+                                    } | {
+                                        failedInvoiceId: string;
+                                        /** Format: date-time */
+                                        graceEndsAt: string;
+                                        /** @enum {string} */
+                                        state: "grace";
+                                    } | {
+                                        failedInvoiceId: string;
+                                        /** Format: date-time */
+                                        graceEndsAt: string;
+                                        /** @enum {string} */
+                                        state: "downgraded";
+                                    };
+                                };
                                 /** @default false */
                                 builderCanDeploy: boolean;
                                 defaultModelPolicy?: string | number | boolean | ("null" | null) | unknown[] | {
@@ -3107,11 +5528,18 @@ export interface paths {
                         description?: string;
                         name: string;
                         slug?: string;
+                        /** @enum {string} */
+                        sourceType: "template";
+                        templateSlug: string;
+                    } | {
+                        description?: string;
+                        name: string;
+                        slug?: string;
                         /**
                          * @default prompt
                          * @enum {string}
                          */
-                        sourceType?: "prompt" | "blank" | "template" | "github_import";
+                        sourceType?: "prompt" | "blank" | "github_import";
                     };
                 };
             };
@@ -3328,7 +5756,86 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        delete?: never;
+        delete: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deletion: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                projectId: string;
+                                /** Format: date-time */
+                                requestedAt: string;
+                                /** @enum {string} */
+                                status: "queued" | "running" | "failed" | "completed";
+                                targets: {
+                                    /** @enum {string} */
+                                    git: "pending" | "verified";
+                                    /** @enum {string} */
+                                    objects: "pending" | "verified";
+                                    /** @enum {string} */
+                                    postgres: "pending" | "verified";
+                                    /** @enum {string} */
+                                    snapshots: "pending" | "verified";
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
         options?: never;
         head?: never;
         patch: {
@@ -3501,6 +6008,95 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    after: string;
+                    before: string;
+                };
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            afterSha: string;
+                            beforeSha: string;
+                            changedFiles: number;
+                            files: {
+                                additions: number;
+                                deletions: number;
+                                path: string;
+                                status: string;
+                            }[];
+                            filesTruncated: boolean;
+                            patch: string;
+                            patchTruncated: boolean;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/contract": {
         parameters: {
             query?: never;
@@ -3579,6 +6175,485 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deletion: {
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                projectId: string;
+                                /** Format: date-time */
+                                requestedAt: string;
+                                /** @enum {string} */
+                                status: "queued" | "running" | "failed" | "completed";
+                                targets: {
+                                    /** @enum {string} */
+                                    git: "pending" | "verified";
+                                    /** @enum {string} */
+                                    objects: "pending" | "verified";
+                                    /** @enum {string} */
+                                    postgres: "pending" | "verified";
+                                    /** @enum {string} */
+                                    snapshots: "pending" | "verified";
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            domains: {
+                                detail?: string;
+                                dnsInstructions: {
+                                    name: string;
+                                    /** @enum {string} */
+                                    type: "A" | "CNAME" | "TXT";
+                                    value: string;
+                                }[];
+                                environmentId: string;
+                                hostname: string;
+                                routing: {
+                                    apexHostname: string;
+                                    /** @enum {string} */
+                                    kind: "apex" | "www" | "subdomain";
+                                    recommendation: string;
+                                    wwwHostname: string;
+                                };
+                                ssl: {
+                                    /** @enum {boolean} */
+                                    managed: true;
+                                    /** @enum {string} */
+                                    status: "pending" | "active" | "failed";
+                                };
+                                /** @enum {string} */
+                                status: "pending_dns" | "verifying" | "active" | "failed";
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        environmentId: string;
+                        hostname: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            domain: {
+                                detail?: string;
+                                dnsInstructions: {
+                                    name: string;
+                                    /** @enum {string} */
+                                    type: "A" | "CNAME" | "TXT";
+                                    value: string;
+                                }[];
+                                environmentId: string;
+                                hostname: string;
+                                routing: {
+                                    apexHostname: string;
+                                    /** @enum {string} */
+                                    kind: "apex" | "www" | "subdomain";
+                                    recommendation: string;
+                                    wwwHostname: string;
+                                };
+                                ssl: {
+                                    /** @enum {boolean} */
+                                    managed: true;
+                                    /** @enum {string} */
+                                    status: "pending" | "active" | "failed";
+                                };
+                                /** @enum {string} */
+                                status: "pending_dns" | "verifying" | "active" | "failed";
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/domains/{hostname}/poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    hostname: string;
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        environmentId: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            domain: {
+                                detail?: string;
+                                dnsInstructions: {
+                                    name: string;
+                                    /** @enum {string} */
+                                    type: "A" | "CNAME" | "TXT";
+                                    value: string;
+                                }[];
+                                environmentId: string;
+                                hostname: string;
+                                routing: {
+                                    apexHostname: string;
+                                    /** @enum {string} */
+                                    kind: "apex" | "www" | "subdomain";
+                                    recommendation: string;
+                                    wwwHostname: string;
+                                };
+                                ssl: {
+                                    /** @enum {boolean} */
+                                    managed: true;
+                                    /** @enum {string} */
+                                    status: "pending" | "active" | "failed";
+                                };
+                                /** @enum {string} */
+                                status: "pending_dns" | "verifying" | "active" | "failed";
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            export: {
+                                byteSize: number;
+                                contentHash: string;
+                                /** @enum {string} */
+                                contentType: "application/x-tar";
+                                /** Format: date-time */
+                                expiresAt: string;
+                                exportId: string;
+                                projectId: string;
+                                /** Format: uri */
+                                url: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -3743,6 +6818,609 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                errorPayload: string;
+                                evidenceArtifactId: string | null;
+                                fixRequest: {
+                                    errorPayload?: string;
+                                    evidence: ({
+                                        artifactId: string;
+                                        /** @enum {string} */
+                                        kind: "preview_console" | "preview_network" | "failed_check" | "user_report";
+                                        summary: string;
+                                    } | {
+                                        /** @enum {string} */
+                                        kind: "grafana_faro" | "grafana_loki";
+                                        summary: string;
+                                        /** Format: uri */
+                                        url: string;
+                                    } | {
+                                        incidentId: string;
+                                        /** @enum {string} */
+                                        kind: "incident_record";
+                                        summary: string;
+                                    })[];
+                                    incidentId?: string;
+                                    releaseId?: string;
+                                    relevantCommitSha: string;
+                                    reproductionRef: string;
+                                    /** @enum {string} */
+                                    source: "error_report" | "failed_check" | "user_bug";
+                                    summary: string;
+                                };
+                                fixRunId: string | null;
+                                id: string;
+                                /** Format: uri */
+                                logsUrl: string | null;
+                                organizationId: string;
+                                projectId: string;
+                                releaseId: string;
+                                reproductionRoute: string;
+                                resolutionReleaseId: string | null;
+                                /** @enum {string} */
+                                source: "grafana_faro" | "grafana_loki" | "synthetic_failure" | "user_report";
+                                /** @enum {string} */
+                                status: "open" | "fix_running" | "resolved";
+                                title: string;
+                                /** Format: uri */
+                                traceUrl: string | null;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        errorPayload: string;
+                        /** Format: uri */
+                        logsUrl?: string;
+                        releaseId: string;
+                        reproductionRoute: string;
+                        title: string;
+                        /** Format: uri */
+                        traceUrl?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            incident: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                errorPayload: string;
+                                evidenceArtifactId: string | null;
+                                fixRequest: {
+                                    errorPayload?: string;
+                                    evidence: ({
+                                        artifactId: string;
+                                        /** @enum {string} */
+                                        kind: "preview_console" | "preview_network" | "failed_check" | "user_report";
+                                        summary: string;
+                                    } | {
+                                        /** @enum {string} */
+                                        kind: "grafana_faro" | "grafana_loki";
+                                        summary: string;
+                                        /** Format: uri */
+                                        url: string;
+                                    } | {
+                                        incidentId: string;
+                                        /** @enum {string} */
+                                        kind: "incident_record";
+                                        summary: string;
+                                    })[];
+                                    incidentId?: string;
+                                    releaseId?: string;
+                                    relevantCommitSha: string;
+                                    reproductionRef: string;
+                                    /** @enum {string} */
+                                    source: "error_report" | "failed_check" | "user_bug";
+                                    summary: string;
+                                };
+                                fixRunId: string | null;
+                                id: string;
+                                /** Format: uri */
+                                logsUrl: string | null;
+                                organizationId: string;
+                                projectId: string;
+                                releaseId: string;
+                                reproductionRoute: string;
+                                resolutionReleaseId: string | null;
+                                /** @enum {string} */
+                                source: "grafana_faro" | "grafana_loki" | "synthetic_failure" | "user_report";
+                                /** @enum {string} */
+                                status: "open" | "fix_running" | "resolved";
+                                title: string;
+                                /** Format: uri */
+                                traceUrl: string | null;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/integrations/github": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            blockedTaskIds: string[];
+                            branch: string | null;
+                            conflictTaskId: string | null;
+                            externalHeadSha: string | null;
+                            externalRepoRef: string | null;
+                            internalHeadSha: string | null;
+                            projectId: string;
+                            /** @enum {string|null} */
+                            state: "in_sync" | "ahead" | "behind" | "diverged" | null;
+                            /** @enum {string} */
+                            syncPolicy: "direct_push" | "pull_request";
+                            /** Format: date-time */
+                            updatedAt: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/integrations/github/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        installationId: string;
+                        private: boolean;
+                        repositoryName: string;
+                        /** @enum {string} */
+                        syncPolicy: "direct_push" | "pull_request";
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            externalHeadSha: string;
+                            externalRepoRef: string;
+                            internalHeadSha: string;
+                            /** Format: uri */
+                            repositoryUrl: string;
+                            /** @enum {string} */
+                            syncPolicy: "direct_push" | "pull_request";
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/integrations/github/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        syncPolicy: "direct_push" | "pull_request";
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            blockedTaskIds: string[];
+                            branch: string | null;
+                            conflictTaskId: string | null;
+                            externalHeadSha: string | null;
+                            externalRepoRef: string | null;
+                            internalHeadSha: string | null;
+                            projectId: string;
+                            /** @enum {string|null} */
+                            state: "in_sync" | "ahead" | "behind" | "diverged" | null;
+                            /** @enum {string} */
+                            syncPolicy: "direct_push" | "pull_request";
+                            /** Format: date-time */
+                            updatedAt: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/integrations/github/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            action: "inbound";
+                            blockedTaskIds: string[];
+                            conflictCreated: boolean;
+                            externalHeadSha: string;
+                            internalHeadSha: string;
+                            /** @enum {string} */
+                            state: "in_sync" | "ahead" | "behind" | "diverged";
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/preview/shares": {
         parameters: {
             query?: never;
@@ -3832,6 +7510,178 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/production": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            annotations: {
+                                deploymentId: string | null;
+                                id: string;
+                                kind: string;
+                                /** Format: uri */
+                                link: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                /** @enum {string} */
+                                provider: "grafana" | "posthog";
+                                releaseId: string;
+                            }[];
+                            deployments: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                releaseId: string;
+                                rollbackOfDeploymentId: string | null;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                                /** Format: uri */
+                                url: string | null;
+                            }[];
+                            health: {
+                                deploymentId: string;
+                                evidenceArtifactId: string;
+                                id: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                releaseId: string;
+                                result: {
+                                    automaticRollbackAttempted: boolean;
+                                    evidenceArtifactId: string;
+                                    production: {
+                                        errorRate: {
+                                            burstDetected: boolean | null;
+                                            evidenceArtifactIds: string[];
+                                            /** @enum {string} */
+                                            status: "passed" | "failed" | "not_run";
+                                            /** @enum {number} */
+                                            windowMs: 120000;
+                                        };
+                                        healthEndpoint: {
+                                            attempts: {
+                                                evidenceArtifactId?: string;
+                                                statusCode: number | null;
+                                            }[];
+                                            /** @enum {number} */
+                                            intervalMs: 10000;
+                                            path: string;
+                                            /** @enum {string} */
+                                            status: "passed" | "failed";
+                                        };
+                                        smoke: {
+                                            evidenceArtifactIds: string[];
+                                            flows: {
+                                                flowId: string;
+                                                /** @enum {string} */
+                                                status: "passed" | "failed";
+                                            }[];
+                                            /** @enum {string} */
+                                            status: "passed" | "failed" | "not_run" | "not_applicable";
+                                        };
+                                        /** @enum {string} */
+                                        status: "passed" | "failed";
+                                    };
+                                    /** @enum {string} */
+                                    status: "healthy" | "failed";
+                                };
+                                /** @enum {string} */
+                                status: "healthy" | "failed";
+                            }[];
+                            healthyTargets: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                releaseId: string;
+                                rollbackOfDeploymentId: string | null;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                                /** Format: uri */
+                                url: string | null;
+                            }[];
+                            synthetics: {
+                                /** Format: date-time */
+                                completedAt: string;
+                                evidenceArtifactIds: string[];
+                                id: string;
+                                releaseId: string;
+                                /** @enum {string} */
+                                status: "passed" | "failed";
+                                summary: string;
+                                syntheticCheckId: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/releases": {
         parameters: {
             query?: never;
@@ -3839,7 +7689,114 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                activeProduction: boolean;
+                                commitSha: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                createdBy: string;
+                                deployments: {
+                                    /** Format: date-time */
+                                    completedAt: string | null;
+                                    id: string;
+                                    provider: string;
+                                    providerDeploymentId: string | null;
+                                    rollbackOfDeploymentId: string | null;
+                                    /** Format: date-time */
+                                    startedAt: string;
+                                    status: string;
+                                    /** Format: uri */
+                                    url: string | null;
+                                }[];
+                                environmentId: string;
+                                evidence: {
+                                    artifactId: string;
+                                    href: string;
+                                } | null;
+                                id: string;
+                                projectId: string;
+                                status: string;
+                                /** @enum {string} */
+                                supportLevel: "compatible" | "verified" | "managed";
+                            }[];
+                            nextCursor: string | null;
+                            rollbackTargets: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                provider: string;
+                                providerDeploymentId: string | null;
+                                releaseId: string;
+                                rollbackOfDeploymentId: string | null;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                                /** Format: uri */
+                                url: string | null;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
         put?: never;
         post: {
             parameters: {
@@ -3927,6 +7884,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/repository-lease": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @default 300 */
+                        ttlSec?: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uri */
+                            cloneUrl: string;
+                            /** Format: date-time */
+                            expiresAt: string;
+                            token: string;
+                            username: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/runs": {
         parameters: {
             query?: never;
@@ -3999,6 +8043,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -4034,6 +8079,7 @@ export interface paths {
                             maxCredits: number;
                         };
                         fixRequest: {
+                            errorPayload?: string;
                             evidence: ({
                                 artifactId: string;
                                 /** @enum {string} */
@@ -4045,7 +8091,14 @@ export interface paths {
                                 summary: string;
                                 /** Format: uri */
                                 url: string;
+                            } | {
+                                incidentId: string;
+                                /** @enum {string} */
+                                kind: "incident_record";
+                                summary: string;
                             })[];
+                            incidentId?: string;
+                            releaseId?: string;
                             relevantCommitSha: string;
                             reproductionRef: string;
                             /** @enum {string} */
@@ -4128,6 +8181,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -5047,7 +9101,86 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            workspaces: {
+                                branchId: string | null;
+                                /** Format: date-time */
+                                createdAt: string;
+                                id: string;
+                                /** Format: date-time */
+                                lastActiveAt: string | null;
+                                organizationId: string;
+                                projectId: string;
+                                provider: string;
+                                providerWorkspaceId: string | null;
+                                /** @enum {string} */
+                                resourceProfile: "small" | "standard" | "large";
+                                snapshotRef: string | null;
+                                /** @enum {string} */
+                                status: "requested" | "provisioning" | "started" | "ready" | "active" | "checkpointing" | "idle" | "terminated";
+                                /** Format: date-time */
+                                terminatedAt: string | null;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
         put?: never;
         post: {
             parameters: {
@@ -5521,6 +9654,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/releases/{releaseId}/deployment-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    retarget?: boolean;
+                };
+                header?: never;
+                path: {
+                    releaseId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            deploymentType: "first_deploy" | "redeploy" | "replace_deployment";
+                            effects: {
+                                activeUsers: string;
+                                productionData: string;
+                                secrets: string;
+                                url: string;
+                            };
+                            requiresExplicitDataDisposition: boolean;
+                            /** @enum {string} */
+                            title: "First deploy" | "Redeploy" | "Replace deployment";
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/releases/{releaseId}/evidence": {
         parameters: {
             query?: never;
@@ -5584,47 +9804,253 @@ export interface paths {
                         "application/json": {
                             evidence: {
                                 browser_tests: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 build: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 commit_sha: string;
                                 criteria: {
-                                    id: string;
+                                    criterionId: string;
+                                    evidenceArtifactIds: string[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed";
+                                    result: "passed" | "failed" | "unverified" | "waived";
+                                    specificationVersion: number;
+                                    taskIds: string[];
+                                    testCaseIds: string[];
+                                    verifierComments: string[];
                                 }[];
                                 known_risks: {
                                     detail: string;
                                     id: string;
                                 }[];
                                 migration: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 preview: {
-                                    /** Format: uri */
-                                    url: string;
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
+                                    /** @enum {string} */
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 release_id: string;
                                 rollback: {
-                                    supported: boolean;
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
+                                    /** @enum {string} */
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 security: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 specification_version: number;
                                 tests: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                                 typecheck: {
+                                    gates: ({
+                                        /** @enum {string} */
+                                        class: "required" | "best_effort" | "if_available" | "required_or_explicit_waiver" | "project_policy" | "existing_only" | "required_for_critical_logic" | "as_applicable" | "required_for_managed_integrations" | "optional" | "if_applicable" | "required_for_managed_auth" | "no" | "advisory" | "required_policy" | "required_for_code" | "required_for_supported_release_state" | "recommended";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                        waiver?: {
+                                            actorId: string;
+                                            /** Format: date-time */
+                                            createdAt: string;
+                                            /** @enum {string} */
+                                            gateId: "dev_server_start" | "production_build" | "typecheck" | "lint" | "unit_tests" | "integration_tests" | "browser_smoke" | "browser_acceptance" | "authorization_tests" | "migration_validation" | "secret_scan" | "dependency_scan" | "preview_health" | "rollback_readiness" | "observability_check";
+                                            reason: string;
+                                        };
+                                    } | {
+                                        /** @enum {string} */
+                                        class: "support_level_policy";
+                                        evidenceArtifactIds: string[];
+                                        /** @enum {string} */
+                                        gateId: "accessibility";
+                                        /** @enum {string} */
+                                        status: "passed" | "failed" | "waived" | "not_applicable";
+                                    })[];
                                     /** @enum {string} */
-                                    status: "passed" | "failed" | "skipped" | "not_required";
+                                    status: "passed" | "failed" | "waived" | "not_applicable";
                                 };
                             };
                         };
@@ -5634,6 +10060,178 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/releases/{releaseId}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    releaseId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @default false */
+                        startFixRun?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            fork: {
+                                branchId: string;
+                                branchName: string;
+                                fixRunId: string | null;
+                                releaseId: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/releases/{releaseId}/readiness-actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    releaseId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        action: "fix" | "review" | "waive";
+                        findingId: string;
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            status: "dispatched";
+                        };
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -5722,6 +10320,90 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/releases/{releaseId}/rollback-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    toDeploymentId?: string;
+                };
+                header?: never;
+                path: {
+                    releaseId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            allowed: boolean;
+                            compensationApproved: boolean;
+                            currentDeploymentId: string;
+                            /** @enum {string} */
+                            databaseState: "compatible" | "requires_compensation" | "incompatible";
+                            targetCommitSha: string;
+                            targetDeploymentId: string;
+                            targetReleaseId: string;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runs/{runId}": {
         parameters: {
             query?: never;
@@ -5794,6 +10476,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -5837,6 +10520,17 @@ export interface paths {
                     "application/json": {
                         /** @enum {string} */
                         decision: "approved" | "rejected";
+                        /**
+                         * @default budget_increase
+                         * @enum {string}
+                         */
+                        kind?: "budget_increase";
+                        reason?: string;
+                    } | {
+                        /** @enum {string} */
+                        decision: "approved" | "rejected";
+                        /** @enum {string} */
+                        kind: "specification" | "plan" | "plan_diff" | "migration" | "deploy";
                         reason?: string;
                     };
                 };
@@ -5889,6 +10583,16 @@ export interface paths {
                                 absoluteCeiling: string;
                                 approvalId: string;
                                 /** @enum {string} */
+                                kind: "budget_increase";
+                                /** @enum {string} */
+                                status: "approved" | "rejected";
+                            };
+                        } | {
+                            approval: {
+                                approvalId: string;
+                                /** @enum {string} */
+                                kind: "specification" | "plan" | "plan_diff" | "migration" | "deploy";
+                                /** @enum {string} */
                                 status: "approved" | "rejected";
                             };
                         };
@@ -5896,6 +10600,91 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/artifacts/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    artifactId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            artifact: {
+                                byteSize: number;
+                                content: string;
+                                contentHash: string;
+                                contentType: string;
+                                /** @enum {string} */
+                                encoding: "utf8" | "base64";
+                                id: string;
+                                type: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5976,12 +10765,102 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
                                 startedBy: string;
                                 status: string;
                             };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/conversation-responses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        answers: {
+                            answer: string;
+                            questionId: string;
+                        }[];
+                        cardId: string;
+                        /** @enum {string} */
+                        kind: "question_answers";
+                        /** @enum {number} */
+                        version: 1;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            operationKey: string;
                         };
                     };
                 };
@@ -6070,9 +10949,110 @@ export interface paths {
                             sequence: number;
                             taskId?: string;
                             /** @enum {string} */
-                            type: "run.created" | "run.started" | "run.paused" | "run.resumed" | "run.cancelled" | "run.completed" | "phase.created" | "phase.started" | "phase.completed" | "task.created" | "task.started" | "task.blocked" | "task.updated" | "task.completed" | "task.failed" | "agent.started" | "agent.completed" | "message.user" | "message.assistant" | "tool.started" | "tool.output" | "tool.completed" | "tool.failed" | "approval.requested" | "approval.resolved" | "artifact.created" | "commit.created" | "test.started" | "test.completed" | "verification.completed" | "preview.starting" | "preview.ready" | "preview.failed" | "release.created" | "deployment.updated" | "usage.recorded";
+                            type: "run.created" | "run.started" | "run.paused" | "run.resumed" | "run.cancelled" | "run.completed" | "phase.created" | "phase.started" | "phase.completed" | "task.created" | "task.started" | "task.blocked" | "task.updated" | "task.completed" | "task.failed" | "agent.started" | "agent.completed" | "message.user" | "message.assistant" | "conversation.card" | "conversation.response" | "tool.started" | "tool.output" | "tool.completed" | "tool.failed" | "approval.requested" | "approval.resolved" | "artifact.created" | "commit.created" | "test.started" | "test.completed" | "verification.completed" | "preview.starting" | "preview.ready" | "preview.failed" | "release.created" | "deployment.updated" | "usage.recorded";
                             /** @enum {string} */
                             visibility: "user" | "internal" | "support";
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/evidence/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    taskId?: string;
+                };
+                header?: never;
+                path: {
+                    artifactId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            artifact: {
+                                byteSize: number;
+                                contentHash: string;
+                                contentType: string;
+                                /** Format: date-time */
+                                createdAt: string;
+                                criterionIds: string[];
+                                description: string | null;
+                                id: string;
+                                /** @enum {string} */
+                                kind: "screenshot" | "trace" | "console" | "network" | "video" | "report" | "attachment" | "accessibility" | "dom";
+                                organizationId: string;
+                                projectId: string;
+                                runId: string;
+                                taskId: string | null;
+                                testCaseId: string | null;
+                                testRunId: string;
+                            };
+                            download: {
+                                /** Format: date-time */
+                                expiresAt: string;
+                                /** Format: uri */
+                                url: string;
+                            };
                         };
                     };
                 };
@@ -6239,6 +11219,20 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            actions: {
+                                retryFailedTasks: {
+                                    eligible: boolean;
+                                    /** @enum {string} */
+                                    reason: "eligible" | "run_not_active" | "mode_unsupported" | "task_not_found" | "task_not_failed" | "dependencies_unsatisfied";
+                                    taskId: string;
+                                }[];
+                                skipOptionalPhases: {
+                                    eligible: boolean;
+                                    phaseId: string;
+                                    /** @enum {string} */
+                                    reason: "eligible" | "run_not_active" | "mode_unsupported" | "phase_not_found" | "phase_required" | "phase_task_started" | "phase_already_skipped";
+                                }[];
+                            };
                             activeAgents: {
                                 agentId: string;
                                 role: string;
@@ -6324,6 +11318,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -6628,6 +11623,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -6639,6 +11635,185 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/phases/{phaseId}/skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    phaseId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            operationKey: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/plans/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    artifactId: string;
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            plan: {
+                                approvalId: string;
+                                /** @enum {string} */
+                                approvalKind: "plan" | "plan_diff";
+                                artifactId: string;
+                                phaseCount: number;
+                                phases: {
+                                    acceptanceCriteria: string[];
+                                    id: string;
+                                    optional: boolean;
+                                    sequence: number;
+                                    status: string;
+                                    title: string;
+                                }[];
+                                taskCount: number;
+                                tasks: {
+                                    acceptanceCriteria: string[];
+                                    assignedAgentRole: string | null;
+                                    dependencies: string[];
+                                    id: string;
+                                    phaseId: string;
+                                    /** @enum {string} */
+                                    riskLevel: "low" | "medium" | "high";
+                                    status: string;
+                                    title: string;
+                                }[];
+                                truncated: boolean;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6725,6 +11900,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -6816,6 +11992,7 @@ export interface paths {
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
                                 model: string | null;
                                 organizationId: string;
+                                planMaxCredits: string;
                                 projectId: string;
                                 /** Format: date-time */
                                 startedAt: string;
@@ -6827,6 +12004,568 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/specifications/{specificationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                    specificationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            specification: {
+                                /** Format: date-time */
+                                approvedAt: string | null;
+                                approvedBy: string | null;
+                                content: {
+                                    acceptanceCriteria: {
+                                        criticalFlow: boolean;
+                                        id: string;
+                                        /** @enum {string} */
+                                        priority: "critical" | "high" | "medium" | "low";
+                                        text: string;
+                                    }[];
+                                    assumptions: string[];
+                                    dataModel: string[];
+                                    definitionOfDone: string[];
+                                    functionalRequirements: string[];
+                                    goals: string[];
+                                    integrations: string[];
+                                    journeys: string[];
+                                    nonfunctionalRequirements: string[];
+                                    nonGoals: string[];
+                                    pagesRoutes: string[];
+                                    problem: string;
+                                    risks: string[];
+                                    rolesPermissions: string[];
+                                    targetUsers: string[];
+                                };
+                                createdBy: string;
+                                id: string;
+                                organizationId: string;
+                                projectId: string;
+                                /** @enum {string} */
+                                status: "draft" | "approved";
+                                version: number;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/tasks/{taskId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                    taskId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            operationKey: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/tests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            runs: {
+                                cases: {
+                                    criterionIds: string[];
+                                    durationMs: number | null;
+                                    error: (string | number | boolean | ("null" | null) | unknown[] | {
+                                        [key: string]: unknown;
+                                    }) | null;
+                                    evidenceArtifactIds: string[];
+                                    id: string;
+                                    name: string;
+                                    /** @enum {string} */
+                                    status: "passed" | "failed" | "skipped" | "timed_out";
+                                    testRunId: string;
+                                }[];
+                                /** @default false */
+                                casesTruncated: boolean;
+                                commitSha: string;
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                organizationId: string;
+                                runId: string;
+                                /** Format: date-time */
+                                startedAt: string;
+                                /** @enum {string} */
+                                status: "running" | "passed" | "failed" | "skipped" | "timed_out" | "error";
+                                summary: (string | number | boolean | ("null" | null) | unknown[] | {
+                                    [key: string]: unknown;
+                                }) | null;
+                                taskId: string | null;
+                                /** @enum {string} */
+                                type: "unit" | "integration" | "browser" | "smoke" | "build" | "typecheck" | "lint" | "security" | "migration";
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            templates: {
+                                /** Format: uri */
+                                demoUrl: string;
+                                description: string;
+                                highlights: string[];
+                                name: string;
+                                pagesIncluded: string[];
+                                slug: string;
+                                stack: string[];
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/templates/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    slug: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            template: {
+                                /** Format: uri */
+                                demoUrl: string;
+                                description: string;
+                                highlights: string[];
+                                name: string;
+                                pagesIncluded: string[];
+                                slug: string;
+                                stack: string[];
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/usage/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    from: string;
+                    to: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            credits: {
+                                available: string;
+                                reserved: string;
+                                /** @enum {string} */
+                                source: "wallet" | "cache" | "grace";
+                                wallet: string;
+                            };
+                            usage: {
+                                byCategory: {
+                                    /** @enum {string} */
+                                    category: "model_input_tokens" | "model_output_tokens" | "model_cached_tokens" | "sandbox_cpu_seconds" | "sandbox_mem_gib_seconds" | "storage_gib_hours" | "deploy_provider" | "artifact_storage" | "credit_grant";
+                                    credits: string;
+                                }[];
+                                byProject: {
+                                    credits: string;
+                                    projectId: string | null;
+                                }[];
+                                byRun: {
+                                    credits: string;
+                                    runId: string | null;
+                                }[];
+                            };
+                            window: {
+                                /** Format: date-time */
+                                from: string;
+                                /** Format: date-time */
+                                to: string;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6849,6 +12588,195 @@ export interface paths {
                     "x-github-delivery": string;
                     "x-github-event": string;
                     "x-hub-signature-256"?: string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {boolean} */
+                            accepted: true;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/webhooks/grafana": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        alerts: ({
+                            annotations: {
+                                error_payload: string;
+                                /** Format: uri */
+                                logs_url?: string;
+                                repro_route: string;
+                                summary: string;
+                                /** Format: uri */
+                                trace_url?: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            fingerprint: string;
+                            labels: {
+                                organization_id: string;
+                                project_id: string;
+                                release_id: string;
+                                /** @enum {string} */
+                                source: "grafana_faro" | "grafana_loki";
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            /** @enum {string} */
+                            status: "firing" | "resolved";
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        /** @enum {string} */
+                        status: "firing" | "resolved";
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            accepted: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/webhooks/stripe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    "stripe-signature"?: string;
                 };
                 path?: never;
                 cookie?: never;
@@ -7099,6 +13027,625 @@ export interface paths {
                             };
                         };
                     };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/dev-server/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    after?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            entries: {
+                                /** Format: date-time */
+                                at: string;
+                                cursor: number;
+                                message: string;
+                                /** @enum {string} */
+                                stream: "stdout" | "stderr";
+                            }[];
+                            failureId: string | null;
+                            nextCursor: number;
+                            /** @enum {string} */
+                            state: "idle" | "starting" | "ready" | "restarting" | "failed";
+                            truncated: boolean;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/dev-server/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path: {
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            ownership: "process" | "process_group";
+                            pid: number;
+                            port: number;
+                            supervisorId: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/edits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path: {
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        dataBase64: string;
+                        expectedCompareToken: string;
+                        path: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            commitRef: string;
+                            compareToken: string;
+                            path: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    path: string;
+                };
+                header?: never;
+                path: {
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            byteSize: number;
+                            compareToken: string;
+                            dataBase64: string;
+                            path: string;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    glob?: string;
+                    maxDepth?: number;
+                    path?: string;
+                };
+                header?: never;
+                path: {
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            entries: {
+                                path: string;
+                                /** @enum {string} */
+                                type: "file" | "directory" | "symlink";
+                            }[];
+                            truncated: boolean;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/preview/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": {
+                            payload: {
+                                /** @enum {string} */
+                                level: "log" | "warn" | "error";
+                                message: string;
+                                stack: string;
+                            };
+                            /** @enum {string} */
+                            type: "console";
+                        } | {
+                            payload: {
+                                durationMs: number;
+                                method: string;
+                                status: number;
+                                /** @enum {string} */
+                                transport: "fetch" | "xhr";
+                                /** Format: uri */
+                                url: string;
+                            };
+                            /** @enum {string} */
+                            type: "network";
+                        } | {
+                            payload: {
+                                /** Format: uri */
+                                url: string;
+                            };
+                            /** @enum {string} */
+                            type: "route_change";
+                        } | {
+                            payload: {
+                                message: string;
+                                stack: string;
+                            };
+                            /** @enum {string} */
+                            type: "runtime_error";
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/workspaces/{workspaceId}/preview/screenshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "idempotency-key": string;
+                };
+                path: {
+                    workspaceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": string;
+                    };
+                };
+                /** @description Default Response */
+                501: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Default Response */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
                 };
             };
         };

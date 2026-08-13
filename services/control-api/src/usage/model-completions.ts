@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { createObservabilityInstruments } from '@zapp/config';
 import {
   CompletionRecordSchema,
   CreditCeilingIncreaseRequestSchema,
@@ -31,6 +32,14 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 
 import { loadPricingConfig, priceTokenUsage, worstCaseReservation } from './pricing.js';
 import type { CreditMirror } from './reconciliation.js';
+import type { BudgetThresholdAlertPort } from './limits.js';
+
+export const MODEL_COMPLETION_USAGE_CATEGORIES = [
+  'model_input_tokens',
+  'model_output_tokens',
+  'model_cached_tokens',
+] as const;
+const modelCompletionInstruments = createObservabilityInstruments();
 
 export class CompletionConflictError extends Error {
   public constructor() {
@@ -76,6 +85,8 @@ export interface ModelCompletionRepositoryOptions {
   readonly now?: () => Date;
   readonly mirror?: CreditMirror;
   readonly onMirrorError?: (error: Error) => void;
+  /** Non-blocking OPS-3 notifications derived from this existing credit account. */
+  readonly budgetAlerts?: BudgetThresholdAlertPort;
 }
 
 export interface ModelCompletionRepository {
@@ -193,13 +204,16 @@ export function createModelCompletionRepository(
           };
         }),
       );
-      if ('credits' in result) await mirrorSafely(input.runId, result.credits);
+      if ('credits' in result) {
+        await mirrorSafely(input.runId, result.credits);
+        await notifyBudgetSafely(input.organizationId, input.runId, result.credits);
+      }
       return result;
     },
 
     async commit(rawInput) {
       const input = ModelCompletionCommitRequestSchema.parse(rawInput);
-      const result = await database.transaction(async (tx) => {
+      const transactionResult = await database.transaction(async (tx) => {
         const account = await lockAccount(tx, input.organizationId, input.runId);
         await assertScope(tx, input);
         const ceiling = await effectiveCeiling(tx, input.runId, account.baseCeiling);
@@ -217,6 +231,11 @@ export function createModelCompletionRepository(
             completion,
             credits: creditState(account, ceiling),
             ledgerRowIds: ledgerRowIds(completion),
+            telemetryCosts: [] as ReadonlyArray<{
+              readonly value: number;
+              readonly provider: string;
+              readonly model: string;
+            }>,
           };
         }
         if (
@@ -230,6 +249,11 @@ export function createModelCompletionRepository(
         const pricing = loadPricingConfig(account.pricingSnapshotJson);
         const ledgerRows: (typeof usageLedger.$inferInsert)[] = [];
         const outboxRows: (typeof usageOutbox.$inferInsert)[] = [];
+        const telemetryCosts: Array<{
+          readonly value: number;
+          readonly provider: string;
+          readonly model: string;
+        }> = [];
         let actualCredits = 0n;
         for (const [attemptIndex, usage] of input.usage.entries()) {
           const priced = priceTokenUsage(pricing, {
@@ -241,16 +265,32 @@ export function createModelCompletionRepository(
             cacheWriteInputTokens: usage.cacheWriteInputTokens,
           });
           const parts = [
-            ['input', 'model_input_tokens', 'input_tokens', priced.input],
-            ['output', 'model_output_tokens', 'output_tokens', priced.output],
-            ['cache-read', 'model_cached_tokens', 'cache_read_input_tokens', priced.cacheRead],
-            ['cache-write', 'model_cached_tokens', 'cache_write_input_tokens', priced.cacheWrite],
+            ['input', MODEL_COMPLETION_USAGE_CATEGORIES[0], 'input_tokens', priced.input],
+            ['output', MODEL_COMPLETION_USAGE_CATEGORIES[1], 'output_tokens', priced.output],
+            [
+              'cache-read',
+              MODEL_COMPLETION_USAGE_CATEGORIES[2],
+              'cache_read_input_tokens',
+              priced.cacheRead,
+            ],
+            [
+              'cache-write',
+              MODEL_COMPLETION_USAGE_CATEGORIES[2],
+              'cache_write_input_tokens',
+              priced.cacheWrite,
+            ],
           ] as const;
+          telemetryCosts.push({
+            value: parts.reduce((total, [, , , part]) => total + Number(part.costUsd), 0),
+            provider: usage.provider,
+            model: usage.model,
+          });
           for (const [kind, category, unit, part] of parts) {
             const ledgerRowId = deterministicId('usage', input.completionId, attemptIndex, kind);
             actualCredits += creditUnits(part.credits);
             ledgerRows.push({
               id: ledgerRowId,
+              operationKey: ledgerRowId,
               organizationId: input.organizationId,
               projectId: input.projectId,
               runId: input.runId,
@@ -261,6 +301,7 @@ export function createModelCompletionRepository(
               unit,
               costUsd: part.costUsd,
               creditsCharged: part.credits,
+              metadata: {},
               occurredAt: new Date(usage.occurredAt),
             });
             outboxRows.push({
@@ -324,9 +365,22 @@ export function createModelCompletionRepository(
           completion: completionRecord(completed),
           credits: creditState(updated, ceiling),
           ledgerRowIds: ledgerRows.map((row) => row.id),
+          telemetryCosts,
         };
       });
+      const { telemetryCosts, ...result } = transactionResult;
+      for (const cost of telemetryCosts) {
+        modelCompletionInstruments.record('modelCost', cost.value, {
+          provider: cost.provider,
+          model: cost.model,
+          'zapp.organization.id': input.organizationId,
+          'zapp.project.id': input.projectId,
+          'zapp.run.id': input.runId,
+          ...(input.taskId === undefined ? {} : { 'zapp.task.id': input.taskId }),
+        });
+      }
       await mirrorSafely(input.runId, result.credits);
+      await notifyBudgetSafely(input.organizationId, input.runId, result.credits);
       return result;
     },
 
@@ -428,6 +482,7 @@ export function createModelCompletionRepository(
         return creditState(updated, input.absoluteCeiling);
       });
       await mirrorSafely(input.runId, result);
+      await notifyBudgetSafely(input.organizationId, input.runId, result);
       return result;
     },
   };
@@ -438,6 +493,18 @@ export function createModelCompletionRepository(
       await options.mirror.write(runId, credits);
     } catch (error) {
       options.onMirrorError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  async function notifyBudgetSafely(
+    organizationId: string,
+    runId: string,
+    credits: CreditState,
+  ): Promise<void> {
+    try {
+      await options.budgetAlerts?.notify({ organizationId, runId, credits });
+    } catch {
+      // A notification failure cannot make completed metered usage indeterminate.
     }
   }
 }

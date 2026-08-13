@@ -1,9 +1,14 @@
+import type { AnalyticsCaptureInput, ProductAnalytics } from '@zapp/config';
 import { ApiErrorSchema, newId } from '@zapp/contracts';
 import type { AgentEventRow, AgentRun } from '@zapp/db';
+import {
+  assembleEvidenceManifest,
+  buildCriteriaCompletionReport,
+  GATE_IDS,
+} from '@zapp/verification-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AuthIdentity } from '../src/auth/port.js';
-import { NO_TRANSACTION, type AuditHook } from '../src/plugins/audit.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type {
   ApproveReleaseMutationInput,
@@ -13,10 +18,12 @@ import type {
   EvidenceManifest,
   ReadinessReport,
   ReleaseLookupInput,
+  ReleaseForkPort,
   ReleasePort,
   ReleaseRow,
   RollbackReleaseMutationInput,
 } from '../src/routes/releases.js';
+import type { DeploymentUsagePort } from '../src/usage/collectors/git.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 import { InMemoryTenantData } from './support/tenant-db.js';
 
@@ -47,14 +54,15 @@ class RecordingReleasePort implements ReleasePort {
   readonly approvals: ApproveReleaseMutationInput[] = [];
   readonly deploys: DeployReleaseMutationInput[] = [];
   readonly rollbacks: RollbackReleaseMutationInput[] = [];
+  readonly actions: Parameters<NonNullable<ReleasePort['act']>>[0][] = [];
+  readonly deploymentId = newId('dep');
   fail = false;
   invalid = false;
   createResultOverride: Partial<ReleaseRow> | undefined;
   approveResultOverride: Partial<ReleaseRow> | undefined;
-  skipCreateAudit = false;
-  skipApproveAudit = false;
   lookupOverrideId: string | undefined;
   evidenceResultOverride: Partial<EvidenceManifest> | undefined;
+  historyCursor: string | null = null;
   readonly releaseId = newId('rel');
   readonly releases = new Map<string, ReleaseRow>();
 
@@ -73,12 +81,12 @@ class RecordingReleasePort implements ReleasePort {
     };
   }
 
-  async createReleaseCandidate(input: CreateReleaseMutationInput): Promise<ReleaseRow> {
-    if (this.fail) throw new Error('provider token is never public');
+  createReleaseCandidate(input: CreateReleaseMutationInput): Promise<ReleaseRow> {
+    if (this.fail) return Promise.reject(new Error('provider token is never public'));
     if (this.invalid) {
       const invalid = { privateProviderThing: true };
       this.creates.push(input);
-      return invalid as unknown as ReleaseRow;
+      return Promise.resolve(invalid as unknown as ReleaseRow);
     }
     const row = {
       ...this.release(),
@@ -89,11 +97,9 @@ class RecordingReleasePort implements ReleasePort {
       createdBy: input.actorId,
       ...this.createResultOverride,
     };
-    if (this.skipCreateAudit) return row;
-    await this.record(input, row);
     this.creates.push(input);
     this.releases.set(row.id, row);
-    return row;
+    return Promise.resolve(row);
   }
   getRelease(input: ReleaseLookupInput): Promise<ReleaseRow | undefined> {
     const row = this.releases.get(this.lookupOverrideId ?? input.releaseId);
@@ -113,51 +119,129 @@ class RecordingReleasePort implements ReleasePort {
       ],
     });
   }
-  async approve(input: ApproveReleaseMutationInput): Promise<ReleaseRow> {
+  approve(input: ApproveReleaseMutationInput): Promise<ReleaseRow> {
     const release = this.releases.get(input.releaseId);
     const row = release === undefined ? undefined : { ...release, ...this.approveResultOverride };
-    if (row === undefined) throw new Error('release missing');
-    if (this.skipApproveAudit) return row;
-    await this.record(input, row);
+    if (row === undefined) return Promise.reject(new Error('release missing'));
     this.approvals.push(input);
-    return row;
+    return Promise.resolve(row);
   }
-  async deploy(input: DeployReleaseMutationInput): Promise<DeploymentResult> {
-    if (this.fail) throw new Error('provider token is never public');
+  deploy(input: DeployReleaseMutationInput): Promise<DeploymentResult> {
+    if (this.fail) return Promise.reject(new Error('provider token is never public'));
     const result = { deploymentId: newId('dep') };
-    await this.record(input, result);
     this.deploys.push(input);
-    return result;
+    return Promise.resolve(result);
   }
-  async rollback(input: RollbackReleaseMutationInput): Promise<DeploymentResult> {
+  rollback(input: RollbackReleaseMutationInput): Promise<DeploymentResult> {
     const result = { deploymentId: newId('dep') };
-    await this.record(input, result);
     this.rollbacks.push(input);
-    return result;
+    return Promise.resolve(result);
   }
   getEvidence(input: ReleaseLookupInput): Promise<EvidenceManifest> {
+    const manifest = assembleEvidenceManifest(
+      {
+        releaseId: input.releaseId,
+        commitSha: 'a'.repeat(40),
+        specificationVersion: 1,
+        supportLevel: 'managed',
+        projectPolicy: { waivers: [] },
+        gateResults: GATE_IDS.map((gateId) => ({
+          gateId,
+          result: {
+            status: 'passed' as const,
+            evidenceArtifactIds: [`evidence-${gateId}`],
+            details: {},
+          },
+        })),
+        accessibilityResult: {
+          status: 'passed',
+          evidenceArtifactIds: ['evidence-accessibility'],
+          details: {},
+        },
+        criteriaCompletion: buildCriteriaCompletionReport({
+          specificationVersion: 1,
+          criteria: [{ criterionId: 'AC-1' }],
+          tasks: [],
+          testCases: [],
+        }),
+        criticalCriterionIds: [],
+        policySignals: [],
+        knownRisks: [],
+      },
+      { redact: (value) => value },
+    );
+    return Promise.resolve({ ...manifest, ...this.evidenceResultOverride });
+  }
+  listProjectHistory(input: { organizationId: string; projectId: string; cursor: string | null; limit: number }) {
+    this.historyCursor = input.cursor;
     return Promise.resolve({
-      release_id: input.releaseId,
-      commit_sha: 'a'.repeat(40),
-      specification_version: 1,
-      criteria: [],
-      build: { status: 'passed' },
-      typecheck: { status: 'passed' },
-      tests: { status: 'passed' },
-      browser_tests: { status: 'passed' },
-      security: { status: 'passed' },
-      migration: { status: 'not_required' },
-      preview: { url: 'https://preview.zapp.test' },
-      rollback: { supported: true },
-      known_risks: [],
-      ...this.evidenceResultOverride,
+      items: [...this.releases.values()]
+        .filter((release) => release.organizationId === input.organizationId && release.projectId === input.projectId)
+        .slice(0, input.limit)
+        .map((release) => ({
+          id: release.id, projectId: release.projectId, environmentId: release.environmentId,
+          commitSha: release.commitSha, status: release.status, createdBy: release.createdBy, supportLevel: 'compatible' as const,
+          activeProduction: true, createdAt: release.createdAt.toISOString(), deployments: [],
+          evidence: { artifactId: newId('art'), href: `/v1/releases/${release.id}/evidence` },
+        })),
+      rollbackTargets: [], nextCursor: null,
     });
+  }
+  getDeploymentProgress(input: { organizationId: string; deploymentId: string }) {
+    const release = [...this.releases.values()].find((row) => row.organizationId === input.organizationId);
+    return Promise.resolve(release === undefined || input.deploymentId !== this.deploymentId ? undefined : {
+      deploymentId: this.deploymentId, releaseId: release.id, projectId: release.projectId,
+      environmentId: release.environmentId, status: 'healthy', url: 'https://app.example.test',
+      events: [{ sequence: 0, stage: 'readiness_check' as const, status: 'passed' as const,
+        elapsedMs: 2, summary: 'Ready', evidenceArtifactId: null,
+        occurredAt: '2026-08-12T18:00:00.000Z' }], terminalSuccess: null,
+    });
+  }
+  act(input: Parameters<NonNullable<ReleasePort['act']>>[0]) {
+    this.actions.push(input);
+    return Promise.resolve({ status: 'dispatched' as const });
+  }
+  listDomains() { return Promise.resolve([this.domain()]); }
+  configureDomain() { return Promise.resolve(this.domain()); }
+  pollDomain() { return Promise.resolve(this.domain()); }
+  getProductionHistory() {
+    return Promise.resolve({ deployments: [], health: [], synthetics: [], annotations: [], healthyTargets: [] });
+  }
+  getRollbackPreview(input: { toDeploymentId?: string }) {
+    return Promise.resolve({
+      currentDeploymentId: this.deploymentId,
+      targetDeploymentId: input.toDeploymentId ?? newId('dep'),
+      targetReleaseId: this.releaseId,
+      targetCommitSha: 'a'.repeat(40),
+      databaseState: 'incompatible' as const,
+      allowed: false,
+      compensationApproved: false,
+    });
+  }
+  private domain() {
+    return {
+      hostname: 'app.example.com', environmentId: 'env_01J00000000000000000000000', status: 'pending_dns' as const,
+      dnsInstructions: [{ type: 'CNAME' as const, name: 'app.example.com', value: 'target.example.net' }],
+      routing: { kind: 'subdomain' as const, apexHostname: 'example.com', wwwHostname: 'www.example.com', recommendation: 'Use this hostname.' },
+      ssl: { managed: true as const, status: 'pending' as const },
+    };
   }
   seed(row: ReleaseRow): void {
     this.releases.set(row.id, row);
   }
-  private async record<TResult>(input: { readonly audit: AuditHook<TResult> }, result: TResult): Promise<void> {
-    await input.audit(NO_TRANSACTION, result);
+}
+
+class RecordingReleaseFork implements ReleaseForkPort {
+  readonly calls: Parameters<ReleaseForkPort['forkRelease']>[0][] = [];
+
+  forkRelease(input: Parameters<ReleaseForkPort['forkRelease']>[0]) {
+    this.calls.push(input);
+    return Promise.resolve({
+      releaseId: input.releaseId,
+      branchId: newId('br'),
+      branchName: `fix/rel-${input.releaseId}`,
+      fixRunId: input.startFixRun ? newId('run') : null,
+    });
   }
 }
 
@@ -169,15 +253,19 @@ interface Wired {
   readonly projectId: string;
   readonly environmentId: string;
   readonly releases: RecordingReleasePort;
+  readonly releaseFork: RecordingReleaseFork;
   as: (session: TestSession) => Record<string, string>;
 }
 
-async function wire(): Promise<Wired> {
+async function wire(productAnalytics?: ProductAnalytics): Promise<Wired> {
   const data = new InMemoryTenantData();
   const releases = new RecordingReleasePort();
+  const releaseFork = new RecordingReleaseFork();
   const built = buildHarness({
     tenantDb: data.factory,
     releasePort: releases,
+    releaseFork,
+    ...(productAnalytics === undefined ? {} : { productAnalytics }),
   });
   harnesses.push(built);
   const owner = await signIn(built, OWNER);
@@ -192,7 +280,31 @@ async function wire(): Promise<Wired> {
   });
   expect(project.statusCode, project.body).toBe(201);
   const body = project.json<{ project: { id: string }; environments: { id: string; type: string }[] }>();
-  return { built, data, owner, organizationId, projectId: body.project.id, environmentId: body.environments.find((entry) => entry.type === 'production')?.id ?? '', releases, as };
+  return { built, data, owner, organizationId, projectId: body.project.id, environmentId: body.environments.find((entry) => entry.type === 'production')?.id ?? '', releases, releaseFork, as };
+}
+
+async function wireWithDeploymentUsage(
+  deploymentUsage: DeploymentUsagePort,
+): Promise<Wired> {
+  const data = new InMemoryTenantData();
+  const releases = new RecordingReleasePort();
+  const releaseFork = new RecordingReleaseFork();
+  const built = buildHarness({ tenantDb: data.factory, releasePort: releases, releaseFork, deploymentUsage });
+  harnesses.push(built);
+  const owner = await signIn(built, OWNER);
+  const organization = await built.app.inject({
+    method: 'POST', url: '/v1/organizations', headers: owner.headers, payload: { name: 'Release Factory' },
+  });
+  const organizationId = organization.json<{ organization: { id: string } }>().organization.id;
+  const as = (session: TestSession): Record<string, string> => ({ ...session.headers, [ORGANIZATION_HEADER]: organizationId });
+  const project = await built.app.inject({
+    method: 'POST', url: '/v1/projects', headers: as(owner), payload: { name: 'Release Target' },
+  });
+  const body = project.json<{ project: { id: string }; environments: { id: string; type: string }[] }>();
+  const environmentId = body.environments.find((entry) => entry.type === 'production')?.id ?? '';
+  const environment = data.environments.find((entry) => entry.id === environmentId);
+  if (environment !== undefined) Object.assign(environment, { deploymentProvider: 'fly' });
+  return { built, data, owner, organizationId, projectId: body.project.id, environmentId, releases, releaseFork, as };
 }
 
 async function join(wired: Wired, identity: AuthIdentity, role: 'builder' | 'viewer'): Promise<TestSession> {
@@ -238,6 +350,7 @@ function seedCompletedRunForCommit(
     temporalWorkflowId: newId('run'),
     startedBy: wired.owner.userId,
     budgetJson: null,
+    planMaxCredits: '1000.0000',
     startedAt: new Date('2026-08-09T18:00:00.000Z'),
     completedAt: new Date('2026-08-09T18:01:00.000Z'),
   };
@@ -266,6 +379,60 @@ function seedCompletedRunForCommit(
 }
 
 describe('release route shells', () => {
+  it('bridges deployment confirmation, actions, progress SSE, and domains through public APIs', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'dep14-release'), payload: candidateBody(wired) });
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const preview = await wired.built.app.inject({ method: 'GET', url: `/v1/releases/${releaseId}/deployment-preview`, headers: wired.as(wired.owner) });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json()).toMatchObject({ deploymentType: 'first_deploy', title: 'First deploy' });
+    const readinessAction = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${releaseId}/readiness-actions`, headers: mutationHeaders(wired, wired.owner, 'dep14-fix'), payload: { findingId: 'build', action: 'fix' } });
+    expect(readinessAction.statusCode, readinessAction.body).toBe(200);
+    const progress = await wired.built.app.inject({ method: 'GET', url: `/v1/deployments/${wired.releases.deploymentId}`, headers: wired.as(wired.owner) });
+    expect(progress.statusCode, progress.body).toBe(200);
+    expect(progress.json()).toMatchObject({ events: [{ stage: 'readiness_check' }] });
+    const events = await wired.built.app.inject({ method: 'GET', url: `/v1/deployments/${wired.releases.deploymentId}/events`, headers: wired.as(wired.owner) });
+    expect(events.statusCode, events.body).toBe(200);
+    expect(events.headers['content-type']).toContain('text/event-stream');
+    expect(events.body).toContain('event: deployment.updated');
+    const retry = await wired.built.app.inject({ method: 'POST', url: `/v1/deployments/${wired.releases.deploymentId}/actions`, headers: mutationHeaders(wired, wired.owner, 'dep14-retry'), payload: { action: 'retry', stage: 'go_live' } });
+    expect(retry.statusCode, retry.body).toBe(200);
+    const configured = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/domains`, headers: mutationHeaders(wired, wired.owner, 'dep14-domain'), payload: { environmentId: wired.environmentId, hostname: 'app.example.com' } });
+    expect(configured.statusCode, configured.body).toBe(201);
+    expect(configured.json()).toMatchObject({ domain: { hostname: 'app.example.com', ssl: { managed: true } } });
+    expect(wired.releases.actions.map(({ action }) => action)).toEqual(['fix', 'retry']);
+  });
+
+  it('publishes production history and pre-mutation rollback compatibility', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'dep15-release'), payload: candidateBody(wired) });
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const history = await wired.built.app.inject({ method: 'GET', url: `/v1/projects/${wired.projectId}/production`, headers: wired.as(wired.owner) });
+    expect(history.statusCode, history.body).toBe(200);
+    expect(history.json()).toEqual({ deployments: [], health: [], synthetics: [], annotations: [], healthyTargets: [] });
+    const preview = await wired.built.app.inject({ method: 'GET', url: `/v1/releases/${releaseId}/rollback-preview`, headers: wired.as(wired.owner) });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json()).toMatchObject({ databaseState: 'incompatible', allowed: false, compensationApproved: false });
+  });
+
+  it('lists paginated project release history with public evidence links', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-history-source'), payload: candidateBody(wired),
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const response = await wired.built.app.inject({
+      method: 'GET', url: `/v1/projects/${wired.projectId}/releases?limit=10`, headers: wired.as(wired.owner),
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      items: [{ id: releaseId, activeProduction: true, supportLevel: 'compatible', evidence: {
+        href: `/v1/releases/${releaseId}/evidence`,
+      } }], rollbackTargets: [], nextCursor: null,
+    });
+  });
   it('rejects a prototype-only commit until a Build run owns the same commit', async () => {
     const wired = await wire();
     const commitSha = candidateBody(wired).commitSha;
@@ -314,7 +481,7 @@ describe('release route shells', () => {
     expect((await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${releaseId}/rollback`, headers: mutationHeaders(wired, wired.owner, 'release-rollback-01'), payload: { reason: 'Restore the prior healthy deployment.' } })).statusCode).toBe(200);
     const evidence = await wired.built.app.inject({ method: 'GET', url: `/v1/releases/${releaseId}/evidence`, headers: wired.as(wired.owner) });
     expect(evidence.statusCode, evidence.body).toBe(200);
-    expect(evidence.json()).toMatchObject({ evidence: { release_id: releaseId, rollback: { supported: true } } });
+    expect(evidence.json()).toMatchObject({ evidence: { release_id: releaseId, rollback: { status: 'passed' } } });
     for (const call of [
       ...wired.releases.creates,
       ...wired.releases.approvals,
@@ -327,28 +494,51 @@ describe('release route shells', () => {
       });
       expect(call.operationKey).toMatch(/^op_[a-f0-9]{64}$/);
     }
-    const auditEvents = wired.built.audit.events.filter((event) => event.action.startsWith('release.'));
-    const releaseCalls = [
-      ...wired.releases.creates,
-      ...wired.releases.approvals,
-      ...wired.releases.deploys,
-      ...wired.releases.rollbacks,
-    ];
-    expect(auditEvents.map((event) => event.action)).toEqual([
-      'release.created',
-      'release.approved',
-      'release.deploy_requested',
-      'release.rollback_requested',
-    ]);
-    for (const [index, event] of auditEvents.entries()) {
-      expect(event).toMatchObject({
+    expect(wired.built.audit.events.filter((event) => event.action.startsWith('release.'))).toEqual([]);
+  });
+
+  it('meters successful deployment and rollback completion through the production route seam', async () => {
+    const records: unknown[] = [];
+    const wired = await wireWithDeploymentUsage({
+      record(input) {
+        records.push(input);
+        return Promise.resolve();
+      },
+    });
+    const created = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-meter-create'),
+      payload: candidateBody(wired),
+    });
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const deployed = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/releases/${releaseId}/deploy`,
+      headers: mutationHeaders(wired, wired.owner, 'release-meter-deploy'),
+      payload: { deploymentType: 'first_deploy' },
+    });
+    const rolledBack = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/releases/${releaseId}/rollback`,
+      headers: mutationHeaders(wired, wired.owner, 'release-meter-rollback'),
+      payload: { reason: 'Restore the prior healthy deployment.' },
+    });
+
+    expect(records).toEqual([
+      expect.objectContaining({
         organizationId: wired.organizationId,
-        actorId: wired.owner.userId,
-        targetType: 'release',
-        targetId: releaseId,
-      });
-      expect(event.metadata.operationKey).toBe(releaseCalls[index]?.operationKey);
-    }
+        projectId: wired.projectId,
+        deploymentId: deployed.json<{ deploymentId: string }>().deploymentId,
+        provider: 'fly',
+      }),
+      expect.objectContaining({
+        organizationId: wired.organizationId,
+        projectId: wired.projectId,
+        deploymentId: rolledBack.json<{ deploymentId: string }>().deploymentId,
+        provider: 'fly',
+      }),
+    ]);
   });
 
   it('allows Builder create/read but reads persisted organization settings before deployment', async () => {
@@ -452,7 +642,7 @@ describe('release route shells', () => {
     const wrongRisk = 'foreign-risk-release-id';
     wired.releases.evidenceResultOverride = {
       release_id: wrongReleaseId,
-      criteria: [{ id: wrongCriterion, status: 'failed' }],
+      criteria: [{ id: wrongCriterion, status: 'failed' }] as never,
       known_risks: [{ id: wrongRisk, detail: 'Foreign release risk.' }],
     };
     const auditCount = wired.built.audit.events.length;
@@ -474,7 +664,7 @@ describe('release route shells', () => {
     const wrongRisk = 'foreign-risk-commit';
     wired.releases.evidenceResultOverride = {
       commit_sha: wrongCommit,
-      criteria: [{ id: wrongCriterion, status: 'failed' }],
+      criteria: [{ id: wrongCriterion, status: 'failed' }] as never,
       known_risks: [{ id: wrongRisk, detail: 'Foreign commit risk.' }],
     };
     const auditCount = wired.built.audit.events.length;
@@ -508,17 +698,7 @@ describe('release route shells', () => {
     expect(wired.built.audit.events.filter((event) => event.action === 'release.created')).toEqual([]);
   });
 
-  it('rolls back release mutation intent when its audit callback fails', async () => {
-    const wired = await wire();
-    const failingAudit = wired.built.audit as unknown as { record: () => Promise<void> };
-    failingAudit.record = () => Promise.reject(new Error('audit sink unavailable'));
-    const response = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-audit-fail-01'), payload: candidateBody(wired) });
-    expect(response.statusCode).toBe(502);
-    expect(wired.releases.creates).toEqual([]);
-    expect(wired.built.audit.events.filter((event) => event.action === 'release.created')).toEqual([]);
-  });
-
-  it('rejects a wrong-identity release create result before audit or commit', async () => {
+  it('rejects a wrong-identity release create result without leaking it', async () => {
     const wired = await wire();
     const wrong = {
       organizationId: newId('org'),
@@ -533,11 +713,11 @@ describe('release route shells', () => {
     expect(response.body).not.toContain(wrong.projectId);
     expect(response.body).not.toContain(wrong.environmentId);
     expect(response.body).not.toContain(wrong.specificationId);
-    expect(wired.releases.creates).toEqual([]);
+    expect(wired.releases.creates).toHaveLength(1);
     expect(wired.built.audit.events.filter((event) => event.action === 'release.created')).toEqual([]);
   });
 
-  it('rejects a wrong-identity release approval result before audit or commit', async () => {
+  it('rejects a wrong-identity release approval result without leaking it', async () => {
     const wired = await wire();
     const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-identity-source-01'), payload: candidateBody(wired) });
     expect(created.statusCode, created.body).toBe(201);
@@ -555,44 +735,7 @@ describe('release route shells', () => {
     const response = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${selectedReleaseId}/approve`, headers: mutationHeaders(wired, wired.owner, 'release-wrong-approve-01') });
     expect(response.statusCode, response.body).toBe(502);
     for (const id of Object.values(wrong)) expect(response.body).not.toContain(id);
-    expect(wired.releases.approvals).toEqual([]);
-    expect(wired.built.audit.events.filter((event) => event.action === 'release.approved')).toEqual([]);
-  });
-
-  it('rejects an unaudited wrong-identity release create result at the final-result guard', async () => {
-    const wired = await wire();
-    const wrong = {
-      organizationId: newId('org'),
-      projectId: newId('proj'),
-      environmentId: newId('env'),
-      specificationId: newId('spec'),
-    };
-    wired.releases.createResultOverride = wrong;
-    wired.releases.skipCreateAudit = true;
-    const response = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-unaudited-create-01'), payload: candidateBody(wired) });
-    expect(response.statusCode).toBe(502);
-    for (const id of Object.values(wrong)) expect(response.body).not.toContain(id);
-    expect(wired.releases.creates).toEqual([]);
-    expect(wired.built.audit.events.filter((event) => event.action === 'release.created')).toEqual([]);
-  });
-
-  it('rejects an unaudited wrong-identity release approval result at the final-result guard', async () => {
-    const wired = await wire();
-    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'release-unaudited-approval-source-01'), payload: candidateBody(wired) });
-    expect(created.statusCode, created.body).toBe(201);
-    const wrong = {
-      id: newId('rel'),
-      organizationId: newId('org'),
-      projectId: newId('proj'),
-      environmentId: newId('env'),
-      specificationId: newId('spec'),
-    };
-    wired.releases.approveResultOverride = wrong;
-    wired.releases.skipApproveAudit = true;
-    const response = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${created.json<{ release: { id: string } }>().release.id}/approve`, headers: mutationHeaders(wired, wired.owner, 'release-unaudited-approve-01') });
-    expect(response.statusCode).toBe(502);
-    for (const id of Object.values(wrong)) expect(response.body).not.toContain(id);
-    expect(wired.releases.approvals).toEqual([]);
+    expect(wired.releases.approvals).toHaveLength(1);
     expect(wired.built.audit.events.filter((event) => event.action === 'release.approved')).toEqual([]);
   });
 
@@ -620,6 +763,93 @@ describe('release route shells', () => {
     expect(wired.releases.deploys).toEqual([]);
     const rollback = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${releaseId}/rollback`, headers: mutationHeaders(wired, wired.owner, 'release-rollback-empty'), payload: { reason: ' ' } });
     expect(rollback.statusCode).toBe(400);
+  });
+
+  it('forks a tenant release at the exact repair branch with an optional Fix run', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-fork-source-01'),
+      payload: candidateBody(wired),
+    });
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/releases/${releaseId}/fork`,
+      headers: mutationHeaders(wired, wired.owner, 'release-fork-01'),
+      payload: { startFixRun: true },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.json()).toMatchObject({
+      fork: { releaseId, branchName: `fix/rel-${releaseId}` },
+    });
+    expect(wired.releaseFork.calls).toHaveLength(1);
+    expect(wired.releaseFork.calls[0]).toMatchObject({
+      organizationId: wired.organizationId,
+      releaseId,
+      actorId: wired.owner.userId,
+      startFixRun: true,
+    });
+
+    const foreign = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/releases/${newId('rel')}/fork`,
+      headers: mutationHeaders(wired, wired.owner, 'release-fork-foreign-01'),
+      payload: { startFixRun: false },
+    });
+    expect(foreign.statusCode).toBe(404);
+    expect(wired.releaseFork.calls).toHaveLength(1);
+  });
+
+  it('captures privacy-safe release and rollback lifecycle analytics once', async () => {
+    const captures: AnalyticsCaptureInput[] = [];
+    const wired = await wire({
+      capture(input) {
+        captures.push(input);
+        return Promise.resolve();
+      },
+    });
+    captures.length = 0;
+    const created = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${wired.projectId}/releases`,
+      headers: mutationHeaders(wired, wired.owner, 'release-analytics-create-01'),
+      payload: candidateBody(wired),
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const rolledBack = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/releases/${releaseId}/rollback`,
+      headers: mutationHeaders(wired, wired.owner, 'release-analytics-rollback-01'),
+      payload: { reason: 'Synthetic health check regressed.' },
+    });
+    expect(rolledBack.statusCode, rolledBack.body).toBe(200);
+
+    expect(captures).toEqual([
+      {
+        eventId: `release_created:${releaseId}`,
+        distinctId: wired.owner.userId,
+        event: 'release_created',
+        properties: {
+          orgId: wired.organizationId,
+          projectId: wired.projectId,
+          supportLevel: 'compatible',
+        },
+      },
+      {
+        eventId: `rollback_executed:${rolledBack.json<{ deploymentId: string }>().deploymentId}`,
+        distinctId: wired.owner.userId,
+        event: 'rollback_executed',
+        properties: {
+          orgId: wired.organizationId,
+          projectId: wired.projectId,
+          supportLevel: 'compatible',
+        },
+      },
+    ]);
   });
 
   it('does not report a failed or malformed port result as a success', async () => {

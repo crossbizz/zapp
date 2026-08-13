@@ -121,6 +121,9 @@ const ignore = (file: string) => {
   if (isPgRuntimeDependency(file)) {
     return false;
   }
+  if (file.startsWith("/.vite") && file.endsWith(".map")) {
+    return true;
+  }
   if (file.startsWith("/.vite")) {
     return false;
   }

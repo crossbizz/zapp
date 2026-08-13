@@ -66,6 +66,7 @@ function workflowInput(runId: string): RunWorkflowInput {
     model: null,
     prompt: 'Exercise the AR-9 production worker composition.',
     budget: null,
+    planMaxCredits: 1000,
     operationKey: `op_${'a'.repeat(64)}`,
   };
 }
@@ -110,6 +111,7 @@ describe('AR-9 production Postgres worker composition', () => {
         estimateRunCost: taskActivityNotExpected,
         requestBudgetIncrease: taskActivityNotExpected,
         checkpointBudgetStop: taskActivityNotExpected,
+        evaluateFeatureFlag: () => Promise.resolve({ enabled: true }),
       } as unknown as ProductionRunActivities;
       const worker = await createProductionRunWorker({
         connection: environment.nativeConnection,

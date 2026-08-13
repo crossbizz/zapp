@@ -7,6 +7,7 @@ const ReactCompilerConfig = {};
 
 // https://vite.dev/config/
 export default defineConfig({
+  build: { sourcemap: "hidden" },
   plugins: [
     react({
       babel: {

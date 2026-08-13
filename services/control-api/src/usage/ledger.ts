@@ -1,195 +1,210 @@
 import { createHash } from 'node:crypto';
 
 import { idSchema } from '@zapp/contracts';
-import { usageLedger, usageOutbox, USAGE_CATEGORIES, type Database } from '@zapp/db';
-import { and, asc, eq, gte, lt, sql } from 'drizzle-orm';
+import {
+  METERED_USAGE_CATEGORIES,
+  USAGE_CATEGORIES,
+  usageLedger,
+  usageOutbox,
+  type Database,
+} from '@zapp/db';
+import { and, eq, gte, lt, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
-import { FlexpriceUsageEventSchema, type FlexpriceUsageEvent } from './flexprice.js';
-import type { AppInstance } from '../app.js';
-import { ApiError } from '../errors.js';
+import { FlexpriceUsageEventSchema, type FlexpriceUsageEvent } from './outbox.js';
 
-const SignedDecimalSchema = z
-  .string()
-  .regex(/^-?(?:0|[1-9]\d*)(?:\.\d{1,6})?$/u)
-  .transform((value) => fixedDecimal(value, 6));
-const SignedMoneySchema = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{6}$/u);
-const SignedCreditsSchema = z.string().regex(/^-?(?:0|[1-9]\d*)\.\d{4}$/u);
+const DecimalSchema = z.string().regex(/^-?\d+(?:\.\d{1,6})?$/u);
+const CreditDecimalSchema = z.string().regex(/^-?\d+(?:\.\d{1,4})?$/u);
+export const UsageCategorySchema = z.enum(USAGE_CATEGORIES);
+
+const UsageMetadataSchema = z
+  .object({
+    correction_of: z.string().trim().min(1).optional(),
+    build_seconds: z
+      .string()
+      .regex(/^\d+(?:\.\d{1,6})?$/u)
+      .optional(),
+  })
+  .strict();
 
 export const UsageEntrySchema = z
   .object({
-    id: z.string().regex(/^usage_[A-Za-z0-9_-]+$/u),
+    operationKey: z.string().trim().min(1).max(200),
     organizationId: idSchema('org'),
     projectId: idSchema('proj').nullable(),
     runId: idSchema('run').nullable(),
     taskId: idSchema('task').nullable(),
-    category: z.enum(USAGE_CATEGORIES),
-    provider: z.string().trim().min(1).nullable(),
-    quantity: SignedDecimalSchema,
-    unit: z.string().trim().min(1),
-    costUsd: SignedMoneySchema,
-    creditsCharged: SignedCreditsSchema,
-    correctionOf: z
-      .string()
-      .regex(/^usage_[A-Za-z0-9_-]+$/u)
-      .optional(),
-    occurredAt: z
-      .string()
-      .datetime({ offset: true })
-      .transform((value) => new Date(value).toISOString()),
+    category: z.enum(METERED_USAGE_CATEGORIES),
+    provider: z.string().trim().min(1).max(200).nullable(),
+    quantity: DecimalSchema,
+    unit: z.string().trim().min(1).max(100),
+    costUsd: DecimalSchema,
+    creditsCharged: CreditDecimalSchema,
+    occurredAt: z.string().datetime({ offset: true }),
+    metadata: UsageMetadataSchema,
   })
   .strict()
   .superRefine((entry, context) => {
-    if (entry.quantity.startsWith('-') && entry.correctionOf === undefined) {
+    const quantity = decimalUnits(entry.quantity, 6);
+    if (quantity === 0n) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'quantity must not be zero' });
+    }
+    if (quantity < 0n && entry.metadata.correction_of === undefined) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'negative usage requires correctionOf metadata',
-        path: ['correctionOf'],
+        message: 'negative entries require correction_of metadata',
+        path: ['metadata'],
+      });
+    }
+    if (quantity > 0n && entry.metadata.correction_of !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'correction_of metadata requires a negative quantity',
+        path: ['metadata', 'correction_of'],
       });
     }
   });
 
 export type UsageEntry = z.infer<typeof UsageEntrySchema>;
 
-export const UsageWindowSchema = z
+const UsageWindowSchema = z
   .object({
-    start: z.string().datetime({ offset: true }),
-    end: z.string().datetime({ offset: true }),
+    from: z.string().datetime({ offset: true }),
+    to: z.string().datetime({ offset: true }),
   })
   .strict()
-  .refine((window) => new Date(window.start) < new Date(window.end), {
-    message: 'end must be later than start',
-    path: ['end'],
+  .refine(({ from, to }) => new Date(from).getTime() < new Date(to).getTime(), {
+    message: 'window end must be after its start',
+    path: ['to'],
   });
 
-export interface UsageSummaryRow {
-  readonly category: UsageEntry['category'];
-  readonly projectId: string | null;
-  readonly runId: string | null;
-  readonly quantity: string;
-  readonly costUsd: string;
-  readonly creditsCharged: string;
+export type UsageWindow = z.infer<typeof UsageWindowSchema>;
+
+export interface UsageSummary {
+  readonly byCategory: readonly {
+    readonly category: (typeof USAGE_CATEGORIES)[number];
+    readonly credits: string;
+  }[];
+  readonly byProject: readonly { readonly projectId: string | null; readonly credits: string }[];
+  readonly byRun: readonly { readonly runId: string | null; readonly credits: string }[];
 }
 
-interface StoredUsage {
-  readonly entry: UsageEntry;
+export interface RecordedUsage {
+  readonly ledgerRowId: string;
+  readonly row: typeof usageLedger.$inferSelect;
   readonly event: FlexpriceUsageEvent;
-  readonly created: boolean;
 }
 
-export interface UsageStore {
-  record(entry: UsageEntry, event: FlexpriceUsageEvent): Promise<StoredUsage>;
-  summary(
-    organizationId: string,
-    window: { readonly start: Date; readonly end: Date },
-  ): Promise<readonly UsageSummaryRow[]>;
-}
-
-export interface UsageService {
-  recordUsage(entry: unknown): Promise<{ readonly ledgerRowId: string; readonly eventId: string }>;
-  getUsageSummary(
-    organizationId: string,
-    window: z.input<typeof UsageWindowSchema>,
-  ): Promise<readonly UsageSummaryRow[]>;
-}
-
-export function createUsageService(options: { readonly store: UsageStore }): UsageService {
-  return {
-    async recordUsage(rawEntry) {
-      const entry = UsageEntrySchema.parse(rawEntry);
-      const event = FlexpriceUsageEventSchema.parse({
-        event_name: entry.category,
-        external_customer_id: entry.organizationId,
-        event_id: entry.id,
-        timestamp: entry.occurredAt,
-        properties: {
-          project_id: entry.projectId,
-          run_id: entry.runId,
-          task_id: entry.taskId,
-          quantity: Number(entry.quantity),
-          unit: entry.unit,
-          provider: entry.provider,
-          ...(entry.correctionOf === undefined ? {} : { correction_of: entry.correctionOf }),
-        },
-      });
-      const stored = await options.store.record(entry, event);
-      if (!sameUsage(stored.entry, entry)) {
-        throw new UsageIdentityConflictError(entry.id, 'ledger row');
-      }
-      if (!sameEvent(stored.event, event)) {
-        throw new UsageIdentityConflictError(entry.id, 'outbox event');
-      }
-      return { ledgerRowId: stored.entry.id, eventId: stored.event.event_id };
-    },
-    async getUsageSummary(rawOrganizationId, rawWindow) {
-      const organizationId = idSchema('org').parse(rawOrganizationId);
-      const window = UsageWindowSchema.parse(rawWindow);
-      return await options.store.summary(organizationId, {
-        start: new Date(window.start),
-        end: new Date(window.end),
-      });
-    },
-  };
-}
-
-export class UsageIdentityConflictError extends Error {
-  public constructor(id: string, record = 'ledger row') {
-    super(`usage identity ${id} conflicts with an existing ${record}`);
-    this.name = 'UsageIdentityConflictError';
+export class UsageOperationConflictError extends Error {
+  public constructor() {
+    super('usage operation identity conflicts with its immutable ledger row');
+    this.name = 'UsageOperationConflictError';
   }
 }
 
-export const USAGE_INGEST_AUDIENCE = 'control-api:usage.ingest' as const;
-
-const RecordUsageResponseSchema = z
-  .object({ ledgerRowId: z.string().min(1), eventId: z.string().min(1) })
-  .strict();
-
-export function registerInternalUsageRoutes(app: AppInstance, service: UsageService): void {
-  app.post(
-    '/internal/usage',
-    {
-      onRequest: app.requireService({
-        audience: USAGE_INGEST_AUDIENCE,
-        callers: [
-          'orchestrator-worker',
-          'sandbox-service',
-          'verification-service',
-          'release-service',
-          'git-service',
-        ],
-        singleUse: false,
-      }),
-      schema: {
-        body: UsageEntrySchema,
-        response: { 201: RecordUsageResponseSchema },
-      },
-    },
-    async (request, reply) => {
-      try {
-        return await reply.code(201).send(await service.recordUsage(request.body));
-      } catch (error) {
-        if (error instanceof UsageIdentityConflictError) {
-          throw new ApiError(
-            'usage_identity_conflict',
-            409,
-            'That usage identity conflicts with an existing ledger row.',
-          );
-        }
-        throw error;
-      }
-    },
-  );
+export class UsageCorrectionError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'UsageCorrectionError';
+  }
 }
 
-export function createDbUsageStore(database: Database): UsageStore {
+export interface UsageLedgerRepository {
+  recordUsage(entry: UsageEntry): Promise<RecordedUsage>;
+  findByOperationKey?(
+    organizationId: string,
+    operationKey: string,
+  ): Promise<RecordedUsage | undefined>;
+  getUsageSummary(organizationId: string, window: UsageWindow): Promise<UsageSummary>;
+}
+
+export function createUsageLedgerRepository(options: {
+  readonly database: Database;
+  readonly now?: () => Date;
+}): UsageLedgerRepository {
+  const now = options.now ?? ((): Date => new Date());
+
   return {
-    async record(entry, event) {
-      return await database.transaction(async (tx) => {
+    async recordUsage(rawEntry) {
+      const entry = UsageEntrySchema.parse(rawEntry);
+      return await options.database.transaction(async (tx) => {
+        const ledgerRowId = deterministicId('usage', entry.organizationId, entry.operationKey);
+        const event = flexpriceEvent(entry, ledgerRowId);
+        const instant = now();
+        const correctionOf = entry.metadata.correction_of;
+        if (correctionOf !== undefined) {
+          await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${`usage-correction:${correctionOf}`}, 0))`,
+          );
+          const [original] = await tx
+            .select()
+            .from(usageLedger)
+            .where(
+              and(
+                eq(usageLedger.id, correctionOf),
+                eq(usageLedger.organizationId, entry.organizationId),
+              ),
+            )
+            .limit(1);
+          const originalMetadata = UsageMetadataSchema.safeParse(original?.metadata);
+          if (
+            original === undefined ||
+            !originalMetadata.success ||
+            originalMetadata.data.correction_of !== undefined ||
+            decimalUnits(original.quantity, 6) <= 0n
+          ) {
+            throw new UsageCorrectionError('correction_of must identify a valid positive original');
+          }
+          if (!matchesCorrectionAttribution(original, entry)) {
+            throw new UsageCorrectionError('correction must match the original attribution');
+          }
+
+          const originalAmounts = usageAmounts(original);
+          const correctionAmounts = usageAmounts(entry);
+          if (originalAmounts.cost < 0n || originalAmounts.credits < 0n) {
+            throw new UsageCorrectionError('correction_of must identify a valid positive original');
+          }
+          if (correctionAmounts.cost > 0n || correctionAmounts.credits > 0n) {
+            throw new UsageCorrectionError('correction cost and credits must be non-positive');
+          }
+          if (!isProportionalCompensation(originalAmounts, correctionAmounts)) {
+            throw new UsageCorrectionError(
+              'correction quantity, cost, and credits must be proportional',
+            );
+          }
+
+          const [prior] = await tx
+            .select({
+              cost: sql<string>`coalesce(sum(${usageLedger.costUsd}), 0)::text`,
+              credits: sql<string>`coalesce(sum(${usageLedger.creditsCharged}), 0)::text`,
+              quantity: sql<string>`coalesce(sum(${usageLedger.quantity}), 0)::text`,
+            })
+            .from(usageLedger)
+            .where(
+              and(
+                eq(usageLedger.organizationId, entry.organizationId),
+                ne(usageLedger.id, ledgerRowId),
+                sql`${usageLedger.metadata} ->> 'correction_of' = ${correctionOf}`,
+              ),
+            );
+          const aggregate = {
+            quantity: decimalUnits(prior?.quantity ?? '0', 6) + correctionAmounts.quantity,
+            cost: decimalUnits(prior?.cost ?? '0', 6) + correctionAmounts.cost,
+            credits: decimalUnits(prior?.credits ?? '0', 4) + correctionAmounts.credits,
+          };
+          if (
+            -aggregate.quantity > originalAmounts.quantity ||
+            -aggregate.cost > originalAmounts.cost ||
+            -aggregate.credits > originalAmounts.credits
+          ) {
+            throw new UsageCorrectionError('aggregate correction exceeds the original');
+          }
+        }
         const [inserted] = await tx
           .insert(usageLedger)
           .values({
-            id: entry.id,
+            id: ledgerRowId,
+            operationKey: entry.operationKey,
             organizationId: entry.organizationId,
             projectId: entry.projectId,
             runId: entry.runId,
@@ -200,113 +215,221 @@ export function createDbUsageStore(database: Database): UsageStore {
             unit: entry.unit,
             costUsd: entry.costUsd,
             creditsCharged: entry.creditsCharged,
+            metadata: entry.metadata,
             occurredAt: new Date(entry.occurredAt),
           })
-          .onConflictDoNothing({ target: usageLedger.id })
+          .onConflictDoNothing()
           .returning();
 
         if (inserted !== undefined) {
           await tx.insert(usageOutbox).values({
-            id: outboxId(entry.id),
+            id: deterministicId('outbox', ledgerRowId),
             organizationId: entry.organizationId,
-            ledgerRowId: entry.id,
+            ledgerRowId,
             eventJson: event,
             status: 'pending',
             attempts: 0,
-            nextAttemptAt: new Date(),
+            nextAttemptAt: instant,
+            createdAt: instant,
             publishedAt: null,
+            deliveredAt: null,
           });
-          return { entry, event, created: true };
+          return { ledgerRowId, row: inserted, event };
         }
 
         const [existing] = await tx
-          .select({ row: usageLedger, event: usageOutbox.eventJson })
+          .select()
           .from(usageLedger)
-          .innerJoin(usageOutbox, eq(usageOutbox.ledgerRowId, usageLedger.id))
-          .where(eq(usageLedger.id, entry.id))
+          .where(
+            and(
+              eq(usageLedger.organizationId, entry.organizationId),
+              eq(usageLedger.operationKey, entry.operationKey),
+            ),
+          )
           .limit(1);
-        if (existing === undefined) {
-          throw new Error(`usage ledger row ${entry.id} exists without its transactional outbox`);
+        if (existing === undefined || !matchesEntry(existing, entry)) {
+          throw new UsageOperationConflictError();
         }
+        const [outbox] = await tx
+          .select({ eventJson: usageOutbox.eventJson })
+          .from(usageOutbox)
+          .where(eq(usageOutbox.ledgerRowId, existing.id))
+          .limit(1);
+        if (outbox === undefined) throw new Error('immutable usage ledger row has no outbox event');
         return {
-          entry: dbEntry(existing.row, FlexpriceUsageEventSchema.parse(existing.event)),
-          event: FlexpriceUsageEventSchema.parse(existing.event),
-          created: false,
+          ledgerRowId: existing.id,
+          row: existing,
+          event: FlexpriceUsageEventSchema.parse(outbox.eventJson),
         };
       });
     },
-    async summary(organizationId, window) {
-      const rows = await database
-        .select({
-          category: usageLedger.category,
-          projectId: usageLedger.projectId,
-          runId: usageLedger.runId,
-          quantity: sql<string>`sum(${usageLedger.quantity})`,
-          costUsd: sql<string>`sum(${usageLedger.costUsd})`,
-          creditsCharged: sql<string>`sum(${usageLedger.creditsCharged})`,
-        })
+
+    async findByOperationKey(rawOrganizationId, rawOperationKey) {
+      const organizationId = idSchema('org').parse(rawOrganizationId);
+      const operationKey = z.string().trim().min(1).max(200).parse(rawOperationKey);
+      const [row] = await options.database
+        .select()
         .from(usageLedger)
         .where(
           and(
             eq(usageLedger.organizationId, organizationId),
-            gte(usageLedger.occurredAt, window.start),
-            lt(usageLedger.occurredAt, window.end),
+            eq(usageLedger.operationKey, operationKey),
           ),
         )
-        .groupBy(usageLedger.category, usageLedger.projectId, usageLedger.runId)
-        .orderBy(asc(usageLedger.category), asc(usageLedger.projectId), asc(usageLedger.runId));
-      return rows.map((row) => ({
-        ...row,
-        quantity: fixedDecimal(row.quantity, 6),
-        costUsd: fixedDecimal(row.costUsd, 6),
-        creditsCharged: fixedDecimal(row.creditsCharged, 4),
-      }));
+        .limit(1);
+      if (row === undefined) return undefined;
+      const [outbox] = await options.database
+        .select({ eventJson: usageOutbox.eventJson })
+        .from(usageOutbox)
+        .where(eq(usageOutbox.ledgerRowId, row.id))
+        .limit(1);
+      if (outbox === undefined) throw new Error('immutable usage ledger row has no outbox event');
+      return {
+        ledgerRowId: row.id,
+        row,
+        event: FlexpriceUsageEventSchema.parse(outbox.eventJson),
+      };
+    },
+
+    async getUsageSummary(rawOrganizationId, rawWindow) {
+      const organizationId = idSchema('org').parse(rawOrganizationId);
+      const window = UsageWindowSchema.parse(rawWindow);
+      const where = and(
+        eq(usageLedger.organizationId, organizationId),
+        ne(usageLedger.category, 'credit_grant'),
+        gte(usageLedger.occurredAt, new Date(window.from)),
+        lt(usageLedger.occurredAt, new Date(window.to)),
+      );
+      const [byCategory, byProject, byRun] = await Promise.all([
+        options.database
+          .select({
+            category: usageLedger.category,
+            credits: sql<string>`sum(${usageLedger.creditsCharged})::text`,
+          })
+          .from(usageLedger)
+          .where(where)
+          .groupBy(usageLedger.category)
+          .orderBy(usageLedger.category),
+        options.database
+          .select({
+            projectId: usageLedger.projectId,
+            credits: sql<string>`sum(${usageLedger.creditsCharged})::text`,
+          })
+          .from(usageLedger)
+          .where(where)
+          .groupBy(usageLedger.projectId)
+          .orderBy(usageLedger.projectId),
+        options.database
+          .select({
+            runId: usageLedger.runId,
+            credits: sql<string>`sum(${usageLedger.creditsCharged})::text`,
+          })
+          .from(usageLedger)
+          .where(where)
+          .groupBy(usageLedger.runId)
+          .orderBy(usageLedger.runId),
+      ]);
+      return { byCategory, byProject, byRun };
     },
   };
 }
 
-function dbEntry(row: typeof usageLedger.$inferSelect, event: FlexpriceUsageEvent): UsageEntry {
-  return UsageEntrySchema.parse({
-    id: row.id,
-    organizationId: row.organizationId,
-    projectId: row.projectId,
-    runId: row.runId,
-    taskId: row.taskId,
-    category: row.category,
-    provider: row.provider,
-    quantity: row.quantity,
-    unit: row.unit,
-    costUsd: fixedDecimal(row.costUsd, 6),
-    creditsCharged: fixedDecimal(row.creditsCharged, 4),
-    ...(event.properties.correction_of === undefined
-      ? {}
-      : { correctionOf: event.properties.correction_of }),
-    occurredAt: row.occurredAt.toISOString(),
+function flexpriceEvent(entry: UsageEntry, ledgerRowId: string): FlexpriceUsageEvent {
+  return FlexpriceUsageEventSchema.parse({
+    event_name: entry.category,
+    external_customer_id: entry.organizationId,
+    event_id: ledgerRowId,
+    timestamp: entry.occurredAt,
+    properties: {
+      project_id: entry.projectId,
+      run_id: entry.runId,
+      task_id: entry.taskId,
+      quantity: Number(entry.quantity),
+      unit: entry.unit,
+      provider: entry.provider,
+      ...(entry.metadata.build_seconds === undefined
+        ? {}
+        : { build_seconds: entry.metadata.build_seconds }),
+    },
   });
 }
 
-function outboxId(ledgerRowId: string): string {
-  return `outbox_${createHash('sha256').update(ledgerRowId).digest('hex')}`;
+function matchesEntry(row: typeof usageLedger.$inferSelect, entry: UsageEntry): boolean {
+  return (
+    row.projectId === entry.projectId &&
+    row.runId === entry.runId &&
+    row.taskId === entry.taskId &&
+    row.category === entry.category &&
+    row.provider === entry.provider &&
+    row.quantity === entry.quantity &&
+    row.unit === entry.unit &&
+    row.costUsd === entry.costUsd &&
+    row.creditsCharged === entry.creditsCharged &&
+    row.occurredAt.toISOString() === new Date(entry.occurredAt).toISOString() &&
+    JSON.stringify(row.metadata) === JSON.stringify(entry.metadata)
+  );
 }
 
-function sameUsage(left: UsageEntry, right: UsageEntry): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+interface UsageAmounts {
+  readonly quantity: bigint;
+  readonly cost: bigint;
+  readonly credits: bigint;
 }
 
-function sameEvent(left: FlexpriceUsageEvent, right: FlexpriceUsageEvent): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+function usageAmounts(
+  value: Pick<UsageEntry, 'costUsd' | 'creditsCharged' | 'quantity'>,
+): UsageAmounts {
+  return {
+    quantity: decimalUnits(value.quantity, 6),
+    cost: decimalUnits(value.costUsd, 6),
+    credits: decimalUnits(value.creditsCharged, 4),
+  };
 }
 
-function fixedDecimal(value: string, scale: number): string {
-  const match = /^(?<sign>-?)(?<whole>\d+)(?:\.(?<fraction>\d+))?$/u.exec(value);
-  if (match?.groups === undefined) throw new Error('database returned an invalid usage decimal');
-  const whole = match.groups['whole'] ?? '0';
-  const fraction = match.groups['fraction'] ?? '';
-  if (fraction.length > scale) {
-    throw new Error(`usage decimal has more than ${String(scale)} places`);
-  }
-  const digits = `${whole}${fraction}`;
-  const isZero = /^0+$/u.test(digits);
-  const sign = match.groups['sign'] === '-' && !isZero ? '-' : '';
-  return `${sign}${whole}.${fraction.padEnd(scale, '0')}`;
+function matchesCorrectionAttribution(
+  original: typeof usageLedger.$inferSelect,
+  correction: UsageEntry,
+): boolean {
+  return (
+    original.category === correction.category &&
+    original.projectId === correction.projectId &&
+    original.runId === correction.runId &&
+    original.taskId === correction.taskId &&
+    original.provider === correction.provider &&
+    original.unit === correction.unit
+  );
+}
+
+function isProportionalCompensation(original: UsageAmounts, correction: UsageAmounts): boolean {
+  const correctedQuantity = -correction.quantity;
+  const correctedCost = -correction.cost;
+  const correctedCredits = -correction.credits;
+  return (
+    correctedQuantity > 0n &&
+    proportionalAmount(original.quantity, correctedQuantity, original.cost, correctedCost) &&
+    proportionalAmount(original.quantity, correctedQuantity, original.credits, correctedCredits)
+  );
+}
+
+function proportionalAmount(
+  originalQuantity: bigint,
+  correctedQuantity: bigint,
+  originalAmount: bigint,
+  correctedAmount: bigint,
+): boolean {
+  return originalAmount === 0n
+    ? correctedAmount === 0n
+    : correctedAmount * originalQuantity === originalAmount * correctedQuantity;
+}
+
+function deterministicId(prefix: string, ...parts: readonly string[]): string {
+  const digest = createHash('sha256').update(parts.join('\u0000')).digest('hex');
+  return `${prefix}_${digest}`;
+}
+
+function decimalUnits(value: string, scale: number): bigint {
+  const negative = value.startsWith('-');
+  const unsigned = negative ? value.slice(1) : value;
+  const [whole = '0', fraction = ''] = unsigned.split('.');
+  return (negative ? -1n : 1n) * BigInt(`${whole}${fraction.padEnd(scale, '0')}`);
 }

@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { deployments, releases, syntheticChecks } from '../src/schema/releases.js';
+import {
+  deploymentActionRequests,
+  deploymentEvents,
+  deployments,
+  environmentDomains,
+  productionHealthResults,
+  releaseAnnotations,
+  releases,
+  syntheticCheckResults,
+  syntheticChecks,
+} from '../src/schema/releases.js';
 import { checkNames, columnNames, foreignKeys, indexNames } from './table-config.js';
 
 /** PRD §23.5 pinned column by column; see `schema-projects.test.ts` for the convention. */
@@ -90,5 +100,42 @@ describe('release state (PRD §23.5)', () => {
     expect(checkNames(releases)).toEqual([]);
     expect(checkNames(deployments)).toEqual([]);
     expect(checkNames(syntheticChecks)).toEqual([]);
+  });
+
+  it('pins DEP-14 append-only progress, keyed actions, and durable domains', () => {
+    expect(indexNames(deploymentEvents)).toEqual([
+      'deployment_events_deployment_sequence_idx',
+      'deployment_events_replay_idx',
+    ]);
+    expect(checkNames(deploymentEvents)).toEqual([
+      'deployment_events_sequence_check',
+      'deployment_events_elapsed_ms_check',
+      'deployment_events_stage_check',
+      'deployment_events_status_check',
+    ]);
+    expect(indexNames(deploymentActionRequests)).toEqual([
+      'deployment_action_requests_org_operation_idx',
+      'deployment_action_requests_resource_idx',
+    ]);
+    expect(indexNames(environmentDomains)).toEqual([
+      'environment_domains_environment_hostname_idx',
+      'environment_domains_operation_idx',
+      'environment_domains_project_idx',
+    ]);
+  });
+
+  it('pins DEP-15 health, synthetic, and monitoring histories', () => {
+    expect(indexNames(productionHealthResults)).toEqual([
+      'production_health_results_deployment_evidence_idx',
+      'production_health_results_project_occurred_idx',
+    ]);
+    expect(indexNames(syntheticCheckResults)).toEqual([
+      'synthetic_check_results_check_completed_idx',
+      'synthetic_check_results_project_completed_idx',
+    ]);
+    expect(indexNames(releaseAnnotations)).toEqual([
+      'release_annotations_provider_kind_release_idx',
+      'release_annotations_project_occurred_idx',
+    ]);
   });
 });

@@ -13,14 +13,15 @@
     "backup": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts nightly",
     "backup:restore": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore",
     "backup:restore-drill": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore-drill",
+    "forgejo:orphans": "tsx --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local.forgejo scripts/forgejo-orphans.ts",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=1 --testTimeout=20000",
     "test:integration": "node --env-file-if-exists=../../.env.local.forgejo ./node_modules/vitest/vitest.mjs run --dir test/integration --no-file-parallelism",
     "bootstrap": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/bootstrap.ts",
-    "dev": "tsx watch --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local.forgejo src/server.ts",
-    "start": "node --enable-source-maps dist/server.js"
+    "dev": "tsx watch --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local.forgejo --import ./src/instrumentation.ts src/server.ts",
+    "start": "node --enable-source-maps --import ./dist/instrumentation.js dist/server.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1103.0",

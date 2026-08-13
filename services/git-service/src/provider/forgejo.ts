@@ -10,6 +10,8 @@ import {
   type CreateRepositoryInput,
   type CreatedRepository,
   type GitProvider,
+  type CommitComparisonProvider,
+  type CommitComparison,
 } from './types.js';
 
 /**
@@ -89,6 +91,36 @@ interface ProtectionResponse {
   readonly rule_name?: string;
 }
 
+interface CompareResponse {
+  readonly files?: readonly {
+    readonly filename?: string;
+    readonly status?: string;
+    readonly additions?: number;
+    readonly deletions?: number;
+    readonly patch?: string;
+  }[];
+}
+
+const MAX_COMPARE_FILES = 1_000;
+const MAX_COMPARE_PATCH_BYTES = 1_048_576;
+
+function boundedUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
+  const encoded = Buffer.from(value, 'utf8');
+  if (encoded.byteLength <= maxBytes) return { value, truncated: false };
+  let end = maxBytes;
+  while (end > 0) {
+    try {
+      return {
+        value: new TextDecoder('utf-8', { fatal: true }).decode(encoded.subarray(0, end)),
+        truncated: true,
+      };
+    } catch {
+      end -= 1;
+    }
+  }
+  return { value: '', truncated: true };
+}
+
 /**
  * Forgejo's answer to a duplicate, which is not one status.
  *
@@ -147,7 +179,9 @@ export interface ForgejoProviderOptions {
   readonly now?: () => Date;
 }
 
-export function createForgejoGitProvider(options: ForgejoProviderOptions): GitProvider {
+export function createForgejoGitProvider(
+  options: ForgejoProviderOptions,
+): GitProvider & CommitComparisonProvider {
   const { client } = options;
   const now = options.now ?? ((): Date => new Date());
 
@@ -217,6 +251,45 @@ export function createForgejoGitProvider(options: ForgejoProviderOptions): GitPr
   return {
     getBranch,
 
+    async compareCommits(
+      ref: string,
+      beforeSha: string,
+      afterSha: string,
+    ): Promise<CommitComparison | undefined> {
+      let response;
+      try {
+        response = await client.send<CompareResponse>({
+          method: 'GET',
+          path: `${pathOf(ref)}/compare/${encodeURIComponent(beforeSha)}...${encodeURIComponent(afterSha)}`,
+          allow: [404],
+        });
+      } catch (error) {
+        if (isMissing(error)) return undefined;
+        throw error;
+      }
+      if (response.status === 404 || response.body === undefined) return undefined;
+      const sourceFiles = response.body.files ?? [];
+      const files = sourceFiles.slice(0, MAX_COMPARE_FILES).map((file) => ({
+        path: (file.filename ?? '').slice(0, 1_024),
+        status: (file.status ?? 'modified').slice(0, 32),
+        additions: Math.max(0, Math.trunc(file.additions ?? 0)),
+        deletions: Math.max(0, Math.trunc(file.deletions ?? 0)),
+      }));
+      const bounded = boundedUtf8(
+        sourceFiles.map((file) => file.patch ?? '').filter((patch) => patch !== '').join('\n'),
+        MAX_COMPARE_PATCH_BYTES,
+      );
+      return {
+        beforeSha,
+        afterSha,
+        changedFiles: sourceFiles.length,
+        files,
+        filesTruncated: sourceFiles.length > MAX_COMPARE_FILES,
+        patch: bounded.value,
+        patchTruncated: bounded.truncated,
+      };
+    },
+
     async createRepository(input: CreateRepositoryInput): Promise<CreatedRepository> {
       const ref = internalRepoRef(input);
       const { owner, name } = parseInternalRepoRef(ref);
@@ -281,6 +354,11 @@ export function createForgejoGitProvider(options: ForgejoProviderOptions): GitPr
     async deleteRepository(ref: string): Promise<void> {
       // 404 is success: the caller's goal was that it not exist.
       await client.send({ method: 'DELETE', path: pathOf(ref), allow: [404] });
+    },
+
+    async repositoryExists(ref: string): Promise<boolean> {
+      const response = await client.send({ method: 'GET', path: pathOf(ref), allow: [404] });
+      return response.status !== 404;
     },
 
     async createBranch(ref: string, name: string, fromSha: string): Promise<void> {

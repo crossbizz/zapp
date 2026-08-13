@@ -1,6 +1,13 @@
 import { randomBytes } from 'node:crypto';
 
-import type { ServiceName } from '@zapp/config';
+import {
+  createHttpServerTelemetry,
+  createFeatureFlagEvaluator,
+  type FeatureFlagEvaluator,
+  type ProductAnalytics,
+  type ServiceName,
+  type TemplateRegistry,
+} from '@zapp/config';
 import {
   createUnavailableCapabilityScanPort,
   type CapabilityScanPort,
@@ -22,6 +29,7 @@ import {
 import { z } from 'zod';
 
 import type { AuthConfig } from './auth/config.js';
+import { createSupportTenantAccess } from './admin/tenant-access.js';
 import {
   createInMemoryTokenDenylist,
   sessionFamilyKey,
@@ -32,8 +40,20 @@ import type { AuthPort } from './auth/port.js';
 import { createSessionSigner } from './auth/session.js';
 import type { UserStore } from './auth/users.js';
 import type { PricingConfig } from './usage/pricing.js';
+import type { CreditBalanceGate, PlanLimitsConfig } from './usage/limits.js';
 import type { ModelCompletionRepository } from './usage/model-completions.js';
-import { registerInternalUsageRoutes, type UsageService } from './usage/ledger.js';
+import { registerBillingRoutes, type BillingRoutesDeps } from './billing/portal.js';
+import {
+  createTrialGrantLifecycle,
+  registerCreditTopupRoutes,
+  type CreditGrantService,
+  type CreditTopupRouteConfig,
+} from './billing/topup.js';
+import {
+  createDunningLifecycle,
+  registerStripeBillingWebhookRoute,
+  type BillingWebhookProcessor,
+} from './billing/webhooks.js';
 import {
   loadRateLimitSettings,
   trustProxyOption,
@@ -45,11 +65,26 @@ import { registerOpenApi } from './openapi.js';
 import type { EventStreamDependencies } from './events/sse.js';
 import { createRecordOnlyGitService, type GitServicePort } from './git/port.js';
 import { createUnavailableOrchestrator, type OrchestratorPort } from './orchestrator/port.js';
-import { createUnavailableSandboxService, type SandboxServicePort } from './sandbox/port.js';
+import {
+  createUnavailableBuilderPreviewSandbox,
+  createUnavailableSandboxService,
+  createUnavailableSupportSandboxService,
+  type BuilderPreviewSandboxPort,
+  type SandboxServicePort,
+  type SupportSandboxServicePort,
+} from './sandbox/port.js';
 import { registerInternalSecretRoutes } from './internal/secrets.js';
 import { registerInternalEventRoutes } from './internal/events.js';
 import { registerInternalModelCompletionRoutes } from './internal/model-completions.js';
+import { registerInternalUsageRoutes } from './internal/usage.js';
 import { serviceAuth, type ServiceTokenVerifier } from './internal/service-auth.js';
+import type { UsageLedgerRepository } from './usage/ledger.js';
+import type { DeploymentUsagePort } from './usage/collectors/git.js';
+import {
+  registerNotificationRoutes,
+  type NotificationStatePort,
+  type NotificationTrigger,
+} from './notifications/service.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import { createInMemoryInviteStore, type InviteStore } from './orgs/invites.js';
 import type { OrganizationStore } from './orgs/store.js';
@@ -71,8 +106,15 @@ import {
   type AttachmentStoragePort,
 } from './routes/attachments.js';
 import { registerAuditRoutes } from './routes/audit.js';
+import { registerAdminRoutes, type AdminRoutesConfig } from './routes/admin.js';
 import { createUnavailableForkActivity, type ForkActivity } from './activities/fork.js';
 import { registerForkRoutes } from './routes/forks.js';
+import { registerFeatureFlagRoutes } from './routes/feature-flags.js';
+import {
+  createUnavailableProjectExportDeps,
+  registerProjectExportRoutes,
+  type ProjectExportDeps,
+} from './routes/export.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerProjectRoutes } from './routes/projects.js';
 import { registerProjectSummaryRoutes } from './routes/project-summaries.js';
@@ -84,9 +126,16 @@ import {
 import {
   createUnavailableReleasePort,
   registerReleaseRoutes,
+  type ReleaseForkPort,
   type ReleasePort,
 } from './routes/releases.js';
 import { registerRunRoutes } from './routes/runs.js';
+import {
+  createUnavailableRunArtifactReader,
+  type RunArtifactReaderPort,
+} from './routes/run-artifacts.js';
+import { registerPublicUsageRoutes } from './routes/usage.js';
+import { registerIncidentRoutes, type IncidentStore } from './routes/incidents.js';
 import { registerMissionControlRoutes } from './routes/mission-control.js';
 import { registerLocalAgentRoutes } from './routes/local-agent.js';
 import type {
@@ -94,11 +143,23 @@ import type {
   LocalAgentSessionRepository,
 } from './local-agent/port.js';
 import { registerWorkspaceRoutes } from './routes/workspaces.js';
+import {
+  createUnavailableBuilderArtifactPort,
+  registerBuilderArtifactRoutes,
+  type BuilderArtifactPort,
+} from './routes/builder-artifacts.js';
+import {
+  createUnavailableBuilderPreviewScreenshotStore,
+  createUnavailableBuilderPreviewProxy,
+  registerBuilderPreviewRoutes,
+  type BuilderPreviewScreenshotStore,
+} from './routes/builder-preview.js';
 import { registerSecretRoutes } from './routes/secrets.js';
 import { registerSpecificationRoutes } from './routes/specifications.js';
 import {
   createUnavailableIntegrationPort,
   registerIntegrationRoutes,
+  type GitHubControlsPort,
   type IntegrationPort,
 } from './routes/integrations.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
@@ -114,6 +175,13 @@ import {
   type GitHubWebhookDependencies,
 } from './integrations/github/webhooks.js';
 import { registerGitHubImportRoutes } from './integrations/github/import.js';
+import {
+  createUnavailableProjectDeletionRequestStore,
+  registerProjectDeletionRoutes,
+  type ProjectDeletionRequestStore,
+} from './jobs/deletion.js';
+
+const httpServerTelemetry = createHttpServerTelemetry();
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -175,27 +243,70 @@ export interface TenantDeps {
    * in `src/compose.ts`, and a test binds one that fails on demand.
    */
   readonly git?: GitServicePort;
+  /** CP-25 server-owned public presentation fields plus private approved source lookup. */
+  readonly templates?: TemplateRegistry;
   /** CP-9's durable-workflow boundary. Omitted only where mutations must fail closed. */
   readonly orchestrator?: OrchestratorPort;
   /** VF-3's Temporal workspace activity client. Missing deployments fail closed. */
   readonly capabilityScan?: CapabilityScanPort;
   readonly sandbox?: SandboxServicePort;
+  /** OPS-17 service-authenticated bridge to WS-15's support kill boundaries. */
+  readonly supportSandbox?: SupportSandboxServicePort;
+  /** CP-21 authenticated bridge to the sandbox dev-server surface. */
+  readonly builderPreviewSandbox?: BuilderPreviewSandboxPort;
+  /** CP-21 capture/screenshot projection through the internal preview transport. */
+  readonly builderPreviewProxy?: PreviewRoutesDeps['proxy'];
+  /** CP-21 operation-keyed raw screenshot replay storage. */
+  readonly builderPreviewScreenshotStore?: BuilderPreviewScreenshotStore;
+  /** Test seam for periodic preview stream authorization checks. */
+  readonly builderPreviewRecheckIntervalMs?: number;
   /** AR-21's structurally typed project/branch/run/release fork boundary. */
   readonly fork?: ForkActivity;
   /** CP-11's temporary Plan 07 boundary. Plan 07 replaces the unavailable port. */
   readonly releasePort?: ReleasePort;
+  readonly releaseFork?: ReleaseForkPort;
+  readonly deploymentUsage?: DeploymentUsagePort;
+  /** OPS-11's append-only production incident ledger. */
+  readonly incidents?: IncidentStore;
+  /** Dedicated Grafana Alerting webhook credential, never a user/service token. */
+  readonly incidentWebhookSecret?: string;
   /** CP-11's temporary Plan 06 boundary. Plan 06 replaces the unavailable port. */
   readonly integrationPort?: IntegrationPort;
+  readonly githubControls?: GitHubControlsPort;
   /** CP-15's Redis wakeup port; PostgreSQL remains the replay source of truth. */
   readonly eventStream?: EventStreamDependencies;
   readonly pricing?: PricingConfig;
+  /** OPS-3's deployable plan policy; run admission remains entirely local. */
+  readonly planLimits?: PlanLimitsConfig;
+  readonly creditBalance?: CreditBalanceGate;
   /** FND-7's tenant-prefixed R2/MinIO object store for public image attachments. */
   readonly attachmentStorage?: AttachmentStoragePort;
+  /** CP-23 bounded content reader for run-referenced immutable artifacts. */
+  readonly runArtifactReader?: RunArtifactReaderPort;
+  /** CP-17 durable public deletion request and polling surface. */
+  readonly projectDeletions?: ProjectDeletionRequestStore;
+  /** CP-18 tenant projection, verified Git bundle, and artifact storage boundary. */
+  readonly projectExport?: ProjectExportDeps;
+  /** CP-24 service-authenticated bridge to workspace, Git, and verification reads. */
+  readonly builderArtifacts?: BuilderArtifactPort;
 }
 
 export interface LocalAgentDeps {
   readonly sessions: LocalAgentSessionRepository;
   readonly gateway: LocalAgentCompletionGateway;
+  readonly creditBalance?: CreditBalanceGate;
+}
+
+export interface BillingDeps extends BillingRoutesDeps {
+  readonly webhook: BillingWebhookProcessor;
+  readonly dunningSweepIntervalMs?: number;
+  readonly topups?: CreditTopupRouteConfig;
+  readonly trial?: CreditGrantService;
+}
+
+export interface NotificationDeps {
+  readonly state: NotificationStatePort;
+  readonly enqueue: (trigger: NotificationTrigger) => Promise<void>;
 }
 
 /**
@@ -277,12 +388,20 @@ export interface AppDeps {
   /** WS-12 durable share/session and authenticated preview data plane. */
   readonly preview?: Omit<PreviewRoutesDeps, 'memberships' | 'now'>;
   readonly modelCompletions?: ModelCompletionRepository;
-  /** OPS-1B's append-only non-model usage ingestion boundary. */
-  readonly usage?: UsageService;
+  readonly usageLedger?: UsageLedgerRepository;
   /** MAC-6's public, user-authenticated desktop local-agent accounting scope. */
   readonly localAgent?: LocalAgentDeps;
   readonly github?: GitHubInstallDependencies;
   readonly githubWebhook?: GitHubWebhookDependencies;
+  readonly billing?: BillingDeps;
+  /** OPS-6's non-blocking, privacy-filtered product event boundary. */
+  readonly productAnalytics?: ProductAnalytics;
+  /** OPS-6's cached organization-scoped flag boundary. */
+  readonly featureFlags?: FeatureFlagEvaluator;
+  /** OPS-7's queue producer and per-user delivery preferences. */
+  readonly notifications?: NotificationDeps;
+  /** OPS-17's separately enabled and allowlisted staff surface. */
+  readonly admin?: AdminRoutesConfig;
 }
 
 /**
@@ -381,12 +500,29 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         }),
   }).withTypeProvider<ZodTypeProvider>();
 
+  app.addHook('onRequest', (request, _reply, done) => {
+    httpServerTelemetry.start(request);
+    done();
+  });
+  app.addHook('onResponse', (request, reply, done) => {
+    httpServerTelemetry.finish(request, {
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      statusCode: reply.statusCode,
+      ...(request.tenant === undefined ? {} : { organizationId: request.tenant.organizationId }),
+    });
+    done();
+  });
+
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   const parseJson = app.getDefaultJsonParser('error', 'error');
   app.removeContentTypeParser('application/json');
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => {
-    if (request.url.split('?')[0] === '/v1/webhooks/github') {
+    if (
+      request.url.split('?')[0] === '/v1/webhooks/github' ||
+      request.url.split('?')[0] === '/v1/webhooks/stripe'
+    ) {
       done(null, body);
       return;
     }
@@ -420,11 +556,25 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
     // there is nothing to scope either against.
     throw new Error('refusing to start: secrets routes require tenant (AppDeps.tenant)');
   }
+  if (deps.billing !== undefined && deps.tenant === undefined) {
+    throw new Error('refusing to start: billing routes require tenant (AppDeps.tenant)');
+  }
   if (deps.modelCompletions !== undefined && deps.secrets === undefined) {
     throw new Error('refusing to start: model completion routes require service authentication');
   }
-  if (deps.usage !== undefined && deps.secrets === undefined) {
+  if (deps.usageLedger !== undefined && deps.secrets === undefined) {
     throw new Error('refusing to start: usage routes require service authentication');
+  }
+  if (deps.admin !== undefined && (deps.tenant === undefined || deps.usageLedger === undefined)) {
+    throw new Error('refusing to start: admin routes require tenant and usage dependencies');
+  }
+  if (
+    deps.admin?.enabled === true &&
+    (deps.tenant?.orchestrator === undefined || deps.tenant.supportSandbox === undefined)
+  ) {
+    throw new Error(
+      'refusing to start: enabled admin routes require orchestrator and support sandbox dependencies',
+    );
   }
 
   if (deps.tenant !== undefined && deps.orgs === undefined) {
@@ -454,6 +604,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   }
 
   const now = deps.now ?? deps.auth?.now ?? (() => new Date());
+  const featureFlags =
+    deps.featureFlags ?? createFeatureFlagEvaluator({ now: () => now().getTime() });
 
   // Registered here — after `/healthz`, before every other route — so the two
   // route-enrolling plugins see everything that follows and nothing that came
@@ -530,21 +682,67 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           users: auth.users,
           port: auth.port,
           now,
+          ...(deps.billing?.trial === undefined ? {} : { trial: deps.billing.trial }),
+          ...(deps.productAnalytics === undefined
+            ? {}
+            : { productAnalytics: deps.productAnalytics }),
+          ...(deps.notifications === undefined
+            ? {}
+            : {
+                notifications: {
+                  appBaseUrl: auth.config.appBaseUrl,
+                  enqueue: deps.notifications.enqueue,
+                },
+              }),
         });
         // Registered only with a tenant handle to give them: a projects route
         // that could not scope itself would be the one thing this service must
         // never ship.
         if (tenant !== undefined) {
+          registerFeatureFlagRoutes(app, featureFlags);
+          if (deps.notifications !== undefined) {
+            registerNotificationRoutes(app, deps.notifications.state);
+          }
           registerAuditRoutes(app, { organizations: orgs.organizations });
+          if (deps.admin !== undefined && deps.usageLedger !== undefined) {
+            registerAdminRoutes(app, {
+              config: deps.admin,
+              sessionSecret: auth.config.sessionSecret,
+              organizations: orgs.organizations,
+              tenants: createSupportTenantAccess(tenant.tenantDb),
+              orchestrator: tenant.orchestrator ?? createUnavailableOrchestrator(),
+              sandbox: tenant.supportSandbox ?? createUnavailableSupportSandboxService(),
+              usage: deps.usageLedger,
+              audit: sink,
+              now,
+            });
+          }
           // Static paths must be enrolled before `/v1/projects/:projectId`, or
           // Fastify treats `summaries` as a malformed project id.
           registerProjectSummaryRoutes(app, {
             releasePort: tenant.releasePort ?? createUnavailableReleasePort(),
           });
+          registerProjectDeletionRoutes(app, {
+            store: tenant.projectDeletions ?? createUnavailableProjectDeletionRequestStore(),
+            now,
+          });
+          registerProjectExportRoutes(app, {
+            ...(tenant.projectExport ?? createUnavailableProjectExportDeps()),
+            now,
+          });
           registerProjectRoutes(app, {
             now,
             git: tenant.git ?? createRecordOnlyGitService(),
             capabilityScan: tenant.capabilityScan ?? createUnavailableCapabilityScanPort(),
+            templates:
+              tenant.templates ?? {
+                listPublic: () => [],
+                getPublic: () => undefined,
+                getApproved: () => undefined,
+              },
+            ...(deps.productAnalytics === undefined
+              ? {}
+              : { productAnalytics: deps.productAnalytics }),
           });
           registerGitHubImportRoutes(app, now);
           registerSpecificationRoutes(app, { now });
@@ -572,18 +770,52 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               return membership?.status === 'active';
             },
             ...(tenant.pricing === undefined ? {} : { pricing: tenant.pricing }),
+            ...(tenant.planLimits === undefined ? {} : { planLimits: tenant.planLimits }),
+            ...(tenant.creditBalance === undefined ? {} : { creditBalance: tenant.creditBalance }),
             ...(deps.modelCompletions === undefined
               ? {}
               : { modelCompletions: deps.modelCompletions }),
+            ...(tenant.incidents === undefined ? {} : { incidents: tenant.incidents }),
+            artifactReader:
+              tenant.runArtifactReader ?? createUnavailableRunArtifactReader(),
           });
           registerAttachmentRoutes(app, {
             now,
             storage: tenant.attachmentStorage ?? createUnavailableAttachmentStorage(),
           });
           registerMissionControlRoutes(app);
+          registerBuilderArtifactRoutes(
+            app,
+            tenant.builderArtifacts ?? createUnavailableBuilderArtifactPort(),
+          );
           registerWorkspaceRoutes(app, {
             now,
             sandbox: tenant.sandbox ?? createUnavailableSandboxService(),
+            organizations: orgs.organizations,
+            ...(tenant.planLimits === undefined ? {} : { planLimits: tenant.planLimits }),
+          });
+          registerBuilderPreviewRoutes(app, {
+            sandbox: tenant.builderPreviewSandbox ?? createUnavailableBuilderPreviewSandbox(),
+            proxy: tenant.builderPreviewProxy ?? createUnavailableBuilderPreviewProxy(),
+            screenshots:
+              tenant.builderPreviewScreenshotStore ??
+              createUnavailableBuilderPreviewScreenshotStore(),
+            publicOrigin: new URL(auth.config.appBaseUrl),
+            now,
+            revalidateAuthorization: async (context) => {
+              if (context.expiresAt.getTime() <= now().getTime()) return false;
+              if (await denylist.isDenied(context.jti, sessionFamilyKey(context.sessionId))) {
+                return false;
+              }
+              const membership = await orgs.organizations.membership(
+                context.organizationId,
+                context.userId,
+              );
+              return membership?.status === 'active';
+            },
+            ...(tenant.builderPreviewRecheckIntervalMs === undefined
+              ? {}
+              : { recheckIntervalMs: tenant.builderPreviewRecheckIntervalMs }),
           });
           registerForkRoutes(app, {
             activity: tenant.fork ?? createUnavailableForkActivity(),
@@ -601,9 +833,30 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           }
           registerReleaseRoutes(app, {
             port: tenant.releasePort ?? createUnavailableReleasePort(),
+            ...(tenant.releaseFork === undefined ? {} : { fork: tenant.releaseFork }),
+            now,
+            ...(deps.productAnalytics === undefined
+              ? {}
+              : { productAnalytics: deps.productAnalytics }),
+            ...(tenant.deploymentUsage === undefined
+              ? {}
+              : { deploymentUsage: tenant.deploymentUsage }),
             permissionContextFor: async (organizationId) =>
               (await orgs.organizations.getSettings(organizationId)) ?? {},
           });
+          if (tenant.incidents !== undefined && secrets !== undefined) {
+            registerIncidentRoutes(app, {
+              store: tenant.incidents,
+              releases: tenant.releasePort ?? createUnavailableReleasePort(),
+              now,
+              ...(tenant.incidentWebhookSecret === undefined
+                ? {}
+                : { grafanaWebhookSecret: tenant.incidentWebhookSecret }),
+              ...(deps.notifications === undefined
+                ? {}
+                : { enqueueNotification: deps.notifications.enqueue }),
+            });
+          }
           if (deps.github !== undefined) {
             registerGitHubInstallRoutes(app, deps.github);
           }
@@ -617,15 +870,40 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
                     provider: deps.github.provider,
                     stateStore: deps.github.stateStore,
                   })),
+            ...(tenant.githubControls === undefined ? {} : { githubControls: tenant.githubControls }),
           });
+          if (deps.usageLedger !== undefined && tenant.creditBalance !== undefined) {
+            registerPublicUsageRoutes(app, {
+              ledger: deps.usageLedger,
+              credits: tenant.creditBalance,
+            });
+          }
+          if (deps.billing !== undefined) {
+            registerBillingRoutes(app, deps.billing);
+            if (deps.billing.topups !== undefined) {
+              registerCreditTopupRoutes(app, {
+                ...deps.billing.topups,
+                store: deps.billing.store,
+                appBaseUrl: deps.billing.appBaseUrl,
+              });
+            }
+          }
 
           if (secrets !== undefined) {
-            registerInternalEventRoutes(app, { tenantDb: tenant.tenantDb });
+            registerInternalEventRoutes(app, {
+              tenantDb: tenant.tenantDb,
+              ...(deps.productAnalytics === undefined
+                ? {}
+                : { productAnalytics: deps.productAnalytics }),
+              ...(deps.notifications === undefined
+                ? {}
+                : { enqueueNotification: deps.notifications.enqueue }),
+            });
             if (deps.modelCompletions !== undefined) {
               registerInternalModelCompletionRoutes(app, deps.modelCompletions);
             }
-            if (deps.usage !== undefined) {
-              registerInternalUsageRoutes(app, deps.usage);
+            if (deps.usageLedger !== undefined) {
+              registerInternalUsageRoutes(app, deps.usageLedger);
             }
             // One vault for both surfaces, so the key that encrypted a value on
             // the way in is by construction the key that unwraps it on the way
@@ -659,6 +937,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
         denylist,
         deviceStore,
         now,
+        ...(deps.productAnalytics === undefined ? {} : { productAnalytics: deps.productAnalytics }),
       });
     });
   }
@@ -666,7 +945,40 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   app.after((error) => {
     if (error) throw error;
     if (deps.githubWebhook !== undefined) registerGitHubWebhookRoute(app, deps.githubWebhook);
+    if (deps.billing !== undefined) {
+      registerStripeBillingWebhookRoute(app, deps.billing.webhook);
+    }
   });
+
+  if (deps.billing !== undefined) {
+    const dunning = createDunningLifecycle({
+      store: deps.billing.store,
+      now,
+      ...(deps.billing.dunningSweepIntervalMs === undefined
+        ? {}
+        : { intervalMs: deps.billing.dunningSweepIntervalMs }),
+      onError: (error) => {
+        app.log.error({ err: error }, 'billing dunning sweep failed');
+      },
+    });
+    const trials =
+      deps.billing.trial === undefined
+        ? undefined
+        : createTrialGrantLifecycle({
+            service: deps.billing.trial,
+            onError: (error) => {
+              app.log.error({ err: error }, 'billing trial grant sweep failed');
+            },
+          });
+    app.addHook('onReady', () => {
+      dunning.start();
+      trials?.start();
+    });
+    app.addHook('onClose', async () => {
+      await dunning.stop();
+      await trials?.stop();
+    });
+  }
 
   return app;
 }

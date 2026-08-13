@@ -1,0 +1,68 @@
+import { trace } from '@opentelemetry/api';
+import pino, { type Logger, type LoggerOptions } from 'pino';
+
+const SENSITIVE_KEY =
+  /(?:authorization|cookie|credential|password|passphrase|prompt|source|code|body|token|secret|api[_-]?key|private[_-]?key)/iu;
+const REDACTED = '[secret:redacted]';
+
+function collectSensitiveValues(value: unknown, output: string[], seen: WeakSet<object>): void {
+  if (typeof value !== 'object' || value === null || seen.has(value)) return;
+  seen.add(value);
+  for (const [key, entry] of Object.entries(value)) {
+    if (SENSITIVE_KEY.test(key) && typeof entry === 'string' && entry.length > 0) {
+      output.push(entry);
+    }
+    collectSensitiveValues(entry, output, seen);
+  }
+}
+
+function safeValue(value: unknown, secrets: readonly string[], seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') {
+    return secrets
+      .filter((secret) => secret.length > 0)
+      .sort((left, right) => right.length - left.length)
+      .reduce((current, secret) => current.split(secret).join(REDACTED), value);
+  }
+  if (typeof value !== 'object' || value === null) return value;
+  if (seen.has(value)) return '[circular]';
+  seen.add(value);
+  if (value instanceof Error) {
+    return safeValue({ type: value.name, message: value.message, stack: value.stack }, secrets, seen);
+  }
+  if (Array.isArray(value)) return value.map((entry) => safeValue(entry, secrets, seen));
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      SENSITIVE_KEY.test(key) ? REDACTED : safeValue(entry, secrets, seen),
+    ]),
+  );
+}
+
+export function createManagedLogger(input: {
+  readonly serviceName: string;
+  readonly projectId: string;
+  readonly registeredSecretValues?: readonly string[];
+  readonly level?: LoggerOptions['level'];
+}): Logger {
+  const secrets = input.registeredSecretValues ?? [];
+  return pino({
+    level: input.level ?? 'info',
+    base: { service: input.serviceName, projectId: input.projectId },
+    mixin() {
+      const context = trace.getActiveSpan()?.spanContext();
+      return context === undefined ? {} : { traceId: context.traceId, spanId: context.spanId };
+    },
+    hooks: {
+      logMethod(args, method) {
+        const dynamicSecrets = [...secrets];
+        for (const argument of args) {
+          collectSensitiveValues(argument, dynamicSecrets, new WeakSet());
+        }
+        method.apply(
+          this,
+          args.map((argument) => safeValue(argument, dynamicSecrets)) as typeof args,
+        );
+      },
+    },
+  });
+}

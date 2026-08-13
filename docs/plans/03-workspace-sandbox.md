@@ -8,7 +8,7 @@
 
 **Tech Stack:** Modal JS SDK (pinned), Fastify (service + workspace-agent), execa + node-pty (agent), http-proxy (preview proxy), tar/zstd (patch checkpoints), @zapp/contracts.
 
-**Milestone:** M1 core (WS-1..WS-12), M2 hardening (WS-13..WS-15). **Depends on:** Plans 01, 02 (service auth, secrets), 06 (GIT-1..4 for tokens/clone). **Consumed by:** Plans 04, 05, 07, 09.
+**Milestone:** M1 core (WS-1..WS-12), M2 hardening (WS-13..WS-16), M4 distribution (WS-17). **Depends on:** Plans 01, 02 (service auth, secrets), 06 (GIT-1..4 for tokens/clone). **Consumed by:** Plans 04, 05, 07, 09.
 
 ## Global Constraints
 
@@ -83,6 +83,15 @@ operations under ADR-0006 and ADR-0013; callers must not split validation from u
 **Effort:** M
 
 - [x] Steps: failing tests for a `MemoryWorkspaceRuntime` test double (path traversal rejected: `../etc/passwd`, `a/../../x`, symlink target outside root; exec timeout kills process; truncation at 1 MiB output with `truncated: true`) → implement double + path guard util `resolveInRoot(root, p)` → commit: `feat(workspace-runtime): shared runtime interface + path safety`
+
+#### WS-1-FIX-1 — await Linux descendant reaping in the cold-CI proof
+
+**Files:** Modify: `packages/workspace-runtime/test/runtime.test.ts`, `docs/plans/03-workspace-sandbox.md`, `tasks/todo.md`
+
+- [x] **RED/evidence:** retain exact-SHA clean Linux CI `8396b38`, where the inherited-pipe timeout returned the expected exit 124 but an immediate PID-zero probe observed the already-killed descendant before the host reaped it.
+- [x] **GREEN:** preserve the 500 ms runtime deadline, exit-124 assertion, process-group kill, and cleanup; use the existing bounded `processIsGone` proof already shared by the neighboring process-lifecycle tests.
+- [x] **Verify/review/ship:** run the focused regression repeatedly, the full workspace-runtime test/lint/typecheck/build gate, diff hygiene, and one routing-only review; push through the normal repository gate and confirm exact-SHA Security and CI green; no provider call is required.
+- [x] Commit: `test(workspace-runtime): await descendant process reaping`
 
 ### Task WS-2: Modal images `forge-node-base` + `forge-web-test`
 
@@ -438,7 +447,44 @@ Review exit (maximum two rounds): zero Critical/Important findings. Test-only; n
 - [x] **GREEN:** close the SSE reader before the launched browser and assert the already-sampled real descendant RSS directly from the aggregate plus `activeChildren`, preserving the 96 MiB real child/group proof without a post-snapshot process race.
 - [x] **Verify/review/ship:** run both exact focused tests, the two affected package suites/static gates, and root `pnpm verify`; close within two SOL High rounds; check the tracker, append one execution-log line, commit `test(plan03): bound clean-gate cleanup probes`, push `main`, and watch CI + Security green.
 
+#### M2-CI-PREVIEW-CDP — deterministic aborted CDP serialization gate
+
+Test-only; no provider call or production behavior change.
+
+- [x] **RED:** retain exact-sha CI's failure where the 25 ms screenshot deadline expired during loopback CDP discovery, before `connectOverCDP` could start; reproduce by delaying discovery beyond that deadline.
+- [x] **GREEN:** wait for the mocked CDP connection boundary, explicitly abort the downstream request, and prove a second request remains busy until the late browser is closed; do not use a wall-clock race to select the state under test.
+- [x] **Verify/ship:** run the focused regression, all 109 preview-proxy tests, and package lint/typecheck/build; append one execution-log line, commit `test(preview-proxy): make CDP serialization race deterministic`, push, and watch authoritative CI green.
+
 ---
+
+### Task WS-16 [M2]: Workspace file + attributed direct-edit boundary
+
+**Files:** Modify sandbox-service workspace routes/services and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: service-authenticated lazy list/read plus compare-token write that atomically creates commit `manual edit via web`; path guards, bounded payloads, stale-write rejection, and no partial commit.
+- [x] Commit: `feat(sandbox): attributed workspace file edits`
+
+Execution expansion (2026-08-12):
+
+- [x] **16a RED — editor reads:** require service authentication and tenant-scoped workspace resolution; add lazy path listing plus base64 file reads with a SHA-256 compare token and fixed entry/byte ceilings.
+- [x] **16b RED — direct edit:** accept one canonical relative path, bounded bytes, actor id, compare token, and operation key; stale content rejects before mutation.
+- [x] **16c GREEN — commit/rollback:** serialize each workspace edit, atomically replace the file, create only `manual edit via web`, and restore both worktree bytes and staged state when commit creation fails.
+- [x] **16d verification:** run focused route/service tests, sandbox-service lint/typecheck/build and full local suite; record and commit once without a provider call.
+
+### Task WS-17 [M4]: Immutable public `forge-node-base` OCI mirror
+
+**Files:** Modify provider-neutral image recipe, GHCR workflow, image lock/config and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: publish the existing recipe to public GHCR and record an immutable `tag@sha256:digest`; structural tests reject absent or mutable Docker references; run one final registry pull acceptance.
+- [x] Commit: `build(images): publish immutable forge node mirror`
+
+Execution expansion (2026-08-12):
+
+- [x] **17a RED — immutable lock:** reject an absent mirror, a mutable tag, a digest-only reference, and any registry/repository other than the public zapp GHCR image.
+- [x] **17b GREEN — provider-neutral build:** render the existing validated `forge-node-base` recipe as a Dockerfile without importing a provider SDK, and publish the exact source revision from a least-privilege GHCR workflow.
+- [x] **17c acceptance:** observe the registry digest, record `tag@sha256:digest`, pull that exact public reference once, then run image tests plus lint/typecheck/build.
 
 ## Testing strategy
 - Unit vs fakes for state machines/policies; env-gated integration against real Modal dev env (WS-4, WS-5, WS-7, WS-12); nightly E2E (WS-14).
@@ -452,6 +498,8 @@ Review exit (maximum two rounds): zero Critical/Important findings. Test-only; n
 - This plan implements Global Constraints 1, 5, 6, 8 as **tests**, not conventions. Sandbox isolation abuse tests (fork bomb, OOM, egress attempts) live in OPS-12 and run against this service.
 
 ## Execution log
+
+- 2026-08-12 WS-17 done — Published the existing provider-neutral forge-node-base recipe to public GHCR from a package-write-only workflow, recorded the observed tag@sha256 digest, and anonymously pulled that exact manifest; the first two cold attempts exposed missing build-order dependencies before the successful run.
 
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
 - 2026-08-06 WS-1 interface extension approved — product-owner delegated controller decision added typed, allowlisted `merge` and `revert` Git operations required by AR-4; ADR-0010 records the deviation.
@@ -516,3 +564,8 @@ Review exit (maximum two rounds): zero Critical/Important findings. Test-only; n
 - 2026-08-09 WS-15-FIX-1 done — one-row expiry leasing, exact-token renewal/takeover, abortable shutdown including delayed-claim release, and admitted terminal-replay compensation closed all capped lifecycle findings in two review rounds.
 - 2026-08-09 WS-15-FIX-2 done — the first WS-15 smoke exposed agent/proxy concurrent-start refusal; strict preview health now retries with an exact remaining 30-second curl budget, and FIX-2's single immutable-image smoke passed for dev.
 - 2026-08-10 M1-GATE-12 done — cold/full-contention verification exposed real-Chrome SSE/browser cleanup ordering and a post-snapshot leader-exit `ps` race; focused and affected package gates, root `pnpm verify`, and one zero-Critical/Important review passed without a provider call.
+- 2026-08-10 M2-CI-PREVIEW-CDP done — exact-sha CI exposed a 25 ms loopback CDP discovery race; the test now waits for the mocked connection boundary before explicit downstream abort and proves busy-slot retention plus late-browser cleanup; focused 1/1, preview-proxy 109/109, and package lint/typecheck/build passed with no provider call.
+- 2026-08-11 WS-1-FIX-1 done — Exact-SHA clean Linux CI observed an already-killed orphan PID before host reaping; the inherited-pipe proof now uses the existing bounded lifecycle helper while preserving the 500 ms kill deadline, exit 124, process-group containment, and cleanup. The focused case passed 20 consecutive runs and workspace-runtime passed 35/35 plus lint/typecheck/build, with no provider call, blocker, or deviation.
+- 2026-08-12 WS-16 done — service-authenticated tenant routes now expose bounded compare snapshots and keyed direct edits; the agent uses descriptor-relative bounded reads/CAS plus literal-path Git plumbing to build the requested blob/tree, CAS `HEAD`, preserve unrelated index state, and create exactly `manual edit via web`. Workspace-agent 124/124 and sandbox-service 160/171 (11 credential-gated skips), both package static/build gates, and root architecture 184/184 passed; the single capped review's bounded-read, Git-transaction, and pathspec findings were fixed, while immutable-image publication remains the binding WS-17 gate and no provider run occurred.
+- 2026-08-12 WS-16-CI-FIX-1 done — exact-SHA CI exposed a runner-dependent rollback fixture whose missing local Git email inherited CI's identity and committed successfully; the fixture now replaces its temporary repository's object directory with a regular file for one request, forcing the real Git commit path to fail independent of runner configuration. Workspace-agent lint/typecheck/build and 124/124 tests plus root architecture 184/184 passed; no review restart or provider run occurred.
+- 2026-08-12 AR-23-CI-FIX-1 done — exact-SHA CI exposed workspace-agent PID consumers accepting a just-created but still-empty file; the PID-specific readiness seam now waits for populated content while preserving intentionally empty native-pause markers and every existing bounded three-second deadline, without production changes or another review round.

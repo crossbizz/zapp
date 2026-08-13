@@ -3,11 +3,15 @@ import { z } from 'zod';
 
 import {
   GIT_CREATE_DEADLINE_MS,
+  GIT_LEASE_DEADLINE_MS,
   GIT_IMPORT_DEADLINE_MS,
   GitServiceError,
   GitServiceImportConflictError,
   GitRepositoryImportInputSchema,
   GitRepositoryImportResultSchema,
+  GitTemplateSeedInputSchema,
+  GitTemplateSeedResultSchema,
+  RepositoryCredentialLeaseSchema,
   createRecordOnlyGitService,
   type CreateRepositoryInput,
   type CreatedRepository,
@@ -222,6 +226,72 @@ export function createGitServiceClient(options: GitServiceClientOptions): GitImp
         throw new GitServiceError('the git service returned invalid repository import metadata', {
           cause: error,
         });
+      }
+    },
+    async seedTemplate(rawInput) {
+      const input = GitTemplateSeedInputSchema.parse(rawInput);
+      const { token } = await signer.signServiceToken({
+        service: 'control-api',
+        aud: 'git-service',
+      });
+      let response: Response;
+      try {
+        response = await doFetch(
+          `${baseUrl}/internal/git/repositories/${input.organizationId}/${input.projectId}/seed-template`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              accept: 'application/json',
+              'x-zapp-service-token': token,
+              'idempotency-key': input.operationKey,
+            },
+            body: JSON.stringify({ templateSlug: input.templateSlug }),
+            signal: AbortSignal.timeout(GIT_IMPORT_DEADLINE_MS),
+          },
+        );
+      } catch (error) {
+        throw new GitServiceError('the git service could not be reached for template seeding', {
+          cause: error,
+        });
+      }
+      if (response.status !== 200) {
+        throw new GitServiceError(
+          `the git service refused template seeding (${String(response.status)})`,
+        );
+      }
+      try {
+        return GitTemplateSeedResultSchema.parse(await response.json());
+      } catch (error) {
+        throw new GitServiceError('the git service returned invalid template seed metadata', {
+          cause: error,
+        });
+      }
+    },
+    async mintRepositoryLease(input) {
+      const { token } = await signer.signServiceToken({ service: 'control-api', aud: 'git-service' });
+      let response: Response;
+      try {
+        response = await doFetch(`${baseUrl}/internal/git/tokens`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'application/json',
+            'x-zapp-service-token': token,
+          },
+          body: JSON.stringify({ ...input, access: 'write' }),
+          signal: AbortSignal.timeout(GIT_LEASE_DEADLINE_MS),
+        });
+      } catch (error) {
+        throw new GitServiceError('the git service could not be reached for a repository lease', { cause: error });
+      }
+      if (response.status !== 201) {
+        throw new GitServiceError(`the git service refused the repository lease (${String(response.status)})`);
+      }
+      try {
+        return RepositoryCredentialLeaseSchema.parse(await response.json());
+      } catch (error) {
+        throw new GitServiceError('the git service returned an invalid repository lease', { cause: error });
       }
     },
   };

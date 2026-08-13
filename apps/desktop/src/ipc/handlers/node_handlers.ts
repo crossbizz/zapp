@@ -44,6 +44,7 @@ import {
   PNPM_MINIMUM_RELEASE_AGE_VERSION,
   runCommand,
 } from "@/ipc/utils/socket_firewall";
+import { probeDockerAvailability } from "@/zapp/runtime/docker";
 
 const logger = log.scope("node_handlers");
 const BRAILLE_SPINNER_PATTERN = /^[\u2800-\u28ff]+$/u;
@@ -676,4 +677,8 @@ export function registerNodeHandlers() {
     }
     return getSystemNodePath(getSystemNodeProbeEnv(settings.customNodePath));
   });
+
+  createTypedHandler(systemContracts.getDockerAvailability, async () =>
+    probeDockerAvailability(),
+  );
 }

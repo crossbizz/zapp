@@ -145,22 +145,106 @@
     {
       "idx": 20,
       "version": "7",
-      "when": 1786421168569,
-      "tag": "0020_bright_chamber",
+      "when": 1786434972241,
+      "tag": "0020_confused_wallflower",
       "breakpoints": true
     },
     {
       "idx": 21,
       "version": "7",
-      "when": 1786424211772,
-      "tag": "0021_tough_prowler",
+      "when": 1786439227959,
+      "tag": "0021_careless_kitty_pryde",
       "breakpoints": true
     },
     {
       "idx": 22,
       "version": "7",
-      "when": 1786425323400,
-      "tag": "0022_broken_psynapse",
+      "when": 1786454480682,
+      "tag": "0022_sparkling_purple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1786458225578,
+      "tag": "0023_premium_arclight",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786460436486,
+      "tag": "0024_fresh_giant_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1786460606925,
+      "tag": "0025_huge_rawhide_kid",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1786474270419,
+      "tag": "0026_cooing_hemingway",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1786476702156,
+      "tag": "0027_budget_approval_reason_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1786486443425,
+      "tag": "0028_left_wraith",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1786496988752,
+      "tag": "0029_medical_marvel_boy",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1786547483226,
+      "tag": "0030_clever_silver_sable",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1786547825660,
+      "tag": "0031_luxuriant_skullbuster",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786553278441,
+      "tag": "0032_lush_juggernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786578986317,
+      "tag": "0033_supreme_dreadnoughts",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786579768594,
+      "tag": "0034_blushing_stepford_cuckoos",
       "breakpoints": true
     }
   ]

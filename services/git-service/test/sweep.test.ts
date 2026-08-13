@@ -22,6 +22,7 @@ function fakeTokens(): TokenService & { sweeps: number; failNext(error: Error): 
     mint: () => Promise.reject(new Error('not used')),
     mintForRepository: () => Promise.reject(new Error('not used')),
     revokeForProject: () => Promise.reject(new Error('not used')),
+    revokeEphemeral: () => Promise.reject(new Error('not used')),
     sweepExpired: () => {
       fake.sweeps += 1;
       if (failure !== undefined) {

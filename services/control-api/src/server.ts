@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
 import { createDb } from '@zapp/db';
+import { loadTemplateRegistryFile } from '@zapp/config';
 import { Client, Connection } from '@temporalio/client';
+import { OpenTelemetryWorkflowClientInterceptor } from '@temporalio/interceptors-opentelemetry';
 
 import { loadAuthEnv } from './auth/config.js';
 import { composeApp } from './compose.js';
@@ -10,27 +12,67 @@ import {
   loadEnv,
   loadArtifactStorageEnv,
   loadFlexpriceEnv,
+  requireFlexpriceForEnvironment,
   loadGitHubAppEnv,
   loadGitHubImportQueueEnv,
   loadGitHubWebhookQueueEnv,
   loadMasterKey,
   loadModelGatewayUrl,
+  loadNotificationEnv,
+  loadPostHogEnv,
+  loadIncidentWebhookSecret,
   loadRedisUrl,
   loadRunIntentHmacKey,
+  loadReleaseServiceUrl,
   loadPreviewEnv,
   loadServiceTokenConfig,
+  loadStripeBillingEnv,
+  requireStripeBillingForEnvironment,
   loadUsageQueueEnv,
   loadTemporalEnv,
+  loadVerificationServiceUrl,
 } from './env.js';
 import { createEventPublisherLifecycle } from './events/lifecycle.js';
 import { createEventPublisher } from './events/publisher.js';
 import { loadGitServiceUrl, resolveGitService } from './git/client.js';
 import { loggerOptions } from './logging.js';
+import {
+  createAgentEventArchiveJob,
+  createAgentEventArchiveLifecycle,
+  createPostgresAgentEventArchiveDatabase,
+  createS3AgentEventArchiveObjectStore,
+  createDatabaseSnapshotRetentionAuditPort,
+} from './jobs/archive.js';
+import {
+  createArtifactRetentionJob,
+  createArtifactRetentionLifecycle,
+  createDatabaseArtifactRetention,
+  createS3ArtifactRetentionObjectStore,
+} from './jobs/retention.js';
+import {
+  createDatabaseDeletionStore,
+  createGitProjectDeletionTarget,
+  createPostgresProjectDeletionTarget,
+  createProjectDeletionJob,
+  createProjectDeletionLifecycle,
+  createS3ProjectDeletionTarget,
+  createSandboxSnapshotDeletionTarget,
+} from './jobs/deletion.js';
 import { createRedisConnection } from './redis/client.js';
+import { loadSupportAdminConfig } from './routes/admin.js';
 import { bootstrapControlApiServer } from './server-bootstrap.js';
 import { loadPricingFile } from './usage/pricing.js';
 import {
+  createCachedCreditBalanceGate,
+  createDatabaseActiveReservationSource,
+  createFlexpriceWalletClient,
+  loadPlanLimitsFile,
+  type UsageOpsAlertPort,
+} from './usage/limits.js';
+import {
   createFlexpriceIngestClient,
+  createDatabaseUsageOutboxDeliveryPort,
+  createRedisUsageLedgerCounter,
   createSqsUsageQueue,
   createUsageEventConsumer,
   createUsageEventConsumerLifecycle,
@@ -40,7 +82,18 @@ import {
 import {
   createAccountingReconciler,
   createAccountingReconcilerLifecycle,
+  createDatabaseUsageReconciliationSource,
+  createDatabaseUsageCorrectionJournal,
+  createDatabaseUsageReconciliationCoordinator,
+  createCoordinatedUsageReconciliationJob,
+  createFlexpriceUsageAggregateClient,
   createRedisCreditMirror,
+  createCreditBalanceExhaustionProducer,
+  createCreditBalanceExhaustionLifecycle,
+  createDatabaseCreditExhaustionStore,
+  createRedisUsageRunCounter,
+  createThreeWayUsageReconciler,
+  createUsageReconciliationLifecycle,
 } from './usage/reconciliation.js';
 import {
   createGitHubWebhookPublisher,
@@ -59,6 +112,30 @@ import {
 import { createDbGitHubImportWorkerStore } from './integrations/github/import-store.js';
 import { createTenantDbFactory } from './tenant/db.js';
 import { createTemporalCapabilityScanPort } from './orchestrator/capability-scan.js';
+import { createTemporalRunOrchestrator } from './orchestrator/temporal.js';
+import { createSandboxStorageMeasurementClient } from './sandbox/client.js';
+import { createUsageLedgerRepository } from './usage/ledger.js';
+import {
+  createDailyStorageCollector,
+  createDailyStorageCollectorLifecycle,
+  createDatabaseDailyStorageClaim,
+  createDatabaseMeteredProjectPort,
+  createR2ArtifactStorageMeasurement,
+} from './usage/collectors/storage.js';
+import {
+  createDatabaseNotificationDirectory,
+  createNotificationProducer,
+  createNotificationWorker,
+  createNotificationWorkerLifecycle,
+  createRedisNotificationProjection,
+  createRedisNotificationState,
+  usageAlertNotification,
+} from './notifications/service.js';
+import {
+  createSesEmailSender,
+  createSnsNotificationFanout,
+  createSqsNotificationQueue,
+} from './notifications/email.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, open the
@@ -91,14 +168,25 @@ const modelGatewayUrl = loadModelGatewayUrl();
 // is allowed here and refused by `composeApp` outside development — the decision
 // belongs next to the binding, where a test can assert it.
 const gitServiceUrl = loadGitServiceUrl();
+const verificationServiceUrl = loadVerificationServiceUrl();
+const releaseServiceUrl = loadReleaseServiceUrl();
 const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
+const planLimits = await loadPlanLimitsFile(new URL('../../../config/plans.json', import.meta.url));
+const templates = await loadTemplateRegistryFile(
+  new URL('../../../config/templates.json', import.meta.url),
+);
 const usageQueueConfig = loadUsageQueueEnv();
-const flexpriceConfig = loadFlexpriceEnv();
+const notificationConfig = loadNotificationEnv();
+const flexpriceConfig = requireFlexpriceForEnvironment(env, loadFlexpriceEnv());
+const stripeBillingConfig = requireStripeBillingForEnvironment(env, loadStripeBillingEnv());
 const temporalEnv = loadTemporalEnv();
 const artifactStorage = loadArtifactStorageEnv();
 const github = loadGitHubAppEnv();
 const githubQueueConfig = loadGitHubWebhookQueueEnv();
 const githubImportQueueConfig = loadGitHubImportQueueEnv();
+const posthog = loadPostHogEnv();
+const incidentWebhookSecret = loadIncidentWebhookSecret(process.env, env.NODE_ENV);
+const admin = loadSupportAdminConfig();
 
 const database = createDb(auth.databaseUrl);
 // The app does not exist yet, and a connection error can arrive at any time
@@ -114,7 +202,53 @@ const temporalConnection = await Connection.connect({ address: temporalEnv.addre
 const temporal = new Client({
   connection: temporalConnection,
   namespace: temporalEnv.namespace,
+  interceptors: { workflow: [new OpenTelemetryWorkflowClientInterceptor()] },
 });
+const notificationQueue = createSqsNotificationQueue(notificationConfig);
+const notificationState = createRedisNotificationState(redis);
+const notificationProducer = createNotificationProducer({ queue: notificationQueue });
+const notificationEmail = createSesEmailSender(notificationConfig);
+const notificationFanout = createSnsNotificationFanout(notificationConfig);
+const notificationWorker = createNotificationWorker({
+  queue: notificationQueue,
+  state: notificationState,
+  directory: createDatabaseNotificationDirectory(database.db),
+  email: notificationEmail,
+  projections: createRedisNotificationProjection(redis, notificationState),
+  fanout: notificationFanout,
+  webBaseUrl: new URL(auth.config.appBaseUrl),
+});
+const usageOpsAlerts: UsageOpsAlertPort = {
+  async emit(alert) {
+    if (alert.type === 'run_budget_threshold') {
+      await notificationProducer.enqueue(
+        usageAlertNotification({
+          organizationId: alert.organizationId,
+          runId: alert.runId,
+          threshold: alert.threshold,
+          occurredAt: new Date().toISOString(),
+        }),
+      );
+      return;
+    }
+    process.emitWarning(`usage ops alert: ${alert.type} for organization ${alert.organizationId}`);
+  },
+};
+const tenantDb = createTenantDbFactory(database.db);
+const creditBalance =
+  flexpriceConfig === undefined
+    ? undefined
+    : createCachedCreditBalanceGate({
+        wallets: createFlexpriceWalletClient(flexpriceConfig),
+        redis,
+        activeRuns: {
+          list: (organizationId, limit) => tenantDb(organizationId).runs.listActiveRunIds(limit),
+        },
+        reservations: createDatabaseActiveReservationSource(database.db),
+        graceFloorCredits: pricing.walletBalanceGraceFloor ?? '0.0000',
+        alerts: usageOpsAlerts,
+      });
+const runOrchestrator = createTemporalRunOrchestrator({ client: temporal });
 
 const app = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
@@ -129,11 +263,27 @@ const app = composeApp({
   modelGatewayUrl,
   preview,
   ...(gitServiceUrl === undefined ? {} : { gitServiceUrl }),
+  ...(verificationServiceUrl === undefined ? {} : { verificationServiceUrl }),
+  ...(releaseServiceUrl === undefined ? {} : { releaseServiceUrl }),
   rateLimits,
   pricing,
+  planLimits,
+  templates,
+  orchestrator: runOrchestrator,
+  ...(flexpriceConfig === undefined ? {} : { flexprice: flexpriceConfig }),
+  ...(stripeBillingConfig === undefined ? {} : { billing: stripeBillingConfig }),
+  ...(creditBalance === undefined ? {} : { creditBalance }),
+  usageOpsAlerts,
   temporal,
   artifactStorage,
   github,
+  posthog,
+  ...(incidentWebhookSecret === undefined ? {} : { incidentWebhookSecret }),
+  admin,
+  notifications: {
+    state: notificationState,
+    enqueue: (trigger) => notificationProducer.enqueue(trigger),
+  },
 });
 
 app.addHook('onClose', async () => {
@@ -180,11 +330,81 @@ const eventPublisherLifecycle = createEventPublisherLifecycle({
   database,
   redis,
 });
+const archiveLifecycle = createAgentEventArchiveLifecycle({
+  job: createAgentEventArchiveJob({
+    database: createPostgresAgentEventArchiveDatabase({
+      async query(statement) {
+        return await database.sql.unsafe(statement);
+      },
+    }),
+    objectStore: createS3AgentEventArchiveObjectStore(artifactStorage),
+    snapshots: createDatabaseSnapshotRetentionAuditPort(database.db),
+  }),
+  onError: (error) => {
+    app.log.error({ err: error }, 'agent event archival failed');
+  },
+  onSnapshotViolations: (violations) => {
+    app.log.error(
+      { snapshotIds: violations.map((violation) => violation.snapshotId) },
+      'sandbox snapshot retention policy violation',
+    );
+  },
+});
+const retentionLifecycle = createArtifactRetentionLifecycle({
+  job: createArtifactRetentionJob({
+    database: createDatabaseArtifactRetention(database.db),
+    objects: createS3ArtifactRetentionObjectStore(artifactStorage),
+  }),
+  onError: (error) => {
+    app.log.error({ errorName: error.name }, 'artifact retention failed');
+  },
+});
+const deletionLifecycle =
+  gitServiceUrl === undefined
+    ? undefined
+    : createProjectDeletionLifecycle({
+        job: createProjectDeletionJob({
+          store: createDatabaseDeletionStore(database.db),
+          workerId: `control-api-${randomUUID()}`,
+          snapshots: createSandboxSnapshotDeletionTarget({
+            baseUrl: preview.sandboxServiceUrl,
+            serviceTokens,
+          }),
+          git: createGitProjectDeletionTarget({ baseUrl: gitServiceUrl, serviceTokens }),
+          objects: createS3ProjectDeletionTarget(artifactStorage),
+          postgres: createPostgresProjectDeletionTarget(database.db),
+        }),
+        onError: (error) => {
+          app.log.error({ errorName: error.name }, 'project deletion failed');
+        },
+      });
 const usageQueue = createSqsUsageQueue(usageQueueConfig);
+const usageCounter = createRedisUsageLedgerCounter(redis);
+const storageLedger = createUsageLedgerRepository({ database: database.db });
+const dailyStorageLifecycle = createDailyStorageCollectorLifecycle({
+  collector: createDailyStorageCollector({
+    projects: createDatabaseMeteredProjectPort(database.db),
+    artifactStorage: createR2ArtifactStorageMeasurement(artifactStorage),
+    sandboxStorage: createSandboxStorageMeasurementClient({
+      baseUrl: preview.sandboxServiceUrl,
+      serviceTokens,
+    }),
+    claims: createDatabaseDailyStorageClaim({
+      database: database.db,
+      owner: `control-api-${randomUUID()}`,
+    }),
+    ledger: storageLedger,
+    pricing,
+  }),
+  onError: (error) => {
+    app.log.error({ err: error }, 'daily storage metering failed');
+  },
+});
 const usagePublisherLifecycle = createUsageOutboxPublisherLifecycle({
   publisher: createUsageOutboxPublisher({
     database: database.db,
     queue: usageQueue,
+    counter: usageCounter,
     onError: (error) => {
       app.log.error({ err: error }, 'usage outbox publish failed');
     },
@@ -200,7 +420,10 @@ const usageConsumerLifecycle =
     ? undefined
     : createUsageEventConsumerLifecycle({
         queue: usageQueue,
-        consumer: createUsageEventConsumer(createFlexpriceIngestClient(flexpriceConfig)),
+        consumer: createUsageEventConsumer(
+          createFlexpriceIngestClient(flexpriceConfig),
+          createDatabaseUsageOutboxDeliveryPort(database.db),
+        ),
         batchSize: 10,
         waitTimeSeconds: 10,
         visibilityTimeoutSeconds: 30,
@@ -221,16 +444,87 @@ const accountingReconcilerLifecycle = createAccountingReconcilerLifecycle({
     app.log.error({ err: error }, 'run credit reconciliation failed');
   },
 });
+const creditExhaustionProducer =
+  creditBalance === undefined
+    ? undefined
+    : createCreditBalanceExhaustionProducer({
+        store: createDatabaseCreditExhaustionStore({
+          database: database.db,
+          owner: `control-api-${randomUUID()}`,
+          leaseMs: 120_000,
+        }),
+        creditBalance,
+        orchestrator: runOrchestrator,
+        organizationBatchSize: 1,
+        batchSize: 100,
+        signalConcurrency: 8,
+        signalTimeoutMs: 3_000,
+      });
+const creditExhaustionLifecycle =
+  creditExhaustionProducer === undefined
+    ? undefined
+    : createCreditBalanceExhaustionLifecycle({
+        producer: creditExhaustionProducer,
+        intervalMs: 30_000,
+        onError: (error) => {
+          app.log.error({ err: error }, 'credit exhaustion signal poll failed');
+        },
+      });
+const usageReconciliationLifecycle =
+  flexpriceConfig === undefined
+    ? undefined
+    : (() => {
+        const source = createDatabaseUsageReconciliationSource(database.db);
+        const ingest = createFlexpriceIngestClient(flexpriceConfig);
+        const reconciler = createThreeWayUsageReconciler({
+          scopes: source.scopes,
+          ledger: source.ledger,
+          redis: createRedisUsageRunCounter(redis),
+          flexprice: createFlexpriceUsageAggregateClient(flexpriceConfig),
+          corrections: createDatabaseUsageCorrectionJournal({
+            database: database.db,
+            ingest,
+          }),
+          alerts: {
+            driftDetected(input) {
+              app.log.error({ usageDrift: input }, 'usage reconciliation drift detected');
+              return Promise.resolve();
+            },
+            driftHealed(input) {
+              app.log.info({ usageDrift: input }, 'usage reconciliation drift healed');
+              return Promise.resolve();
+            },
+          },
+        });
+        return createUsageReconciliationLifecycle({
+          reconciler: createCoordinatedUsageReconciliationJob({
+            coordinator: createDatabaseUsageReconciliationCoordinator({
+              database: database.db,
+              owner: `control-api-${randomUUID()}`,
+            }),
+            reconciler,
+          }),
+          onError: (error) => {
+            app.log.error({ err: error }, 'three-way usage reconciliation failed');
+          },
+        });
+      })();
 const usageOutboxLifecycle = {
   async start() {
     await accountingReconcilerLifecycle.start();
+    await creditExhaustionLifecycle?.start();
+    await dailyStorageLifecycle.start();
     await usagePublisherLifecycle.start();
     await usageConsumerLifecycle?.start();
+    await usageReconciliationLifecycle?.start();
   },
   async close() {
+    await usageReconciliationLifecycle?.close();
+    await dailyStorageLifecycle.close();
     await usageConsumerLifecycle?.close();
     await usagePublisherLifecycle.close();
     await accountingReconcilerLifecycle.close();
+    await creditExhaustionLifecycle?.close();
     usageQueue.close?.();
   },
 };
@@ -308,6 +602,21 @@ const githubImportLifecycle = {
     githubImportQueue.close?.();
   },
 };
+const notificationWorkerLifecycle = createNotificationWorkerLifecycle({
+  worker: notificationWorker,
+  onError: (error) => {
+    app.log.error({ errorName: error.name }, 'notification delivery failed');
+  },
+});
+const notificationLifecycle = {
+  start: () => notificationWorkerLifecycle.start(),
+  async close() {
+    await notificationWorkerLifecycle.close();
+    notificationQueue.close?.();
+    notificationEmail.close();
+    notificationFanout.close();
+  },
+};
 
 /**
  * `close()` stops accepting connections, drains what is in flight, then runs every
@@ -340,6 +649,10 @@ try {
     usageOutboxLifecycle,
     githubWebhookLifecycle,
     githubImportLifecycle,
+    notificationLifecycle,
+    archiveLifecycle,
+    retentionLifecycle,
+    ...(deletionLifecycle === undefined ? {} : { deletionLifecycle }),
   });
 } catch (error) {
   app.log.error({ err: error }, 'failed to start');

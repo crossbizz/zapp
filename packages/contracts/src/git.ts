@@ -84,9 +84,19 @@ export function parseInternalRepoRef(ref: string): RepoRefParts {
     throw new Error('Invalid internal repository ref: expected org_<ulid>/proj_<ulid>');
   }
   const [owner, name] = parsed.data.split('/');
+  // Forgejo refs are deliberately lowercased; validate their normalized form
+  // through the authoritative TypeID schemas rather than widening the ref regex.
+  if (
+    owner === undefined ||
+    name === undefined ||
+    !idSchema('org').safeParse(`org_${owner.slice(4).toUpperCase()}`).success ||
+    !idSchema('proj').safeParse(`proj_${name.slice(5).toUpperCase()}`).success
+  ) {
+    throw new Error('Invalid internal repository ref: expected org_<ulid>/proj_<ulid>');
+  }
   // Both are present: the pattern above required them. Named rather than
   // asserted so the types stay honest.
-  return { owner: owner ?? '', name: name ?? '' };
+  return { owner, name };
 }
 
 /** Where a project's repository is created, and what it starts as. */
@@ -225,6 +235,9 @@ export interface GitProvider {
    * already gone is a success, because the caller's goal was that it not exist.
    */
   deleteRepository(ref: string): Promise<void>;
+
+  /** Explicit absence probe used by the verified project-deletion pipeline. */
+  repositoryExists(ref: string): Promise<boolean>;
 
   /** Cuts `name` from `fromSha`. */
   createBranch(ref: string, name: string, fromSha: string): Promise<void>;

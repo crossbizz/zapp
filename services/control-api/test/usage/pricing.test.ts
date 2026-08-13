@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  estimateUsage,
   loadPricingConfig,
   priceTokenUsage,
   worstCaseReservation,
@@ -10,6 +11,10 @@ const config = {
   version: 'm1-test',
   defaultRunCreditCeiling: '100.0000',
   creditsPerUsd: '100.0000',
+  usageRates: {
+    sandbox_cpu_seconds: { unit: 'cpu_seconds', usdPerUnit: '0.000010' },
+    sandbox_mem_gib_seconds: { unit: 'gib_seconds', usdPerUnit: '0.000005' },
+  },
   models: {
     'anthropic/claude-sonnet-5': {
       inputUsdPerMillion: '3.000000',
@@ -27,6 +32,31 @@ const config = {
 } as const;
 
 describe('OPS-1A pricing snapshot', () => {
+  it.each([
+    {
+      name: 'tokens',
+      input: {
+        category: 'model_input_tokens' as const,
+        quantity: '1000000',
+        provider: 'anthropic',
+        model: 'claude-sonnet-5',
+      },
+      expected: { costUsd: '3.000000', credits: '300.0000' },
+    },
+    {
+      name: 'CPU-seconds',
+      input: { category: 'sandbox_cpu_seconds' as const, quantity: '10.000000' },
+      expected: { costUsd: '0.000100', credits: '0.0100' },
+    },
+    {
+      name: 'GiB-seconds',
+      input: { category: 'sandbox_mem_gib_seconds' as const, quantity: '10.000000' },
+      expected: { costUsd: '0.000050', credits: '0.0050' },
+    },
+  ])('estimates $name with exact decimal arithmetic', ({ input, expected }) => {
+    expect(estimateUsage(loadPricingConfig(config), input)).toEqual(expected);
+  });
+
   it('prices uncached, cache-read, cache-write and output tokens exactly', () => {
     const pricing = loadPricingConfig(config);
     expect(
@@ -93,6 +123,13 @@ describe('OPS-1A pricing snapshot', () => {
   it.each([
     [{ ...config, defaultRunCreditCeiling: '0' }, 'defaultRunCreditCeiling'],
     [{ ...config, creditsPerUsd: '-1' }, 'creditsPerUsd'],
+    [
+      {
+        ...config,
+        creditPacks: { starter: { credits: '499.0000', amountUsd: '5.00' } },
+      },
+      'creditPacks',
+    ],
     [
       {
         ...config,

@@ -1,7 +1,8 @@
-import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
-import type { Database } from '@zapp/db';
+import { createServiceTokenSigner, type ServiceTokenConfig, type TemplateRegistry } from '@zapp/config';
+import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 
 import { buildApp, type AppInstance } from './app.js';
+import { createBuilderArtifactClient } from './builder-artifacts/client.js';
 import type { AuthEnv } from './auth/config.js';
 import { createRedisTokenDenylist } from './auth/denylist.js';
 import { createRedisDeviceStore } from './auth/device.js';
@@ -20,28 +21,50 @@ import {
   createTemporalCapabilityScanPort,
   type CapabilityScanWorkflowClient,
 } from './orchestrator/capability-scan.js';
+import type { OrchestratorPort } from './orchestrator/port.js';
 import { createServiceTokenVerifier } from './internal/service-auth.js';
 import type { EventWakeupSource } from './events/sse.js';
 import type { MasterKeyPort } from './secrets/crypto.js';
 import { createTenantDbFactory } from './tenant/db.js';
+import { createDbIncidentStore } from './incidents/store.js';
 import {
   createRedisPreviewRevocationSource,
   createRedisPreviewSessionStore,
   createSandboxPreviewProxy,
 } from './routes/preview.js';
 import { createDbPreviewShareStore } from './preview/store.js';
-import type { PreviewEnv } from './env.js';
+import type { FlexpriceEnv, PreviewEnv, StripeBillingEnv } from './env.js';
 import type { ArtifactStorageEnv } from './env.js';
 import type { GitHubAppEnv } from './env.js';
 import { createS3AttachmentStorage } from './routes/attachments.js';
-import type { PricingConfig } from './usage/pricing.js';
+import { createS3RunArtifactReader } from './routes/run-artifacts.js';
+import { CreditPackCatalogSchema, type PricingConfig } from './usage/pricing.js';
+import {
+  createBudgetThresholdAlerts,
+  createCachedCreditBalanceGate,
+  createDatabaseActiveReservationSource,
+  createFlexpriceWalletClient,
+  type PlanLimitsConfig,
+  type CreditBalanceGate,
+  type UsageOpsAlertPort,
+} from './usage/limits.js';
 import { createModelCompletionRepository } from './usage/model-completions.js';
-import { createDbUsageStore, createUsageService } from './usage/ledger.js';
+import { createUsageLedgerRepository } from './usage/ledger.js';
+import { createDeploymentUsageCollector } from './usage/collectors/git.js';
 import { createRedisCreditMirror } from './usage/reconciliation.js';
 import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
+import {
+  createBuilderPreviewSandboxClient,
+  createSupportSandboxClient,
+} from './sandbox/client.js';
+import { createS3BuilderPreviewScreenshotStore } from './routes/builder-preview.js';
 import { createGitHubProvider } from './integrations/github/app.js';
 import { createGitHubIntegrationPort } from './integrations/github/install.js';
+import { createGitHubControls } from './integrations/github/controls.js';
+import { createDbGitHubSyncStore, createGitHubSyncEngine } from './integrations/github/sync.js';
+import { createDbGitHubExportStore, createGitHubExportService } from './integrations/github/export.js';
+import { createGitHubGitRuntime } from './integrations/github/git-runtime.js';
 import {
   createRedisGitHubAuthorizationStateStore,
   createDbGitHubWebhookStore,
@@ -58,6 +81,27 @@ import {
   createStripeAccountClient,
 } from './integrations/stripe/connect.js';
 import type { IntegrationPort } from './routes/integrations.js';
+import { createStripeBillingClient, BillingPlanCatalogSchema } from './billing/stripe.js';
+import {
+  createBillingWebhookProcessor,
+  createDbBillingStore,
+  createFlexpriceBillingClient,
+} from './billing/webhooks.js';
+import {
+  createCreditGrantService,
+  createDbCreditGrantStore,
+  createFlexpriceCreditWalletClient,
+} from './billing/topup.js';
+import { createPostHogRuntime } from './analytics/posthog.js';
+import type { PostHogEnv } from './env.js';
+import type { NotificationStatePort, NotificationTrigger } from './notifications/service.js';
+import type { AdminRoutesConfig } from './routes/admin.js';
+import { createDatabaseProjectDeletionRequestStore } from './jobs/deletion.js';
+import {
+  createDatabaseProjectExportSource,
+  createGitServiceProjectExportPort,
+} from './routes/export.js';
+import { resolveReleaseService } from './release/client.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -108,20 +152,62 @@ export interface ServiceRuntime {
    * an undefined value is a refusal to start.
    */
   readonly gitServiceUrl?: string;
+  readonly templates?: TemplateRegistry;
+  /** CP-24 verification read service. Undefined only in local/test development. */
+  readonly verificationServiceUrl?: string;
+  /** Plan 07 release plane. Undefined only for local/test development. */
+  readonly releaseServiceUrl?: string;
   /** The whole of `config/rate-limits.json`: the class budgets and the proxy trust. */
   readonly rateLimits: RateLimitSettings;
   readonly preview?: PreviewEnv;
   readonly pricing: PricingConfig;
+  /** OPS-3's configuration-owned plan policy. */
+  readonly planLimits?: PlanLimitsConfig;
+  /** Omitted only when Flexprice credentials are intentionally absent in local development. */
+  readonly flexprice?: FlexpriceEnv;
+  /** Separate platform-billing Stripe scope; generated apps only receive restricted keys. */
+  readonly billing?: StripeBillingEnv;
+  /** Optional server-owned gate so background reconciliation shares its exact wallet boundary. */
+  readonly creditBalance?: CreditBalanceGate;
+  /** OPS-7 owns delivery; this is the explicit handoff for provider-outage alerts. */
+  readonly usageOpsAlerts?: UsageOpsAlertPort;
   /** Temporal client used for the tenant-bound VF-3 verification workflow. */
   readonly temporal: CapabilityScanWorkflowClient;
+  readonly orchestrator?: OrchestratorPort;
   readonly artifactStorage: ArtifactStorageEnv;
   readonly github?: GitHubAppEnv;
+  /** OPS-6 server-side analytics and organization flag evaluation. */
+  readonly posthog?: PostHogEnv;
+  /** OPS-11 credential configured on the Grafana Alerting contact point. */
+  readonly incidentWebhookSecret?: string;
+  /** OPS-17 separately enables support access and names the exact staff identities. */
+  readonly admin?: AdminRoutesConfig;
+  readonly notifications?: {
+    readonly state: NotificationStatePort;
+    enqueue(trigger: NotificationTrigger): Promise<void>;
+  };
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
 }
 
 export function composeApp(runtime: ServiceRuntime): AppInstance {
   const { database, redis } = runtime;
+  const notifications = runtime.notifications;
+  const releaseService = resolveReleaseService({
+    baseUrl: runtime.releaseServiceUrl,
+    serviceTokens: runtime.serviceTokens,
+  });
+  const posthog = runtime.posthog === undefined ? undefined : createPostHogRuntime(runtime.posthog);
+  const previewRuntime =
+    runtime.preview === undefined
+      ? undefined
+      : {
+          config: runtime.preview,
+          proxy: createSandboxPreviewProxy({
+            baseUrl: runtime.preview.sandboxServiceUrl,
+            serviceTokens: runtime.serviceTokens,
+          }),
+        };
   /**
    * One denylist for both credential kinds.
    *
@@ -131,7 +217,36 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
    * by hex ids and `sid:`, service tokens by `svc:` (`serviceTokenKey`).
    */
   const denylist = createRedisTokenDenylist(redis);
+  const usageLedger = createUsageLedgerRepository({ database });
   const tenantDb = createTenantDbFactory(database);
+  const organizations = createDbOrganizationStore(database);
+  const usageOpsAlerts: UsageOpsAlertPort = runtime.usageOpsAlerts ?? {
+    emit: (alert) => {
+      process.emitWarning(
+        `usage ops alert: ${alert.type} for organization ${alert.organizationId}`,
+      );
+      return Promise.resolve();
+    },
+  };
+  const budgetAlerts = createBudgetThresholdAlerts({ redis, alerts: usageOpsAlerts });
+  const creditBalance =
+    runtime.creditBalance ??
+    (runtime.flexprice === undefined
+      ? undefined
+      : createCachedCreditBalanceGate({
+          wallets: createFlexpriceWalletClient(runtime.flexprice),
+          redis,
+          activeRuns: {
+            list: (organizationId, limit) => tenantDb(organizationId).runs.listActiveRunIds(limit),
+          },
+          reservations: createDatabaseActiveReservationSource(database),
+          graceFloorCredits:
+            runtime.pricing.walletBalanceGraceFloor ??
+            (() => {
+              throw new Error('pricing walletBalanceGraceFloor is required with Flexprice enabled');
+            })(),
+          alerts: usageOpsAlerts,
+        }));
   const githubStateStore =
     runtime.github === undefined ? undefined : createRedisGitHubAuthorizationStateStore(redis);
   const githubProvider =
@@ -154,6 +269,27 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
           provider: githubProvider,
           stateStore: githubStateStore,
         });
+  const githubControls =
+    githubProvider === undefined || runtime.gitServiceUrl === undefined
+      ? undefined
+      : (() => {
+          const git = createGitHubGitRuntime(createGitServiceProjectExportPort({
+            baseUrl: runtime.gitServiceUrl,
+            serviceTokens: runtime.serviceTokens,
+          }));
+          return createGitHubControls({
+            sync: createGitHubSyncEngine({
+              store: createDbGitHubSyncStore(database),
+              provider: githubProvider,
+              git,
+            }),
+            exporter: createGitHubExportService({
+              store: createDbGitHubExportStore(database),
+              provider: githubProvider,
+              git,
+            }),
+          });
+        })();
   const supabaseIntegration = createSupabaseIntegrationPort({
     database,
     masterKey: runtime.masterKey,
@@ -183,9 +319,64 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       return Promise.reject(new Error('integration service unavailable'));
     },
   };
+  const billing =
+    runtime.billing === undefined
+      ? undefined
+      : (() => {
+          if (runtime.flexprice === undefined) {
+            throw new Error('platform billing requires Flexprice configuration');
+          }
+          if (runtime.planLimits === undefined) {
+            throw new Error('platform billing requires plan limits');
+          }
+          const store = createDbBillingStore({ database });
+          const flexprice = createFlexpriceBillingClient({
+            ...runtime.flexprice,
+          });
+          const stripe = createStripeBillingClient({
+            platformSecretKey: runtime.billing.platformSecretKey,
+          });
+          const packs = CreditPackCatalogSchema.parse(runtime.pricing.creditPacks);
+          const grants = createCreditGrantService({
+            store: createDbCreditGrantStore({ database }),
+            wallet: createFlexpriceCreditWalletClient({
+              ...runtime.flexprice,
+              creditsPerUsd: runtime.pricing.creditsPerUsd,
+            }),
+            trialCredits: runtime.planLimits.trial.monthlyCredits,
+          });
+          return {
+            stripe,
+            store,
+            prices: runtime.billing.prices,
+            appBaseUrl: runtime.auth.config.appBaseUrl,
+            topups: {
+              stripe,
+              packs,
+              prices: runtime.billing.creditPackPrices,
+              pricing: runtime.pricing,
+            },
+            trial: grants,
+            webhook: createBillingWebhookProcessor({
+              webhookSecret: runtime.billing.webhookSecret,
+              store,
+              idempotency: createActivityIdempotencyRepository(database),
+              flexprice,
+              plans: BillingPlanCatalogSchema.parse(runtime.planLimits),
+              topups: grants,
+              ...(notifications === undefined
+                ? {}
+                : { enqueueNotification: (trigger) => notifications.enqueue(trigger) }),
+            }),
+          };
+        })();
 
-  return buildApp({
+  const app = buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
+    ...(notifications === undefined ? {} : { notifications }),
+    ...(posthog === undefined
+      ? {}
+      : { productAnalytics: posthog.analytics, featureFlags: posthog.flags }),
     auth: {
       port: createStytchAuthPort(runtime.auth.stytch),
       users: createDbUserStore(database),
@@ -194,20 +385,29 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
       deviceStore: createRedisDeviceStore(redis),
     },
     orgs: {
-      organizations: createDbOrganizationStore(database),
+      organizations,
       invites: createRedisInviteStore(redis),
       // The real `audit_events` writer: every mutating route's row lands in the
       // same transaction as the mutation (CP-5).
       audit: createDbAuditSink(database),
     },
+    ...(runtime.admin === undefined ? {} : { admin: runtime.admin }),
     // Not optional in a deployment, and `buildApp` says so: without it the
     // tenant plugin is unregistered and every tenant-scoped route is simply
     // absent.
     tenant: {
       tenantDb,
+      ...(runtime.templates === undefined ? {} : { templates: runtime.templates }),
       integrationPort,
+      ...(githubControls === undefined ? {} : { githubControls }),
       runIntentHmacKey: runtime.runIntentHmacKey,
       pricing: runtime.pricing,
+      ...(runtime.planLimits === undefined ? {} : { planLimits: runtime.planLimits }),
+      ...(creditBalance === undefined ? {} : { creditBalance }),
+      deploymentUsage: createDeploymentUsageCollector({
+        ledger: usageLedger,
+        pricing: runtime.pricing,
+      }),
       ...(runtime.eventWakeups === undefined
         ? {}
         : { eventStream: { wakeups: runtime.eventWakeups } }),
@@ -227,7 +427,56 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         serviceTokens: runtime.serviceTokens,
       }),
       capabilityScan: createTemporalCapabilityScanPort(runtime.temporal),
+      ...(runtime.orchestrator === undefined ? {} : { orchestrator: runtime.orchestrator }),
       attachmentStorage: createS3AttachmentStorage(runtime.artifactStorage),
+      runArtifactReader: createS3RunArtifactReader(runtime.artifactStorage),
+      incidents: createDbIncidentStore(database, runtime.masterKey),
+      ...(runtime.gitServiceUrl === undefined
+        ? {}
+        : { projectDeletions: createDatabaseProjectDeletionRequestStore(database) }),
+      ...(runtime.gitServiceUrl === undefined
+        ? {}
+        : {
+            projectExport: {
+              source: createDatabaseProjectExportSource(database),
+              git: createGitServiceProjectExportPort({
+                baseUrl: runtime.gitServiceUrl,
+                serviceTokens: runtime.serviceTokens,
+              }),
+              storage: createS3AttachmentStorage(runtime.artifactStorage),
+            },
+          }),
+      ...(previewRuntime === undefined || runtime.gitServiceUrl === undefined || runtime.verificationServiceUrl === undefined
+        ? {}
+        : {
+            builderArtifacts: createBuilderArtifactClient({
+              sandboxBaseUrl: previewRuntime.config.sandboxServiceUrl,
+              gitBaseUrl: runtime.gitServiceUrl,
+              verificationBaseUrl: runtime.verificationServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
+          }),
+      releasePort: releaseService.release,
+      releaseFork: releaseService.fork,
+      ...(runtime.incidentWebhookSecret === undefined
+        ? {}
+        : { incidentWebhookSecret: runtime.incidentWebhookSecret }),
+      ...(previewRuntime === undefined
+        ? {}
+        : {
+            builderPreviewSandbox: createBuilderPreviewSandboxClient({
+              baseUrl: previewRuntime.config.sandboxServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
+            supportSandbox: createSupportSandboxClient({
+              baseUrl: previewRuntime.config.sandboxServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
+            builderPreviewProxy: previewRuntime.proxy,
+            builderPreviewScreenshotStore: createS3BuilderPreviewScreenshotStore(
+              runtime.artifactStorage,
+            ),
+          }),
     },
     secrets: {
       masterKey: runtime.masterKey,
@@ -256,15 +505,22 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     modelCompletions: createModelCompletionRepository({
       database,
       mirror: createRedisCreditMirror(redis),
+      budgetAlerts,
     }),
-    usage: createUsageService({ store: createDbUsageStore(database) }),
+    usageLedger,
     localAgent: {
-      sessions: createLocalAgentSessionRepository({ database, pricing: runtime.pricing }),
+      sessions: createLocalAgentSessionRepository({
+        database,
+        pricing: runtime.pricing,
+        ...(runtime.planLimits === undefined ? {} : { plans: runtime.planLimits }),
+      }),
       gateway: createModelGatewayLocalAgentClient({
         baseUrl: runtime.modelGatewayUrl,
         serviceTokens: runtime.serviceTokens,
       }),
+      ...(creditBalance === undefined ? {} : { creditBalance }),
     },
+    ...(billing === undefined ? {} : { billing }),
     ...(runtime.github === undefined ||
     githubStateStore === undefined ||
     githubProvider === undefined
@@ -280,7 +536,7 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
             store: createDbGitHubWebhookStore(database),
           },
         }),
-    ...(runtime.preview === undefined
+    ...(previewRuntime === undefined
       ? {}
       : {
           preview: {
@@ -297,15 +553,18 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
                   throw new Error('preview Redis subscriber missing');
                 })(),
             ),
-            proxy: createSandboxPreviewProxy({
-              baseUrl: runtime.preview.sandboxServiceUrl,
-              serviceTokens: runtime.serviceTokens,
-            }),
-            signingKey: runtime.preview.signingKey,
-            keyVersion: runtime.preview.keyVersion,
+            proxy: previewRuntime.proxy,
+            signingKey: previewRuntime.config.signingKey,
+            keyVersion: previewRuntime.config.keyVersion,
             appBaseUrl: new URL(runtime.auth.config.appBaseUrl),
-            previewBaseDomain: runtime.preview.previewBaseDomain,
+            previewBaseDomain: previewRuntime.config.previewBaseDomain,
           },
         }),
   });
+  if (posthog !== undefined) {
+    app.addHook('onClose', async () => {
+      await posthog.shutdown();
+    });
+  }
+  return app;
 }

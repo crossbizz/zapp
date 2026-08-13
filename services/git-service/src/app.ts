@@ -1,4 +1,4 @@
-import type { ServiceName, ServiceTokenSigner } from '@zapp/config';
+import { createHttpServerTelemetry, type ServiceName, type ServiceTokenSigner } from '@zapp/config';
 import Fastify, {
   type FastifyBaseLogger,
   type FastifyInstance,
@@ -17,9 +17,15 @@ import { errorHandler, notFoundHandler } from './errors.js';
 import { serviceAuth } from './internal/service-auth.js';
 import { defaultLoggerOptions, type LoggerConfig } from './logging.js';
 import type { GitProvider } from './provider/types.js';
+import type { CommitComparisonProvider } from './provider/types.js';
 import type { GitMirror } from './import/mirror.js';
+import type { GitBundleExporter } from './export.js';
 import { registerGitRoutes, type ImportBranchPoll } from './routes.js';
 import type { TokenService } from './tokens.js';
+import type { GitTemplateSeeder } from './template-seeder.js';
+import type { TemplateRegistryEntry, PublicTemplate } from '@zapp/config';
+
+const httpServerTelemetry = createHttpServerTelemetry();
 
 /** The instance every route in this service is registered on: Zod in, Zod out. */
 export type AppInstance = FastifyInstance<
@@ -59,6 +65,13 @@ export interface AppDeps {
   readonly now?: () => Date;
   readonly mirror?: GitMirror;
   readonly importPoll?: ImportBranchPoll;
+  readonly bundleExporter?: GitBundleExporter;
+  readonly comparison?: CommitComparisonProvider;
+  readonly templates?: {
+    getApproved(slug: string): TemplateRegistryEntry | undefined;
+    getPublic(slug: string): PublicTemplate | undefined;
+  };
+  readonly templateSeeder?: GitTemplateSeeder;
 }
 
 /**
@@ -81,6 +94,19 @@ export function buildApp(deps: AppDeps): AppInstance {
      */
     trustProxy: false,
   }).withTypeProvider<ZodTypeProvider>();
+
+  app.addHook('onRequest', (request, _reply, done) => {
+    httpServerTelemetry.start(request);
+    done();
+  });
+  app.addHook('onResponse', (request, reply, done) => {
+    httpServerTelemetry.finish(request, {
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      statusCode: reply.statusCode,
+    });
+    done();
+  });
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -117,6 +143,10 @@ export function buildApp(deps: AppDeps): AppInstance {
       ...(deps.callers === undefined ? {} : { callers: deps.callers }),
       ...(deps.mirror === undefined ? {} : { mirror: deps.mirror }),
       ...(deps.importPoll === undefined ? {} : { importPoll: deps.importPoll }),
+      ...(deps.bundleExporter === undefined ? {} : { bundleExporter: deps.bundleExporter }),
+      ...(deps.comparison === undefined ? {} : { comparison: deps.comparison }),
+      ...(deps.templates === undefined ? {} : { templates: deps.templates }),
+      ...(deps.templateSeeder === undefined ? {} : { templateSeeder: deps.templateSeeder }),
     });
   });
 

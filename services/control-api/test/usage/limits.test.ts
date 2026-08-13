@@ -1,0 +1,424 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  CreditBalanceExhaustedError,
+  PlanLimitConcurrentRunsError,
+  assertConcurrentRunAdmission,
+  clampResourceProfile,
+  createBudgetThresholdAlerts,
+  createPlanLimitsAdapter,
+  createCachedCreditBalanceGate,
+  createFlexpriceWalletClient,
+  loadPlanLimitsConfig,
+  resolveRunBudget,
+} from '../../src/usage/limits.js';
+
+const organizationId = 'org_01J00000000000000000000000';
+const runId = 'run_01J00000000000000000000000';
+
+const plans = loadPlanLimitsConfig({
+  trial: {
+    concurrentAutonomousRuns: 1,
+    concurrentSandboxes: 1,
+    maxResourceProfile: 'small',
+    maxRunBudgetCredits: '10.0000',
+    maxPreviewLifetimeHours: 1,
+    artifactRetentionDays: 7,
+    monthlyCredits: '10.0000',
+    seats: 1,
+  },
+  builder: {
+    concurrentAutonomousRuns: 3,
+    concurrentSandboxes: 3,
+    maxResourceProfile: 'standard',
+    maxRunBudgetCredits: '100.0000',
+    maxPreviewLifetimeHours: 24,
+    artifactRetentionDays: 30,
+    monthlyCredits: '100.0000',
+    seats: 3,
+  },
+  studio: {
+    concurrentAutonomousRuns: 10,
+    concurrentSandboxes: 10,
+    maxResourceProfile: 'large',
+    maxRunBudgetCredits: '1000.0000',
+    maxPreviewLifetimeHours: 168,
+    artifactRetentionDays: 90,
+    monthlyCredits: '1000.0000',
+    seats: 10,
+  },
+});
+
+describe('OPS-3 plan limits', () => {
+  it.each([
+    ['trial', 'small', 10],
+    ['builder', 'standard', 100],
+    ['studio', 'large', 1000],
+  ] as const)('clamps $0 resources and defaults the $0 run budget', (plan, profile, budget) => {
+    expect(clampResourceProfile(plans[plan], 'large')).toBe(profile);
+    expect(resolveRunBudget(plans[plan])).toEqual({ maxCredits: budget });
+  });
+
+  it('exposes the same parsed sandbox limit to the durable governor adapter', async () => {
+    const adapter = createPlanLimitsAdapter({
+      plans,
+      organizations: { findById: () => Promise.resolve({ plan: 'builder' }) },
+    });
+
+    await expect(adapter.getOrganizationLimits(organizationId)).resolves.toEqual({
+      concurrentSandboxes: 3,
+    });
+  });
+
+  it.each([
+    ['trial', 1],
+    ['builder', 3],
+    ['studio', 10],
+  ] as const)('rejects a new autonomous run at the $0 concurrency limit', (plan, active) => {
+    expect(() => {
+      assertConcurrentRunAdmission({
+        limit: plans[plan].concurrentAutonomousRuns,
+        active,
+        replay: false,
+      });
+    }).toThrow(PlanLimitConcurrentRunsError);
+    expect(() => {
+      assertConcurrentRunAdmission({
+        limit: plans[plan].concurrentAutonomousRuns,
+        active,
+        replay: true,
+      });
+    }).not.toThrow();
+  });
+
+  it('uses a validated active prepaid Flexprice wallet balance and subtracts only active reservations', async () => {
+    const requests: URL[] = [];
+    const wallets = createFlexpriceWalletClient({
+      baseUrl: 'https://flexprice.example/v1',
+      apiKey: 'test-key',
+      fetch: (input) => {
+        if (!(input instanceof URL)) throw new Error('wallet client did not request a URL');
+        requests.push(input);
+        return Promise.resolve(
+          Response.json([
+            {
+              id: 'wallet_postpaid',
+              wallet_type: 'POST_PAID',
+              wallet_status: 'active',
+            },
+            {
+              id: 'wallet_1',
+              wallet_type: 'PRE_PAID',
+              wallet_status: 'active',
+              real_time_credit_balance: '12.0000',
+            },
+          ]),
+        );
+      },
+    });
+    const redis = memoryRedis({
+      [`run:${runId}:credits`]: JSON.stringify({
+        used: '8.0000',
+        reserved: '2.0000',
+        ceiling: '10.0000',
+        version: 1,
+      }),
+    });
+    const gate = createCachedCreditBalanceGate({
+      wallets,
+      redis,
+      activeRuns: { list: () => Promise.resolve([runId]) },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.resolve() },
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toEqual({
+      availableCredits: '10.0000',
+      walletBalance: '12.0000',
+      reservedCredits: '2.0000',
+      source: 'wallet',
+    });
+    expect(requests[0]?.pathname).toBe('/v1/customers/wallets');
+    expect(requests[0]?.searchParams).toEqual(
+      new URLSearchParams({
+        lookup_key: organizationId,
+        include_real_time_balance: 'true',
+      }),
+    );
+  });
+
+  it('uses the grace floor and alerts when Flexprice and the cache are unavailable', async () => {
+    const alerts: unknown[] = [];
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.reject(new Error('offline')) },
+      redis: memoryRedis(),
+      activeRuns: { list: () => Promise.resolve([]) },
+      graceFloorCredits: '5.0000',
+      alerts: {
+        emit: (alert) => {
+          alerts.push(alert);
+          return Promise.resolve();
+        },
+      },
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+      availableCredits: '5.0000',
+      source: 'grace',
+    });
+    expect(alerts).toEqual([{ type: 'flexprice_wallet_unavailable', organizationId }]);
+  });
+
+  it('uses a retained validated zero balance after a provider outage instead of inflating it to grace', async () => {
+    const redis = memoryRedis({
+      [`organization:${organizationId}:wallet:credits:lkg`]: JSON.stringify({ balance: '0.0000' }),
+    });
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.reject(new Error('offline')) },
+      redis,
+      activeRuns: { list: () => Promise.resolve([]) },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.reject(new Error('alerts must not block')) },
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+      availableCredits: '0.0000',
+      source: 'cache',
+    });
+    await expect(gate.requireRunAdmission(organizationId)).rejects.toBeInstanceOf(
+      CreditBalanceExhaustedError,
+    );
+  });
+
+  it('blocks a new run when the wallet less reservations is exhausted', async () => {
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.resolve('2.0000') },
+      redis: memoryRedis({
+        [`run:${runId}:credits`]: JSON.stringify({
+          used: '0.0000',
+          reserved: '2.0000',
+          ceiling: '10.0000',
+          version: 1,
+        }),
+      }),
+      activeRuns: { list: () => Promise.resolve([runId]) },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.resolve() },
+    });
+
+    await expect(gate.requireRunAdmission(organizationId)).rejects.toBeInstanceOf(
+      CreditBalanceExhaustedError,
+    );
+  });
+
+  it.each(['failed', 'malformed', 'hanging'] as const)(
+    'uses the authoritative reservation aggregate when a Redis run credit read is %s',
+    async (failure) => {
+      const redis = memoryRedis();
+      redis.get = (key: string) => {
+        if (!key.startsWith('run:')) return Promise.resolve(null);
+        if (failure === 'failed') return Promise.reject(new Error('redis offline'));
+        if (failure === 'malformed') return Promise.resolve('{not-json');
+        return new Promise<string | null>(() => undefined);
+      };
+      const gate = createCachedCreditBalanceGate({
+        wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
+        redis,
+        activeRuns: { list: () => Promise.resolve([runId]) },
+        reservations: { total: () => Promise.resolve('3.0000') },
+        graceFloorCredits: '5.0000',
+        alerts: { emit: () => Promise.resolve() },
+        timeoutMs: 5,
+      });
+
+      await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+        availableCredits: '7.0000',
+        reservedCredits: '3.0000',
+      });
+    },
+  );
+
+  it('treats a Redis reservation miss as unknown and uses the authoritative aggregate once', async () => {
+    let aggregateReads = 0;
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
+      redis: memoryRedis(),
+      activeRuns: { list: () => Promise.resolve([runId]) },
+      reservations: {
+        total: () => {
+          aggregateReads += 1;
+          return Promise.resolve('3.0000');
+        },
+      },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.resolve() },
+      timeoutMs: 20,
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+      availableCredits: '7.0000',
+      reservedCredits: '3.0000',
+    });
+    expect(aggregateReads).toBe(1);
+  });
+
+  it('bounds many hung Redis reservation reads by one deadline and capped concurrency', async () => {
+    let concurrentReads = 0;
+    let maximumConcurrentReads = 0;
+    const redis = memoryRedis();
+    redis.get = (key: string) => {
+      if (!key.startsWith('run:')) return Promise.resolve(null);
+      concurrentReads += 1;
+      maximumConcurrentReads = Math.max(maximumConcurrentReads, concurrentReads);
+      return new Promise<string | null>(() => undefined);
+    };
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
+      redis,
+      activeRuns: {
+        list: () =>
+          Promise.resolve(Array.from({ length: 100 }, (_, index) => `run_${String(index)}`)),
+      },
+      reservations: { total: () => Promise.resolve('3.0000') },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.resolve() },
+      timeoutMs: 20,
+    });
+    const startedAt = performance.now();
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+      availableCredits: '7.0000',
+      reservedCredits: '3.0000',
+    });
+    expect(performance.now() - startedAt).toBeLessThan(200);
+    expect(maximumConcurrentReads).toBe(8);
+  });
+
+  it('falls back to the bounded authoritative aggregate for a large active-run set', async () => {
+    let redisRunReads = 0;
+    const redis = memoryRedis();
+    const originalGet = redis.get;
+    redis.get = (key: string) => {
+      if (key.startsWith('run:')) redisRunReads += 1;
+      return originalGet(key);
+    };
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.resolve('10.0000') },
+      redis,
+      activeRuns: {
+        list: () =>
+          Promise.resolve(Array.from({ length: 101 }, (_, index) => `run_${String(index)}`)),
+      },
+      reservations: { total: () => Promise.resolve('3.0000') },
+      graceFloorCredits: '5.0000',
+      alerts: { emit: () => Promise.resolve() },
+      timeoutMs: 5,
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({
+      availableCredits: '7.0000',
+      reservedCredits: '3.0000',
+    });
+    expect(redisRunReads).toBe(0);
+  });
+
+  it('does not await or leak rejection from a hanging or failed outage alert', async () => {
+    let calls = 0;
+    const gate = createCachedCreditBalanceGate({
+      wallets: { getActivePrepaidBalance: () => Promise.reject(new Error('offline')) },
+      redis: memoryRedis(),
+      activeRuns: { list: () => Promise.resolve([]) },
+      reservations: { total: () => Promise.resolve('0.0000') },
+      graceFloorCredits: '5.0000',
+      alerts: {
+        emit: () => {
+          calls += 1;
+          return calls === 1
+            ? new Promise<void>(() => undefined)
+            : Promise.reject(new Error('alert rejected'));
+        },
+      },
+      timeoutMs: 5,
+    });
+
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({ source: 'grace' });
+    await expect(gate.availableCredits(organizationId)).resolves.toMatchObject({ source: 'grace' });
+    expect(calls).toBe(2);
+  });
+
+  it('emits each 50/80/100 budget threshold once from the durable credit state', async () => {
+    const alerts: unknown[] = [];
+    const gate = createBudgetThresholdAlerts({
+      redis: memoryRedis(),
+      alerts: {
+        emit: (alert) => {
+          alerts.push(alert);
+          return Promise.resolve();
+        },
+      },
+    });
+
+    await gate.notify({
+      organizationId,
+      runId,
+      credits: { used: '8.0000', reserved: '0.0000', ceiling: '10.0000', version: 1 },
+    });
+    await gate.notify({
+      organizationId,
+      runId,
+      credits: { used: '10.0000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+    });
+
+    expect(alerts).toEqual([
+      { type: 'run_budget_threshold', organizationId, runId, threshold: 50 },
+      { type: 'run_budget_threshold', organizationId, runId, threshold: 80 },
+      { type: 'run_budget_threshold', organizationId, runId, threshold: 100 },
+    ]);
+  });
+
+  it('releases a budget threshold claim when notification enqueue fails so a later write retries', async () => {
+    let calls = 0;
+    const gate = createBudgetThresholdAlerts({
+      redis: memoryRedis(),
+      alerts: {
+        emit: () => {
+          calls += 1;
+          return calls === 1 ? Promise.reject(new Error('queue unavailable')) : Promise.resolve();
+        },
+      },
+    });
+    const input = {
+      organizationId,
+      runId,
+      credits: { used: '5.0000', reserved: '0.0000', ceiling: '10.0000', version: 1 },
+    } as const;
+
+    await gate.notify(input);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await gate.notify(input);
+
+    expect(calls).toBe(2);
+  });
+});
+
+function memoryRedis(values: Record<string, string> = {}) {
+  const entries = new Map(Object.entries(values));
+  return {
+    get: (key: string) => Promise.resolve(entries.get(key) ?? null),
+    set: (key: string, value: string) => {
+      entries.set(key, value);
+      return Promise.resolve();
+    },
+    setIfAbsent: (key: string, value: string) => {
+      if (entries.has(key)) return Promise.resolve(false);
+      entries.set(key, value);
+      return Promise.resolve(true);
+    },
+    exists: () => Promise.resolve(false),
+    delete: (keys: readonly string[]) => {
+      for (const key of keys) entries.delete(key);
+      return Promise.resolve();
+    },
+    eval: () => Promise.resolve(null),
+  };
+}

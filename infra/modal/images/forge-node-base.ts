@@ -4,11 +4,7 @@ import {
   SourceFetchRevisionSchema,
   type ImageRecipe,
 } from '@zapp/sandbox-service/provider-types';
-import {
-  IMAGE_BUILD_CONFIG,
-  ImageBuildConfigSchema,
-  type ImageBuildConfig,
-} from './config.js';
+import { IMAGE_BUILD_CONFIG, ImageBuildConfigSchema, type ImageBuildConfig } from './config.js';
 
 export const SourceRevisionSchema = SourceFetchRevisionSchema;
 export type SourceRevision = z.infer<typeof SourceRevisionSchema>;
@@ -83,7 +79,10 @@ for (;;) {
     };
     const exportResponse = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        authorization: \`Bearer \${token}\`,
+        'content-type': 'application/json',
+      },
       body: JSON.stringify(payload),
     });
     if (!exportResponse.ok) throw new Error('telemetry collector unavailable');

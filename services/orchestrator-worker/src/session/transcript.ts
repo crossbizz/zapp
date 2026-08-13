@@ -65,6 +65,7 @@ const ExecutionLeaseSchema = z
 export const InFlightCompletionSchema = z
   .object({
     completionId: z.string().regex(/^cmp_[a-f0-9]{64}$/u),
+    requestVersion: z.union([z.literal(1), z.literal(2)]).default(1),
     requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
     requestTokens: z.number().int().nonnegative().safe(),
     reservedTokens: z.number().int().positive().safe(),
@@ -78,7 +79,10 @@ export const InFlightCompletionSchema = z
         message: 'In-flight completion identity must match its request',
       });
     }
-    if (completion.reservedTokens !== completion.requestTokens + completion.request.maxOutputTokens) {
+    if (
+      completion.reservedTokens !==
+      completion.requestTokens + completion.request.maxOutputTokens
+    ) {
       validation.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'In-flight completion reservation must match the request limit',
@@ -222,10 +226,7 @@ export class CheckpointTranscriptStore implements TranscriptStore {
     return Promise.resolve(SessionTranscriptSchema.parse(structuredClone(this.transcript)));
   }
 
-  async save(
-    expectedVersion: number | null,
-    transcriptInput: unknown,
-  ): Promise<SessionTranscript> {
+  async save(expectedVersion: number | null, transcriptInput: unknown): Promise<SessionTranscript> {
     const draft = SessionTranscriptDraftSchema.parse(transcriptInput);
     const actualVersion = this.transcript?.version ?? null;
     if (actualVersion !== expectedVersion) throw new TranscriptConflictError();

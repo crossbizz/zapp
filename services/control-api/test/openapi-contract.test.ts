@@ -11,10 +11,18 @@ import {
   createInMemoryPreviewSessionStore,
   createInMemoryPreviewShareStore,
 } from '../src/routes/preview.js';
-import { buildHarness, cookieJar, cookiesOf, type Harness } from './support/harness.js';
+import {
+  buildHarness,
+  cookieJar,
+  cookiesOf,
+  TEST_PRICING,
+  type Harness,
+} from './support/harness.js';
 import { createInMemoryGitHubAuthorizationStateStore } from '../src/integrations/github/store.js';
 import { createInMemoryGitHubWebhookStore } from '../src/integrations/github/queue.js';
 import type { paths as GeneratedPaths } from '../../../packages/api-client/src/generated.js';
+import { createInMemoryNotificationState } from '../src/notifications/service.js';
+import { createInMemoryIncidentStore } from '../src/routes/incidents.js';
 
 const GENERATED_TYPES = resolve(
   import.meta.dirname,
@@ -51,6 +59,18 @@ interface OpenApiOperation {
 
 function documentedHarness(): Harness {
   const built = buildHarness({
+    admin: { enabled: false, staffUserIds: [] },
+    incidentStore: createInMemoryIncidentStore(),
+    incidentWebhookSecret: 'openapi-grafana-secret-that-is-long-enough',
+    notificationState: createInMemoryNotificationState(),
+    usageLedger: {
+      recordUsage: () => Promise.reject(new Error('OpenAPI must not record usage.')),
+      getUsageSummary: () => Promise.reject(new Error('OpenAPI must not read usage.')),
+    },
+    creditBalance: {
+      availableCredits: () => Promise.reject(new Error('OpenAPI must not read credits.')),
+      requireRunAdmission: () => Promise.reject(new Error('OpenAPI must not admit runs.')),
+    },
     tenantDb: () => {
       throw new Error('OpenAPI generation must not access the tenant database.');
     },
@@ -86,6 +106,43 @@ function documentedHarness(): Harness {
       secret: 'openapi-test-secret',
       store: createInMemoryGitHubWebhookStore(),
     },
+    billing: {
+      stripe: {
+        createCheckout: () =>
+          Promise.reject(new Error('OpenAPI must not create checkout sessions.')),
+        createPortal: () => Promise.reject(new Error('OpenAPI must not create portal sessions.')),
+        updateSeats: () => Promise.reject(new Error('OpenAPI must not update seats.')),
+        createProduct: () => Promise.reject(new Error('OpenAPI must not create products.')),
+        createMonthlyPrice: () => Promise.reject(new Error('OpenAPI must not create prices.')),
+        verifyWebhookEndpoint: () =>
+          Promise.reject(new Error('OpenAPI must not inspect webhooks.')),
+      },
+      store: {
+        status: () => Promise.reject(new Error('OpenAPI must not read billing status.')),
+        syncSubscription: () => Promise.reject(new Error('OpenAPI must not sync subscriptions.')),
+        findOrganizationByCustomer: () =>
+          Promise.reject(new Error('OpenAPI must not find customers.')),
+        markPaymentFailed: () => Promise.reject(new Error('OpenAPI must not mark dunning.')),
+        clearDunning: () => Promise.reject(new Error('OpenAPI must not clear dunning.')),
+        mirrorCreditGrant: () => Promise.reject(new Error('OpenAPI must not grant credits.')),
+        ledgerCostUsd: () => Promise.reject(new Error('OpenAPI must not read usage cost.')),
+        downgradeExpiredDunning: () => Promise.resolve(0),
+      },
+      prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      appBaseUrl: 'https://app.zapp.test',
+      webhook: {
+        handle: () => Promise.reject(new Error('OpenAPI must not process Stripe webhooks.')),
+      },
+      topups: {
+        stripe: {
+          createCreditCheckout: () =>
+            Promise.reject(new Error('OpenAPI must not create credit checkout sessions.')),
+        },
+        packs: TEST_PRICING.creditPacks ?? {},
+        prices: { starter: 'price_starter123' },
+        pricing: TEST_PRICING,
+      },
+    },
   });
   apps.push(built.app);
   return built;
@@ -100,6 +157,45 @@ afterEach(async () => {
 });
 
 describe('generated API types', () => {
+  it('publishes deployment confirmation, progress/actions, SSE, and domain APIs', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    expect(paths['/v1/releases/{releaseId}/deployment-preview']?.['get']).toBeDefined();
+    expect(paths['/v1/releases/{releaseId}/readiness-actions']?.['post']).toBeDefined();
+    expect(paths['/v1/deployments/{deploymentId}']?.['get']).toBeDefined();
+    expect(
+      paths['/v1/deployments/{deploymentId}/events']?.['get']?.responses?.['200']?.content?.[
+        'text/event-stream'
+      ],
+    ).toBeDefined();
+    expect(paths['/v1/deployments/{deploymentId}/actions']?.['post']).toBeDefined();
+    expect(paths['/v1/projects/{projectId}/domains']?.['get']).toBeDefined();
+    expect(paths['/v1/projects/{projectId}/domains']?.['post']).toBeDefined();
+  });
+
+  it('publishes production history and rollback compatibility preview', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    expect(paths['/v1/projects/{projectId}/production']?.['get']?.responses?.['200']).toBeDefined();
+    expect(
+      paths['/v1/releases/{releaseId}/rollback-preview']?.['get']?.responses?.['200'],
+    ).toBeDefined();
+  });
+
+  it('publishes the versioned incident list/report APIs and Fix seed', async () => {
+    const app = documentedHarness().app;
+    apps.push(app);
+    await app.ready();
+    const document = app.swagger() as { paths: Record<string, OpenApiOperation> };
+    const incidentPath = document.paths['/v1/projects/{projectId}/incidents'] as unknown as {
+      get?: OpenApiOperation;
+      post?: OpenApiOperation;
+    };
+    expect(incidentPath.get?.responses?.['200']?.content?.['application/json']).toBeDefined();
+    expect(incidentPath.post?.responses?.['201']?.content?.['application/json']).toBeDefined();
+  });
   it('match deterministic openapi-typescript output from a live app document', async () => {
     // Break caught: a public route/schema changes while the client keeps a
     // stale generated type surface, allowing web or desktop to compile against
@@ -156,7 +252,8 @@ describe('generated API types', () => {
         }
       | undefined;
     const runSchema = responseSchema?.schema?.properties?.run;
-    const requestVariants = requestSchema?.anyOf ?? (requestSchema === undefined ? [] : [requestSchema]);
+    const requestVariants =
+      requestSchema?.anyOf ?? (requestSchema === undefined ? [] : [requestSchema]);
 
     expect(requestVariants).toHaveLength(2);
     for (const variant of requestVariants) {
@@ -174,9 +271,7 @@ describe('generated API types', () => {
       expect(variant.required).not.toContain('model');
       expect(variant.properties).not.toHaveProperty('requestFingerprint');
     }
-    const fixVariant = requestVariants.find((variant) =>
-      variant.required?.includes('fixRequest'),
-    );
+    const fixVariant = requestVariants.find((variant) => variant.required?.includes('fixRequest'));
     expect(fixVariant?.properties?.['mode']).toMatchObject({ enum: ['fix'] });
     expect(fixVariant?.properties?.['fixRequest']).toMatchObject({ type: 'object' });
 
@@ -189,15 +284,90 @@ describe('generated API types', () => {
     expect(runSchema?.properties).not.toHaveProperty('requestFingerprint');
   });
 
+  it('publishes the versioned notification preference API and generated operations', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+
+    expect(paths['/v1/notification-preferences']?.['get']?.responses?.['200']).toBeDefined();
+    expect(paths['/v1/notification-preferences/{type}']?.['put']?.requestBody).toBeDefined();
+    expect(paths['/v1/desktop-notifications']?.['get']?.responses?.['200']).toBeDefined();
+  });
+
+  it('publishes the versioned usage summary read model', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+
+    const operation = paths['/v1/usage/summary']?.['get'];
+    expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ in: 'query', name: 'from', required: true }),
+        expect.objectContaining({ in: 'query', name: 'to', required: true }),
+      ]),
+    );
+  });
+
+  it('publishes the reason-gated, support-session-bound admin API', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const supportSession = paths['/v1/admin/support-sessions']?.['post'];
+    const overview = paths['/v1/admin/organizations/{organizationId}/overview']?.['get'];
+    const terminateRun =
+      paths['/v1/admin/organizations/{organizationId}/runs/{runId}/terminate']?.['post'];
+    const terminateAll = paths['/v1/admin/organizations/{organizationId}/terminate-all']?.['post'];
+
+    expect(supportSession?.requestBody?.required).toBe(true);
+    expect(supportSession?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ in: 'header', name: 'idempotency-key', required: true }),
+      ]),
+    );
+    expect(overview?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          in: 'header',
+          name: 'x-zapp-support-session',
+          required: true,
+        }),
+      ]),
+    );
+    expect(terminateRun?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ in: 'header', name: 'idempotency-key', required: true }),
+        expect.objectContaining({
+          in: 'header',
+          name: 'x-zapp-support-session',
+          required: true,
+        }),
+      ]),
+    );
+    expect(terminateAll?.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ in: 'header', name: 'idempotency-key', required: true }),
+        expect.objectContaining({
+          in: 'header',
+          name: 'x-zapp-support-session',
+          required: true,
+        }),
+      ]),
+    );
+
+    type StartSupportSessionPost = NonNullable<
+      GeneratedPaths['/v1/admin/support-sessions']['post']
+    >;
+    type SupportHeaders = NonNullable<StartSupportSessionPost['parameters']['header']>;
+    const generatedHeaders: SupportHeaders = { 'idempotency-key': 'support-session-0001' };
+    expect(generatedHeaders['idempotency-key']).toBe('support-session-0001');
+  });
   it('projects validated model choices through the public membership schema', async () => {
     // Break caught: WEB-3 falls back to the Owner-only settings route when /v1/me
     // does not carry the model identifiers a Builder is permitted to select.
     const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
     expect(response.statusCode).toBe(200);
     const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
-    const meSchema = paths['/v1/me']?.['get']?.responses?.['200']?.content?.[
-      'application/json'
-    ] as
+    const meSchema = paths['/v1/me']?.['get']?.responses?.['200']?.content?.['application/json'] as
       | {
           schema?: {
             properties?: {
@@ -295,9 +465,7 @@ describe('generated API types', () => {
   it('requires a validated GitHub import idempotency header in OpenAPI and generated types', async () => {
     // Break caught: runtime-only header extraction leaves the public SDK unable
     // to require the operation key that makes import acceptance replay-safe.
-    type ImportPost = NonNullable<
-      GeneratedPaths['/v1/projects/{projectId}/import/github']['post']
-    >;
+    type ImportPost = NonNullable<GeneratedPaths['/v1/projects/{projectId}/import/github']['post']>;
     type ImportHeaders = NonNullable<ImportPost['parameters']['header']>;
     const generatedHeaders: ImportHeaders = {
       'idempotency-key': 'github-import-operation-0001',
@@ -367,21 +535,21 @@ describe('generated API types', () => {
     expect(summary?.['preview']).toMatchObject({ required: ['status', 'occurredAt'] });
     expect(summary?.['preview']).not.toHaveProperty('nullable');
     const production = summary?.['production'] as
-      | { properties?: Record<string, unknown> }
-      | undefined;
-    expect(
-      production?.properties?.['releaseId'],
-    ).toMatchObject({ pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$', type: 'string' });
+      { properties?: Record<string, unknown> } | undefined;
+    expect(production?.properties?.['releaseId']).toMatchObject({
+      pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$',
+      type: 'string',
+    });
     const deployReadiness = summary?.['deployReadiness'] as
-      | { properties?: Record<string, unknown> }
-      | undefined;
-    expect(
-      deployReadiness?.properties?.['releaseId'],
-    ).toMatchObject({ pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$', type: 'string' });
+      { properties?: Record<string, unknown> } | undefined;
+    expect(deployReadiness?.properties?.['releaseId']).toMatchObject({
+      pattern: '^rel_[0-9A-HJKMNP-TV-Z]{26}$',
+      type: 'string',
+    });
 
-    const branchSchema = paths[
-      '/v1/integrations/github/repositories/{repositoryId}/branches'
-    ]?.['get']?.responses?.['200']?.content?.['application/json'] as
+    const branchSchema = paths['/v1/integrations/github/repositories/{repositoryId}/branches']?.[
+      'get'
+    ]?.responses?.['200']?.content?.['application/json'] as
       | {
           schema?: {
             properties?: {
@@ -392,9 +560,9 @@ describe('generated API types', () => {
           };
         }
       | undefined;
-    expect(branchSchema?.schema?.properties?.items?.items?.properties?.['headCommitSha']).toMatchObject(
-      { pattern: '^[0-9a-f]{40}$', type: 'string' },
-    );
+    expect(
+      branchSchema?.schema?.properties?.items?.items?.properties?.['headCommitSha'],
+    ).toMatchObject({ pattern: '^[0-9a-f]{40}$', type: 'string' });
   });
 
   it('documents every formerly schema-less redirect with its live status and location header', async () => {
@@ -438,6 +606,44 @@ describe('generated API types', () => {
       });
       expect(responses?.['302']?.content).toBeUndefined();
       expect(responses?.['200']).toBeUndefined();
+    }
+  });
+
+  it('documents the complete public builder-preview bridge', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    const workspace = '/v1/workspaces/{workspaceId}';
+
+    expect(
+      paths[`${workspace}/dev-server/logs`]?.['get']?.responses?.['200']?.content,
+    ).toHaveProperty('application/json');
+    expect(
+      paths[`${workspace}/dev-server/restart`]?.['post']?.responses?.['200']?.content,
+    ).toHaveProperty('application/json');
+    expect(
+      paths[`${workspace}/preview/events`]?.['get']?.responses?.['200']?.content,
+    ).toHaveProperty('text/event-stream');
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['200']?.content).toEqual(
+      {
+        'image/png': { schema: { format: 'binary', type: 'string' } },
+      },
+    );
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['501']).toBeDefined();
+    expect(
+      paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['501']?.content,
+    ).toBeUndefined();
+    expect(paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['503']).toBeDefined();
+    expect(
+      paths[`${workspace}/preview/screenshot`]?.['post']?.responses?.['503']?.content,
+    ).toBeUndefined();
+
+    for (const path of [`${workspace}/dev-server/restart`, `${workspace}/preview/screenshot`]) {
+      expect(
+        paths[path]?.['post']?.parameters?.find(
+          (parameter) => parameter.in === 'header' && parameter.name === 'idempotency-key',
+        ),
+      ).toMatchObject({ required: true });
     }
   });
 

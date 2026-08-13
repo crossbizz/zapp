@@ -10,16 +10,20 @@ import {
   CreateWorkspaceInputSchema,
   ExecutionContractSchema,
   ExecInputSchema,
+  idSchema,
+  NetworkPolicyInputSchema,
   RESOURCE_PROFILES,
   ResourceProfileSchema,
   WorkspaceHandleSchema,
   type CreateWorkspaceInput,
   type ExecutionContract,
   type ExecInput,
+  type NetworkPolicyInput,
   type WorkspaceHandle,
   type WorkspacePurpose,
   type WorkspaceStatus,
 } from '@zapp/contracts';
+import { resolveNetworkPolicy } from '../network/profiles.js';
 import {
   AgentHealthSchema,
   ImageDigestSchema,
@@ -41,6 +45,7 @@ import {
 import {
   BranchLockedError,
   createProjectVolumePlan,
+  projectVolumeName,
   type ProjectVolumePlan,
 } from './volumes.js';
 
@@ -80,6 +85,10 @@ const ExplicitKillProbeDiagnosticSchema = z
 type ExplicitKillProbeFailurePhase = z.infer<typeof ExplicitKillProbeFailurePhaseSchema>;
 
 const HEALTH_PROBE_TIMEOUT_MS = 30_000;
+// Modal 0.9 treats an empty creation allowlist as OPEN and then refuses later
+// policy updates. A reserved, non-resolving domain keeps creation in ALLOWLIST
+// mode without granting egress; the exact policy replaces it before readiness.
+const EMPTY_EGRESS_SENTINEL_DOMAIN = 'zapp.invalid';
 const HEALTH_PROBE_INTERVAL_MS = 250;
 const SCRIPTED_EXECUTION_TIMEOUT_MS = 30_000;
 const EXPLICIT_KILL_START_POLL_INTERVAL_MS = 25;
@@ -846,6 +855,12 @@ type WorkspaceEnvironmentName = z.infer<typeof WorkspaceEnvironmentNameSchema>;
 const ModalImageLockSchema = z
   .object({
     version: z.literal(1),
+    publicMirrors: z
+      .object({
+        'forge-node-base': z.string().regex(/^ghcr\.io\/crossbizz\/zapp-forge-node-base:[^@]+@sha256:[a-f0-9]{64}$/u),
+      })
+      .strict()
+      .optional(),
     environments: z.record(
       WorkspaceEnvironmentNameSchema,
       z
@@ -902,6 +917,8 @@ export interface ModalWorkspaceCreateOptions {
   readonly command: readonly string[];
   readonly encryptedPorts: readonly [8877, 8080];
   readonly readinessProbe: Readonly<{ kind: 'tcp'; port: 8877; intervalMs: 250 }>;
+  readonly outboundCidrAllowlist: readonly string[];
+  readonly outboundDomainAllowlist: readonly string[];
   readonly timeoutMs: number;
 }
 
@@ -913,6 +930,14 @@ export interface ModalWorkspaceSandbox {
   agentRequest(request: AgentHttpRequest): Promise<AgentHttpResponse>;
   agentStream(request: AgentHttpRequest): Promise<AgentHttpStream>;
   tunnels(timeoutMs: number): Promise<Readonly<Record<number, ModalSdkTunnel>>>;
+  snapshotFilesystem(input: {
+    readonly timeoutMs: number;
+    readonly ttlMs: number;
+  }): Promise<string>;
+  updateNetworkPolicy(input: {
+    readonly outboundCidrAllowlist: readonly string[];
+    readonly outboundDomainAllowlist: readonly string[];
+  }): Promise<void>;
   terminate(): Promise<void>;
 }
 
@@ -940,6 +965,16 @@ export interface AgentHttpStream {
 export interface ModalWorkspaceSdkPort {
   createWorkspace(input: ModalWorkspaceCreateOptions): Promise<ModalWorkspaceSandbox>;
   getWorkspace(providerWorkspaceId: string): Promise<ModalWorkspaceSandbox | undefined>;
+  measureProjectVolumeBytes(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly environment: ModalEnvironment;
+    readonly appName: 'zapp-workspaces';
+    readonly digest: string;
+    readonly volumeName: string;
+  }): Promise<string>;
+  deleteSnapshot?(providerSnapshotId: string): Promise<void>;
+  snapshotExists?(providerSnapshotId: string): Promise<boolean>;
   close(): void;
 }
 
@@ -1266,6 +1301,10 @@ function createModalWorkspaceSdk(
           Object.entries(tunnels).map(([port, tunnel]) => [port, { url: tunnel.url }]),
         );
       },
+      async snapshotFilesystem(input) {
+        const snapshot = await sandbox.snapshotFilesystem(input);
+        return ImageDigestSchema.parse(snapshot.imageId);
+      },
       async agentRequest(request) {
         const query = new URLSearchParams(request.query).toString();
         const url = `http://127.0.0.1:8877${request.path}${query === '' ? '' : `?${query}`}`;
@@ -1392,6 +1431,12 @@ function createModalWorkspaceSdk(
       async terminate() {
         await sandbox.terminate();
       },
+      async updateNetworkPolicy(input) {
+        await sandbox.updateNetworkPolicy({
+          outboundCidrAllowlist: [...input.outboundCidrAllowlist],
+          outboundDomainAllowlist: [...input.outboundDomainAllowlist],
+        });
+      },
     };
   }
 
@@ -1426,6 +1471,8 @@ function createModalWorkspaceSdk(
           readinessProbe: Probe.withTcp(input.readinessProbe.port, {
             intervalMs: input.readinessProbe.intervalMs,
           }),
+          outboundCidrAllowlist: [...input.outboundCidrAllowlist],
+          outboundDomainAllowlist: [...input.outboundDomainAllowlist],
           timeoutMs: input.timeoutMs,
           experimentalOptions: { vm_runtime: true },
         });
@@ -1445,6 +1492,67 @@ function createModalWorkspaceSdk(
       } catch (error) {
         if (error instanceof NotFoundError) return undefined;
         throw error;
+      }
+    },
+    async deleteSnapshot(providerSnapshotId) {
+      try {
+        await client.images.delete(providerSnapshotId);
+      } catch (error) {
+        if (error instanceof NotFoundError) return;
+        throw error;
+      }
+    },
+    async snapshotExists(providerSnapshotId) {
+      try {
+        await client.images.fromId(providerSnapshotId);
+        return true;
+      } catch (error) {
+        if (error instanceof NotFoundError) return false;
+        throw error;
+      }
+    },
+    async measureProjectVolumeBytes(input) {
+      const app = await client.apps.fromName(input.appName, {
+        environment: input.environment,
+        createIfMissing: true,
+      });
+      const image = await client.images.fromId(input.digest);
+      let volume: Awaited<ReturnType<typeof client.volumes.fromName>>;
+      try {
+        volume = await client.volumes.fromName(input.volumeName, {
+          environment: input.environment,
+          createIfMissing: false,
+        });
+      } catch (error) {
+        if (error instanceof NotFoundError || (error as { readonly name?: unknown }).name === 'NotFoundError') {
+          return '0';
+        }
+        throw error;
+      }
+      const sandbox = await client.sandboxes.create(app, image, {
+        command: ['/bin/sh', '-lc', 'sleep 300'],
+        volumes: { '/measure': volume.withMountOptions({ readOnly: true }) },
+        cpu: 0.125,
+        memoryMiB: 128,
+        timeoutMs: 300_000,
+      });
+      try {
+        const process = await sandbox.exec(['/usr/bin/du', '-sb', '/measure'], {
+          mode: 'text',
+          timeoutMs: 120_000,
+        });
+        const [stdout, stderr, exitCode] = await Promise.all([
+          process.stdout.readText(),
+          process.stderr.readText(),
+          process.wait(),
+        ]);
+        if (exitCode !== 0) {
+          throw new Error(`Modal volume measurement failed: ${stderr.trim()}`);
+        }
+        const bytes = stdout.trim().split(/\s+/u)[0];
+        return z.string().regex(/^\d+$/u).parse(bytes);
+      } finally {
+        await sandbox.terminate({ wait: true });
       }
     },
     close() {
@@ -1530,11 +1638,96 @@ export class ModalSandboxProvider {
       : this.images['forge-node-base'].publishedName;
   }
 
+  async measureProjectVolumeBytes(rawScope: {
+    readonly organizationId: string;
+    readonly projectId: string;
+  }): Promise<string> {
+    const scope = z
+      .object({ organizationId: idSchema('org'), projectId: idSchema('proj') })
+      .strict()
+      .parse(rawScope);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      return await sdk.measureProjectVolumeBytes({
+        ...scope,
+        environment: this.modalEnvironment,
+        appName: this.images['forge-node-base'].appName,
+        digest: this.images['forge-node-base'].digest,
+        volumeName: projectVolumeName(scope.projectId),
+      });
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async snapshotWorkspace(
+    providerWorkspaceId: string,
+    ttlMs: number,
+  ): Promise<{ providerSnapshotId: string; logicalBytes: string; expiresAt: string }> {
+    const id = z.string().min(1).parse(providerWorkspaceId);
+    const retentionMs = z.number().int().positive().max(30 * 86_400_000).parse(ttlMs);
+    const measurement = await this.exec({
+      providerWorkspaceId: id,
+      command: '/usr/bin/du',
+      args: ['-sb', '/workspace'],
+      timeoutMs: 120_000,
+    });
+    if (measurement.exitCode !== 0) {
+      throw new Error(`workspace logical-byte measurement failed: ${measurement.stderr.trim()}`);
+    }
+    const logicalBytes = z
+      .string()
+      .regex(/^\d+$/u)
+      .parse(measurement.stdout.trim().split(/\s+/u)[0]);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      const sandbox = await sdk.getWorkspace(id);
+      if (sandbox === undefined) throw new ModalWorkspaceNotFoundError();
+      const providerSnapshotId = ImageDigestSchema.parse(
+        await sandbox.snapshotFilesystem({ timeoutMs: 55_000, ttlMs: retentionMs }),
+      );
+      return {
+        providerSnapshotId,
+        logicalBytes,
+        expiresAt: new Date(this.now().getTime() + retentionMs).toISOString(),
+      };
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async deleteSnapshot(providerSnapshotId: string): Promise<void> {
+    const id = ImageDigestSchema.parse(providerSnapshotId);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      if (sdk.deleteSnapshot === undefined) {
+        throw new Error('Modal SDK adapter cannot delete snapshots');
+      }
+      await sdk.deleteSnapshot(id);
+    } finally {
+      sdk.close();
+    }
+  }
+
+  async snapshotExists(providerSnapshotId: string): Promise<boolean> {
+    const id = ImageDigestSchema.parse(providerSnapshotId);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      if (sdk.snapshotExists === undefined) {
+        throw new Error('Modal SDK adapter cannot probe snapshots');
+      }
+      return await sdk.snapshotExists(id);
+    } finally {
+      sdk.close();
+    }
+  }
+
   async createWorkspace(
     untrustedInput: CreateWorkspaceInput,
     onAllocated?: (providerWorkspaceId: string) => Promise<void>,
   ): Promise<WorkspaceHandle> {
     const input = CreateWorkspaceInputSchema.strict().parse(untrustedInput);
+    const initialNetworkPolicy = resolveNetworkPolicy(input.networkProfile, []);
     const image =
       input.purpose === 'verifier'
         ? this.images['forge-web-test']
@@ -1581,6 +1774,13 @@ export class ModalSandboxProvider {
         command: workspaceBootCommand(volume, input.purpose === 'verifier'),
         encryptedPorts: [8877, 8080],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: HEALTH_PROBE_INTERVAL_MS },
+        // Creation applies the named baseline immediately. The service adds any
+        // project integration domains during onAllocated, before readiness.
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist:
+          initialNetworkPolicy.outboundDomains.length === 0
+            ? [EMPTY_EGRESS_SENTINEL_DOMAIN]
+            : initialNetworkPolicy.outboundDomains,
         timeoutMs: WORKSPACE_TIMEOUT_MS,
       });
       sandbox = await new Promise<ModalWorkspaceSandbox>((resolveCreation, rejectCreation) => {
@@ -1650,6 +1850,22 @@ export class ModalSandboxProvider {
       throw error;
     } finally {
       if (sdkOwnership.closeHere) sdk.close();
+    }
+  }
+
+  async updateNetworkPolicy(untrustedInput: NetworkPolicyInput): Promise<void> {
+    const input = NetworkPolicyInputSchema.strict().parse(untrustedInput);
+    const policy = resolveNetworkPolicy(input.profile, input.allowedDomains);
+    const sdk = this.sdkFactory(this.modalEnvironment);
+    try {
+      const sandbox = await sdk.getWorkspace(input.providerWorkspaceId);
+      if (sandbox === undefined) throw new ModalWorkspaceNotFoundError();
+      await sandbox.updateNetworkPolicy({
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist: policy.blockAll ? [] : policy.outboundDomains,
+      });
+    } finally {
+      sdk.close();
     }
   }
 
@@ -2228,6 +2444,7 @@ export function createModalNightlyE2eDriver(
         throw new Error('Workspace image must match the immutable image lock');
       }
       const resources = RESOURCE_PROFILES[input.workspace.resourceProfile];
+      const networkPolicy = resolveNetworkPolicy(input.workspace.networkProfile, []);
       const volume = createProjectVolumePlan({
         organizationId: input.workspace.organizationId,
         projectId: input.workspace.projectId,
@@ -2269,6 +2486,11 @@ export function createModalNightlyE2eDriver(
         memoryLimitMiB: resources.memLimitGiB * 1_024,
         encryptedPorts: [8877, 8080],
         readinessProbe: Probe.withTcp(8877, { intervalMs: HEALTH_PROBE_INTERVAL_MS }),
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist:
+          networkPolicy.outboundDomains.length === 0
+            ? [EMPTY_EGRESS_SENTINEL_DOMAIN]
+            : [...networkPolicy.outboundDomains],
         timeoutMs: WORKSPACE_TIMEOUT_MS,
         experimentalOptions: { vm_runtime: true },
       });

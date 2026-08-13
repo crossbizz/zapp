@@ -1,6 +1,7 @@
 import {
   AgentEventVisibilitySchema,
   AppTypeSchema,
+  CreditDecimalSchema,
   idSchema,
   ModelIdentifierSchema,
   PreviewOperationFailurePayloadSchema,
@@ -302,11 +303,24 @@ export const IntegrationConnectionSchema = z
     id: z.string(),
     organizationId: z.string(),
     projectId: z.string().nullable(),
-    provider: z.enum(['github', 'supabase', 'neon', 'stripe']),
+    provider: z.enum(['github', 'supabase', 'neon', 'stripe', 'vercel']),
     status: z.string().min(1),
     credentialRef: z.string().nullable(),
     configuration: z.union([
       z.object({ installationId: z.string().min(1) }).strict(),
+      z.object({
+        installationId: z.string().min(1),
+        externalRepoRef: z.string().min(1),
+        branch: z.string().min(1),
+        internalHeadSha: z.string().regex(/^[0-9a-f]{40}$/u),
+        externalHeadSha: z.string().regex(/^[0-9a-f]{40}$/u),
+        state: z.enum(['in_sync', 'ahead', 'behind', 'diverged']),
+        lastDeliveryId: z.string().nullable(),
+        blockedTaskIds: z.array(z.string()),
+        conflictTaskId: z.string().nullable(),
+        conflictCreated: z.boolean(),
+        updatedAt: z.string().datetime(),
+      }).strict(),
       z.object({ projectRef: z.string().min(1) }).strict(),
       z
         .object({
@@ -317,6 +331,11 @@ export const IntegrationConnectionSchema = z
         })
         .strict(),
       z.object({ accountId: z.string().min(1), mode: z.enum(['test', 'live']) }).strict(),
+      z.object({
+        projectId: z.string().min(1),
+        projectName: z.string().min(1),
+        teamId: z.string().min(1).optional(),
+      }).strict(),
     ]),
   })
   .strict();
@@ -333,6 +352,7 @@ export const RunSchema = z.object({
   appType: AppTypeSchema,
   model: ModelIdentifierSchema.nullable(),
   status: z.string(),
+  planMaxCredits: CreditDecimalSchema,
   startedBy: z.string(),
   startedAt: z.string().datetime(),
   completedAt: z.string().datetime().nullable(),
@@ -475,6 +495,7 @@ export function toRun(run: AgentRun): z.infer<typeof RunSchema> {
     appType: run.appType,
     model: run.model,
     status: run.status,
+    planMaxCredits: run.planMaxCredits,
     startedBy: run.startedBy,
     startedAt: run.startedAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,

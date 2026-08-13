@@ -17,7 +17,6 @@ const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 export const CompletionIdSchema = z.string().regex(/^cmp_[a-f0-9]{64}$/u);
 export const CompletionFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const CreditDecimalSchema = z.string().regex(/^\d+(?:\.\d{1,4})?$/u);
-
 export const CompletionRouteAttemptSchema = z
   .object({
     provider: z.string().trim().min(1),

@@ -1,9 +1,11 @@
 'use client';
 
 import type { RunEvent } from '@zapp/api-client';
+import { mergeBuilderEvent } from '@zapp/ui';
 import { useEffect, useState } from 'react';
 
 import { createControlPlaneClient } from '../lib/api';
+import { captureRunActivation } from '../lib/activation';
 
 const maximumCachedEvents = 1_000;
 
@@ -61,13 +63,6 @@ function writeCache(runId: string, events: readonly RunEvent[]): void {
   }
 }
 
-function mergeEvent(events: readonly RunEvent[], incoming: RunEvent): readonly RunEvent[] {
-  if (events.some((event) => event.data.sequence === incoming.data.sequence)) return events;
-  return [...events, incoming]
-    .sort((left, right) => left.data.sequence - right.data.sequence)
-    .slice(-maximumCachedEvents);
-}
-
 export function useRunEvents(runId: string | undefined, organizationId: string): RunEventsState {
   const [connection, setConnection] = useState<RunEventConnection>(
     runId === undefined ? 'idle' : 'connecting',
@@ -93,7 +88,8 @@ export function useRunEvents(runId: string | undefined, organizationId: string):
       },
       onEvent(event) {
         if (!current || event.data.visibility !== 'user') return;
-        currentEvents = mergeEvent(currentEvents, event);
+        captureRunActivation(event);
+        currentEvents = mergeBuilderEvent(currentEvents, event, maximumCachedEvents);
         writeCache(runId, currentEvents);
         setEvents(currentEvents);
         setConnection('connected');

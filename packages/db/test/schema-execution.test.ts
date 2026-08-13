@@ -43,6 +43,17 @@ describe('execution and evidence (PRD §23.4)', () => {
       'preview_monitor_owner_id',
       'preview_monitor_lease_expires_at',
       'snapshot_ref',
+      'usage_operation_key',
+      'usage_last_sample_at',
+      'usage_last_cpu_micros',
+      'usage_cpu_seconds',
+      'usage_memory_gib_seconds',
+      'usage_cpu_second_usd',
+      'usage_memory_gib_second_usd',
+      'usage_credits_per_usd',
+      'usage_finalized_at',
+      'usage_cpu_delivered_at',
+      'usage_memory_delivered_at',
       'created_at',
       'last_active_at',
       'terminated_at',
@@ -178,6 +189,7 @@ describe('execution and evidence (PRD §23.4)', () => {
       'workspaces_attachment_complete_check',
       'workspaces_preview_monitor_lease_check',
       'workspaces_preview_monitor_disabled_check',
+      'workspaces_usage_state_complete_check',
     ]);
     expect(checkExpression(workspaces, 'workspaces_status_check')).toBe(
       "status in ('requested', 'provisioning', 'started', 'ready', 'active', 'checkpointing', 'idle', 'terminated')",
@@ -248,9 +260,10 @@ describe('agent_events', () => {
   });
 
   it('types the event by the PRD §14.4 list and the sequence as a number', () => {
-    // The 34 PRD types plus ADR-0027's two additive message types; the column
+    // The 34 PRD types plus ADR-0027's two message types and CP-23's two typed
+    // conversation-card types; the column
     // refuses anything outside the shared contract at compile time.
-    expect(enumValues(agentEvents, 'type')).toHaveLength(36);
+    expect(enumValues(agentEvents, 'type')).toHaveLength(38);
     expect(enumValues(agentEvents, 'type').slice(0, 3)).toEqual([
       'run.created',
       'run.started',

@@ -152,49 +152,49 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 **Files:** Create: `apps/desktop/src/zapp/runtime/docker.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §21.3): preserve Dyad Docker execution path, adapted to `WorkspaceRuntime` (`kind: "docker"`): container from `forge-node-base` public mirror image, project dir bind-mounted, exec via docker exec, same conformance suite; unavailable Docker → mode hidden with diagnostics link.
-- [ ] Commit: `feat(desktop): docker runtime mode`
+- [x] Binding behavior (PRD §21.3): preserve Dyad Docker execution path, adapted to `WorkspaceRuntime` (`kind: "docker"`): container from `forge-node-base` public mirror image, project dir bind-mounted, exec via docker exec, same conformance suite; unavailable Docker → mode hidden with diagnostics link.
+- [x] Commit: `feat(desktop): docker runtime mode`
 
 ### Task MAC-8 [M4]: Cloud mode client (builder + Mission Control parity)
 
 **Files:** Create: `apps/desktop/src/zapp/builder-cloud/*`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §21.3 cloud, §14.1 parity): cloud project window = shared builder components (conversation thread, preview via the zapp authenticated preview URL from WS-12/ADR-0023 in webview, Mission Control drawer; no Modal URL or provider token reaches the client) driven by the same SSE reducers as web; terminology/state identical (PRD §10.0.2); desktop adds: native menu actions (pause/resume run), dock badge for approvals.
-- [ ] e2e: fixture event stream renders identically (snapshot parity test against web reducer outputs).
-- [ ] Commit: `feat(desktop): cloud builder + mission control parity`
+- [x] Binding behavior (PRD §21.3 cloud, §14.1 parity): cloud project window = shared builder components (conversation thread, preview via the zapp authenticated preview URL from WS-12/ADR-0023 in webview, Mission Control drawer; no Modal URL or provider token reaches the client) driven by the same SSE reducers as web; terminology/state identical (PRD §10.0.2); desktop adds: native menu actions (pause/resume run), dock badge for approvals.
+- [x] e2e: fixture event stream renders identically (snapshot parity test against web reducer outputs).
+- [x] Commit: `feat(desktop): cloud builder + mission control parity`
 
 ### Task MAC-9 [M4]: Git-based local↔cloud sync + conflict policy
 
 **Files:** Create: `apps/desktop/src/zapp/sync/*`, `test/sync.spec.ts`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §21.4): sync = commits only; uncommitted local changes → cloud execution blocked with three actions (Commit / Stash / Discard — explicit, no auto); pull/push against internal Git (user-scoped token via CP session); divergence → guided merge workflow (fetch, three-way merge UI listing conflicts, resolution commits) — **never last-writer-wins** (test: diverged fixture cannot reach a state where either side's commit is lost without an explicit merge commit).
-- [ ] Commit: `feat(desktop): commit-boundary sync with guided merge`
+- [x] Binding behavior (PRD §21.4): sync = commits only; uncommitted local changes → cloud execution blocked with three actions (Commit / Stash / Discard — explicit, no auto); pull/push against internal Git (user-scoped token via CP session); divergence → guided merge workflow (fetch, three-way merge UI listing conflicts, resolution commits) — **never last-writer-wins** (test: diverged fixture cannot reach a state where either side's commit is lost without an explicit merge commit).
+- [x] Commit: `feat(desktop): commit-boundary sync with guided merge`
 
 ### Task MAC-10 [M4]: Move local project to cloud
 
 **Files:** Create: `apps/desktop/src/zapp/sync/promote.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §10.4): wizard: create cloud project → push local repo to internal Git → capability scan → cloud workspace boots → local project marked "linked" (subsequent work choice: local or cloud, synced per MAC-9); interrupted promotion resumable (idempotent by project fingerprint).
-- [ ] Commit: `feat(desktop): local→cloud promotion wizard`
+- [x] Binding behavior (PRD §10.4): wizard: create cloud project → push local repo to internal Git → capability scan → cloud workspace boots → local project marked "linked" (subsequent work choice: local or cloud, synced per MAC-9); interrupted promotion resumable (idempotent by project fingerprint).
+- [x] Commit: `feat(desktop): local→cloud promotion wizard`
 
 ### Task MAC-11 [M5]: Notifications + auto-update
 
 **Files:** Create: `apps/desktop/src/zapp/{notifications,updater}/*`
 **Effort:** M
 
-- [ ] Binding behavior: native notifications for `approval.requested`, `run.completed`, `deployment.updated(go_live|failed)` (opt-out per type in settings); auto-update: Squirrel feed from R2 (`desktop-updates/{channel}/`), channels stable/beta, signed updates only, release notes dialog; update failure never blocks launch.
-- [ ] Commit: `feat(desktop): approval/run notifications + auto-update channel`
+- [x] Binding behavior: native notifications for `approval.requested`, `run.completed`, `deployment.updated(go_live|failed)` (opt-out per type in settings); auto-update: Squirrel feed from R2 (`desktop-updates/{channel}/`), channels stable/beta, signed updates only, release notes dialog; update failure never blocks launch.
+- [x] Commit: `feat(desktop): approval/run notifications + auto-update channel` (`5fc6741`)
 
 ### Task MAC-12 [M5]: Dyad local project migration
 
 **Files:** Create: `apps/desktop/src/zapp/migrate-dyad.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §21.2): detect existing Dyad projects (Dyad home dir layout); import wizard: copy/adopt project folder → ensure git initialized (init + initial commit if absent) → register as zapp local project → offer cloud promotion (MAC-10); Dyad chat history import: best-effort read-only transcript archive attached to project (not merged into zapp conversation state).
-- [ ] Commit: `feat(desktop): dyad project migration path`
+- [x] Binding behavior (PRD §21.2): detect existing Dyad projects (Dyad home dir layout); import wizard: copy/adopt project folder → ensure git initialized (init + initial commit if absent) → register as zapp local project → offer cloud promotion (MAC-10); Dyad chat history import: best-effort read-only transcript archive attached to project (not merged into zapp conversation state).
+- [x] Commit: `feat(desktop): dyad project migration path` (`1155e94`)
 
 ---
 
@@ -210,9 +210,8 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 
 ## Execution log
 
-- (empty)
-
-## Execution log
+- 2026-08-12 MAC-12 done — Connected the phased safe Dyad importer to MAC-10's fingerprint-keyed durable promotion state machine, proved replay creates one cloud project, and passed filesystem import/promotion 11/11 plus desktop main-process typecheck, lint, and formatting; no provider call was required.
+- 2026-08-12 MAC-11 done — Attached the phased native-notification/update work to MAC-8 through CP-27's bounded tenant-scoped cursor API, accepted only the public organization/project/run deep-link grammar, and passed notification/updater 29/29, attachment 3/3, desktop main-process typecheck, lint, and formatting; no provider call was required.
 - 2026-08-03: MAC-1 done (0fdefcc + fix 090c01a, audit fully Approved; dyad v1.9.0 @ 282591c, license boundary byte-verified, 2344 files reconciled to zero unexplained). 13 local_agent_* tests = MAC-6 behavioral spec; 51-file integration triage deferred (tracked in todo); pnpm-store ABI hazard → MAC-3.
 - 2026-08-04: MAC-2 done (5190737 + fix 52df7a2, review fully Approved). Identity CI-asserted every build; updater neutralized until ZAPP_UPDATE_FEED (MAC-11 owns feed); signing env-gated (UNVERIFIED pending Developer ID cert — first real cert run is first execution). HANDOFFS: MAC-4 must re-host supabase/neon/pro OAuth returns (dead since dyad:// removal) + owns 5 of 6 remaining api.dyad.sh runtime endpoints; MAC-12: ~/dyad-apps is SHARED with any Dyad install (collision risk), not orphaned. Gatekeeper verify pending certs.
 - 2026-08-04: MAC-3 done pending fix round (e050b01, review Approved; 7 specs all judged REAL). Suite location e2e-tests/ (plan path would have been collected by NOTHING — playwright testDir). CONTROLLER DECISION: wiring test:preserve into desktop.yml as an e2e-preserve job (an inert net earns no trust). Follow-ups: upstream monaco helper broken (replaceEditorContent targets aria-hidden ime-text-area) — blocks edit_code/editor_commit_menu specs, needs an upstream-facing fix task.
@@ -231,6 +230,12 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-10 MAC-6-FIX-2 done — The durable receipt, mutation fencing, and owned-path recovery implementation passed the shared final MAC-6 verification and OpenAI provider gate; no additional provider call was made.
 - 2026-08-10 MAC-6-FIX-3 done — The single-writer finalization implementation passed 25/25 focused tests, final review remained PASS, and the one replacement real-provider acceptance completed through OpenAI without repeating the failed Anthropic call.
 - 2026-08-11 MAC-7 BLOCKED — The required `forge-node-base` public OCI mirror does not exist in repository configuration or immutable image locks: `infra/modal/images.lock.json` contains only a Modal image id and Modal-local published name, while the preserved Dyad Docker path builds unrelated `node:22-alpine`. The binding create-only file list also cannot make the currently unconditional renderer selector hide Docker with a diagnostics link. Inventing a GHCR registry/tag or silently substituting the Dyad image would violate the locked image contract, so the task remains unchecked pending an approved public-image publication/configuration scope.
+- 2026-08-12 MAC-7 done — Added the Docker WorkspaceRuntime over WS-17's digest-pinned public mirror, a project bind mount and docker-exec boundary, plus an IPC availability probe that hides unavailable Docker while retaining diagnostics; focused acceptance passed 7/7 and the previously undeclared fake-server type dependencies were made explicit so desktop typecheck passes.
 - 2026-08-11 MAC-8 BLOCKED — The binding parity source does not exist yet: WEB-7 and WEB-9 remain unchecked, the current web Mission Control renders only `MissionControlEmpty`, and neither `packages/ui` nor another shared package exports the web conversation/Mission Control components or a shared SSE event reducer. A desktop-only reducer or copied state protocol would violate the task and Global Constraint, so the task remains unchecked pending those shared web surfaces.
+- 2026-08-12 MAC-8 done — Added the shared web/desktop SSE reducer and desktop cloud builder controller with authenticated-preview enforcement, Mission Control state, native pause/resume actions, and approval badge projection; the fixture parity suite passed 2/2.
 - 2026-08-11 MAC-9 BLOCKED — API-first audit found no public session-authenticated internal-Git credential or sync API in the generated SDK; the only git-service credentials are internal service/repository-scoped boundaries. Without the prescribed user-scoped token, desktop cannot safely fetch/push or exercise the divergence/merge contract, so the task remains unchecked and no alternate credential path was introduced.
+- 2026-08-12 MAC-9 done — Added commit-boundary synchronization over GIT-7 leases: dirty work requires Commit/Stash/Discard, ancestry selects fast-forward or push, divergence requires an explicit parent-checked merge commit, and credentials remain ephemeral Git environment configuration; focused acceptance passed 4/4.
 - 2026-08-11 MAC-10 BLOCKED — Promotion depends on MAC-9's missing authenticated Git push path: project creation and capability scan APIs exist, but the desktop cannot push the local repository to the new internal repository through any public SDK operation. The task remains unchecked; no direct git-service backdoor or local-only linked marker was added.
+- 2026-08-12 MAC-10 done — Added the fingerprint-keyed durable promotion state machine across project create, MAC-9 repository push, capability scan, workspace boot, and linked completion; restart acceptance checkpoints every phase and passed 1/1.
+- 2026-08-12 MAC-11 BLOCKED — Commit `5fc6741` added schema-validated, deduplicated approval/run/deployment native-notification projection with server-backed per-type desktop preferences, stale-delivery rejection, and deep-link validation; it also replaced the legacy public-update host with failure-isolated signed Squirrel static feeds at `desktop-updates/{stable|beta}`. Focused acceptance is 26/26 with desktop lint/typecheck green; final production run attachment remains blocked on MAC-8, and the full desktop suite retains eight unrelated current-main failures in M4 chat-stream/compaction tests, so the tracker stays unchecked.
+- 2026-08-12 MAC-12 BLOCKED — Commit `1155e94` added direct-child Dyad project detection, keyed copy/adopt and Git/registration boundaries, a bounded symlink-safe read-only transcript archive, and an optional cloud-promotion handoff. Focused acceptance is 9/9 with desktop main-process typecheck and file-scoped lint/format checks green; user-facing composition and promotion remain blocked on MAC-10/M4, so the tracker stays unchecked.

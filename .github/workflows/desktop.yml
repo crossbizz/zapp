@@ -1,17 +1,10 @@
 name: Desktop
 
-# Packages the macOS app (@zapp/desktop) and runs the PRD §21.1 capability
-# preservation suite against that package. Split from ci.yml because both need a
-# macOS runner, a standalone hoisted install, and real time -- none of which
-# should sit in front of every PR that does not touch the desktop app.
+# Packages signed desktop releases and runs the full desktop test corpus. Split
+# from ci.yml because these jobs need macOS runners, a standalone hoisted
+# install, and real time.
 on:
-  # NO routine triggers. macos-14 bills Actions minutes at 10x, and these two
-  # jobs (90-min + 45-min budgets) exhausted this private repo's allowance and
-  # took CI down entirely. The desktop app is also not on M1's exit path -- that
-  # is browser-only (prompt -> Modal sandbox -> live preview). MAC-1/2/3 are
-  # done and their regression net still exists; it runs on demand and on a
-  # release tag, which is when packaging correctness actually matters.
-  # Re-enable a nightly or PR trigger at M2, when MAC-4..6 resume.
+  pull_request:
   workflow_dispatch:
     inputs:
       sign:
@@ -35,6 +28,7 @@ env:
 jobs:
   package-macos:
     name: package macOS app
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-14
     timeout-minutes: 90
     defaults:
@@ -197,8 +191,30 @@ jobs:
           APPLE_ID: ${{ steps.creds.outputs.notarize == 'true' && secrets.APPLE_ID || '' }}
           APPLE_TEAM_ID: ${{ steps.creds.outputs.sign == 'true' && secrets.APPLE_TEAM_ID || '' }}
           APPLE_APP_PASSWORD: ${{ steps.creds.outputs.notarize == 'true' && secrets.APPLE_APP_PASSWORD || '' }}
+          VITE_FARO_URL: ${{ vars.GRAFANA_FARO_DESKTOP_URL }}
+          VITE_ZAPP_ENV: production
+          VITE_ZAPP_RELEASE: ${{ github.sha }}
+          VITE_FARO_BUNDLE_ID: ${{ github.sha }}
         # `--` so pnpm forwards the flag to the script instead of parsing it.
         run: pnpm run make:mac -- --skip-restore
+
+      - name: Upload private desktop source maps to Grafana Faro
+        env:
+          FARO_ENDPOINT: ${{ vars.GRAFANA_FARO_SOURCEMAP_ENDPOINT }}
+          FARO_APP_ID: ${{ vars.GRAFANA_FARO_DESKTOP_APP_ID }}
+          FARO_STACK_ID: ${{ vars.GRAFANA_FARO_STACK_ID }}
+          FARO_API_KEY: ${{ secrets.GRAFANA_FARO_SOURCEMAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FARO_ENDPOINT" ] || [ -z "$FARO_APP_ID" ] || [ -z "$FARO_STACK_ID" ] || [ -z "$FARO_API_KEY" ]; then
+            echo "::notice title=Faro source maps skipped::Grafana Faro source-map variables or token are not configured."
+            exit 0
+          fi
+          pnpm exec faro-cli upload \
+            --endpoint "$FARO_ENDPOINT" --app-id "$FARO_APP_ID" \
+            --api-key "$FARO_API_KEY" --stack-id "$FARO_STACK_ID" \
+            --bundle-id "$GITHUB_SHA" --app-name zapp-desktop \
+            --output-path .vite/renderer --recursive --gzip-contents
 
       # Identity is the deliverable of MAC-2, so it is asserted rather than
       # eyeballed: a later upstream merge that resurrects Dyad's bundle id,
@@ -259,19 +275,64 @@ jobs:
           security list-keychains -d user -s login.keychain-db
           security delete-keychain "$RUNNER_TEMP/zapp-signing.keychain-db" || true
 
-  # MAC-3. The preserve suite is a regression net for the §21.1 capabilities the
-  # fork must not lose while MAC-4+ swaps Dyad's local agent internals for zapp
-  # WorkspaceRuntime contracts -- so it has to run on every change to the app,
-  # not on request. Deliberately a separate job from package-macos: this one
-  # needs an unsigned E2E build and nothing else, so it must not wait on (or be
-  # blocked by) signing, notarization or artifact upload.
-  e2e-preserve:
-    name: preserve suite (macOS)
+  desktop-unit:
+    name: desktop unit suite (macOS)
+    if: github.event_name == 'pull_request'
     runs-on: macos-14
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: apps/desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Cache Electron and node-gyp downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/node-gyp
+          key: electron-${{ runner.os }}-${{ hashFiles('apps/desktop/package.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
+
+      - name: Install desktop dependencies
+        run: pnpm run install:packaging
+
+      - name: Run desktop unit suite
+        timeout-minutes: 45
+        run: pnpm --filter @zapp/desktop run test:unit
+
+  # Full Playwright coverage is sharded, but every shard runs the same complete
+  # config with an explicit slice. The preserve specs stay part of this corpus.
+  desktop-e2e:
+    name: desktop Playwright (${{ matrix.shard }})
+    if: github.event_name == 'pull_request'
+    runs-on: macos-14
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [1/4, 2/4, 3/4, 4/4]
+    defaults:
+      run:
+        working-directory: apps/desktop
+    env:
+      PLAYWRIGHT_RETRIES: '0'
 
     steps:
       # persist-credentials: false for the same reason as the packaging job:
@@ -339,16 +400,11 @@ jobs:
           NODE_OPTIONS: '--max-old-space-size=4096'
         run: npm run pre:e2e
 
-      # Docker specs skip here -- hosted macOS runners have no daemon -- and the
-      # suite logs why. That is the designed behaviour, not a hidden gap. To
-      # cover Docker, run this on a runner with Docker and DOCKER_AVAILABLE=1.
-      #
-      # Step-level timeout so a hung suite is killed with a clear signal instead
-      # of silently eating the job budget; if the *job* ever times out, the cold
-      # packaging step above is the thing to give more room, not this.
-      - name: Run preserve suite
-        timeout-minutes: 12
-        run: pnpm --filter @zapp/desktop run test:preserve
+      # Step-level timeout gives a stuck shard a clear failure. Retries are
+      # disabled at job scope, so a failed spec cannot turn green by retrying.
+      - name: Run Playwright shard
+        timeout-minutes: 35
+        run: pnpm --filter @zapp/desktop run e2e:shard ${{ matrix.shard }}
 
       # CI selects Playwright's blob reporter (playwright.config.ts), so the
       # useful failure artifacts are that zip plus test-results/, which holds
@@ -357,7 +413,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v5
         with:
-          name: preserve-playwright-report-${{ github.sha }}
+          name: desktop-playwright-report-${{ matrix.shard }}-${{ github.sha }}
           path: |
             apps/desktop/blob-report/
             apps/desktop/test-results/

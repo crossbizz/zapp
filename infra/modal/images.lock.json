@@ -1,5 +1,8 @@
 {
   "version": 1,
+  "publicMirrors": {
+    "forge-node-base": "ghcr.io/crossbizz/zapp-forge-node-base:ws17-e4372846317b407634038de5a48af8c307b9ceca@sha256:6009a9369bf92d6735c937b86d1f112b6110248442cdb2f3f953fdd721bc6d69"
+  },
   "environments": {
     "dev": {
       "modalEnvironment": "zapp-dev",

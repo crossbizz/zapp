@@ -115,99 +115,135 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 ### Task WEB-7 [M2]: Preview panel
 
 **Files:** Create: `src/components/preview/{PreviewFrame,PreviewToolbar,ConsoleDrawer}.tsx`
+**Depends on:** CP-21 / ADR-0028 public logs, restart, capture SSE, and screenshot SDK operations.
 **Effort:** L
 
-- [ ] Binding behavior: iframe on the same-origin zapp authenticated preview URL (WS-12/ADR-0023; no Modal URL or provider token reaches the client); toolbar matches the benchmark pattern: centered device-size toggles (desktop/tablet/mobile widths), top-right open-in-new-tab + refresh, URL path bar (route-change events update it), share (WS-12 share records UI), env badge "Preview"; states (PRD §26A.1): starting (skeleton + boot log tail), sleeping (wake CTA → workspace start), stale (banner "Preview is behind latest changes — Restart"), disconnected (retry), failed (ErrorState with actions incl. "Fix automatically" → Fix run with boot log attached); console/network drawer fed by proxy capture events (`/__zapp/events` relayed via preview status events): error rows carry "Attach to chat" button.
-- [ ] e2e (fixture proxy): state transitions render; console error attaches to composer as structured attachment.
-- [ ] Commit: `feat(web): live preview panel with states + capture drawer`
+- [x] Binding behavior: iframe on the same-origin zapp authenticated preview URL (WS-12/ADR-0023; no Modal URL or provider token reaches the client); toolbar matches the benchmark pattern: centered device-size toggles (desktop/tablet/mobile widths), top-right open-in-new-tab + refresh, URL path bar (route-change events update it), share (WS-12 share records UI), env badge "Preview"; states (PRD §26A.1): starting (skeleton + boot log tail), sleeping (wake CTA → workspace start), stale (banner "Preview is behind latest changes — Restart"), disconnected (retry), failed (ErrorState with actions incl. "Fix automatically" → Fix run with boot log attached); console/network drawer fed by proxy capture events (`/__zapp/events` relayed via preview status events): error rows carry "Attach to chat" button.
+- [x] e2e (fixture proxy): state transitions render; console error attaches to composer as structured attachment.
+- [x] Commit: `feat(web): live preview panel with states + capture drawer`
+
+#### WEB-7-FIX-1 — bounded preview lifecycle closure
+
+**Files:** Modify: `src/components/preview/{PreviewFrame,ConsoleDrawer}.tsx`, `src/components/builder/{Shell,SurfaceTabs}.tsx`, `src/components/conversation/{Thread,Composer}.tsx`, `src/lib/api.ts`, `e2e/preview-panel.spec.ts`, `packages/ui/src/components/overlays.tsx`, and API-client exports required by those files.
+
+- [x] **RED/evidence:** retain WEB-7 final review's correctness findings and extend the fixture test for in-page org-share renewal, live failed-state boot-log capture, and explicit composer-capacity rejection.
+- [x] **GREEN:** renew authenticated shares before expiry; keep screenshot keys until the response body is consumed; abort/fence stale workspace reads and mutation completions while clearing workspace-scoped keys; refresh the last log cursor on failure; and acknowledge composer acceptance before reporting a capture as attached.
+- [x] **Verify/review/ship:** run focused and full web gates plus API-client gates; run at most two fresh Critical/Important review rounds (exit zero); then close WEB-7 and WEB-7-FIX-1 together with no provider call.
+
+#### WEB-7-FIX-2 — structured Fix evidence after AR-19 lands
+
+**Files:** Modify: `src/components/preview/PreviewFrame.tsx`, `src/components/builder/{Shell,SurfaceTabs}.tsx`, `e2e/preview-panel.spec.ts`
+
+- [x] **RED/evidence:** reproduce the clean-checkout type failure after AR-19 makes `fixRequest` mandatory, then assert the fixture sends the captured artifact, implicated commit, reproduction reference, and retry-stable body.
+- [x] **GREEN:** capture and upload immutable preview evidence through the public SDK, derive the relevant commit from events with the public branch head as fallback, and submit the strict Fix request without repeating successful evidence writes on retry.
+- [x] **Verify/review/ship:** run focused and full web gates plus API-client gates, complete at most two review rounds with zero Critical/Important findings, and confirm GitHub CI green; no provider call is required.
+- [x] Commit: `fix(web): send structured evidence with preview Fix runs`
 
 ### Task WEB-8 [M2]: Element selection + rich attachments
 
 **Files:** Create: `src/components/preview/SelectMode.tsx`, composer attachment chips
 **Effort:** M
 
-- [ ] Binding behavior: "Select element" toolbar toggle → postMessage to zapp-client (WS-10) → hover outlines in iframe → click returns `{ selector, role, text, boundingBox, componentHint, screenshot }` → attachment chip in composer ("Selected: `<Button> 'Save'` on /settings"); attachments serialize into run message payload (AR consumes as structured context, PRD §10.0.1 step 6); screenshot attachments auto-captured for error attachments.
-- [ ] e2e: select → chip → sent message payload contains selector JSON (network assertion).
-- [ ] Commit: `feat(web): visual element attach for change requests`
+- [x] Binding behavior: "Select element" toolbar toggle → postMessage to zapp-client (WS-10) → hover outlines in iframe → click returns `{ selector, role, text, boundingBox, componentHint, screenshot }` → attachment chip in composer ("Selected: `<Button> 'Save'` on /settings"); attachments serialize into run message payload (AR consumes as structured context, PRD §10.0.1 step 6); screenshot attachments auto-captured for error attachments.
+- [x] e2e: select → chip → sent message payload contains selector JSON (network assertion).
+- [x] Commit: `feat(web): visual element attach for change requests`
+
+### Task WEB-COLD-FIX-1 — isolate E2E Next build output
+
+**Files:** Modify: `apps/web/e2e/support/server.ts`, `apps/web/package.json`; Create: `apps/web/e2e/support/next-dev-output.ts`, `apps/web/test/next-dev-output.test.ts`; Modify: `docs/plans/08-web-ux.md`, `tasks/todo.md`
+
+- [x] **RED:** after `next build` leaves production output in `apps/web/.next`, the Playwright support server's `next dev` startup fails against that shared directory with missing build manifests/routes/chunks; retain the exact `pnpm --filter @zapp/web build && pnpm --filter @zapp/web test` failure evidence.
+- [x] **GREEN:** before listening or spawning, remove only the web test app's deterministic absolute `.next` directory through the filesystem API; preserve signal cleanup and production startup behavior.
+- [x] **Verify/review/ship:** the cleanup unit regression preserves siblings while removing the exact output tree; the exact build-to-88-E2E sequence plus web lint/typecheck/build and diff checks pass; run at most two fresh review rounds, exiting at zero Critical/Important findings; no provider call is required.
+- [x] Commit: `fix(web): isolate e2e Next build output`
+
+### Task WEB-COLD-FIX-2 — align the repository test contract with isolated E2E startup
+
+**Files:** Modify: `packages/config/test/turbo.test.ts`, `docs/plans/08-web-ux.md`, `tasks/todo.md`
+
+- [x] **RED:** `pnpm --filter @zapp/config test` rejects the WEB-COLD-FIX-1 test command because the cross-package manifest contract still expects bare `playwright test`.
+- [x] **GREEN:** assert the shipped unit-regression-plus-Playwright command while retaining the no-shared-rebuild `test:e2e` contract.
+- [x] **Verify/review/ship:** the config package suite and full pre-push gate pass; one focused review exits when the manifest contract matches the shipped command with no scope expansion; no provider call is required.
+- [x] Commit: `test(config): align isolated web test contract`
 
 ### Task WEB-9 [M2]: Mission Control drawer
 
 **Files:** Create: `src/components/mission-control/{Overview,TaskGraph,Agents,Activity,FilesCommits,Tests,Approvals,Risks}.tsx`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §14.2/§14.3): tabs: **Overview** (current phase, progress bar, live cost vs budget from `usage.recorded`, preview status), **Tasks** (dependency graph — dagre layout, nodes colored+iconed by state, click → task detail: AC, commits, evidence), **Agents** (active roles + current tool), **Activity** (recent tool calls list, user-language summaries, "raw detail" expander = optional per §14.1), **Files/Commits** (diffstat list → Code tab), **Tests** (runs, failures, screenshots), **Approvals** (open approval cards + history), **Risks** (risks_json from verifier); actions bar: Pause/Resume/Cancel (confirm)/Redirect (opens composer scoped "redirect" input), Retry failed task, Skip optional phase, Open preview, Compare commits (before/after → Code diff); all actions optimistic + reconciled by events; `aria-live` announcements on phase/task state changes.
-- [ ] e2e on fixture event stream: graph renders states; pause→paused pill ≤ 5 s; approval card resolve flows.
-- [ ] Commit: `feat(web): mission control drawer (views + actions)`
+- [x] Binding behavior (PRD §14.2/§14.3): tabs: **Overview** (current phase, progress bar, live cost vs budget from `usage.recorded`, preview status), **Tasks** (dependency graph — dagre layout, nodes colored+iconed by state, click → task detail: AC, commits, evidence), **Agents** (active roles + current tool), **Activity** (recent tool calls list, user-language summaries, "raw detail" expander = optional per §14.1), **Files/Commits** (diffstat list → Code tab), **Tests** (runs, failures, screenshots), **Approvals** (open approval cards + history), **Risks** (risks_json from verifier); actions bar: Pause/Resume/Cancel (confirm)/Redirect (opens composer scoped "redirect" input), Retry failed task, Skip optional phase, Open preview, Compare commits (before/after → Code diff); all actions optimistic + reconciled by events; `aria-live` announcements on phase/task state changes.
+- [x] e2e on fixture event stream: graph renders states; pause→paused pill ≤ 5 s; approval card resolve flows.
+- [x] Commit: `feat(web): mission control drawer (views + actions)`
 
 ### Task WEB-10 [M2]: Interview, spec summary, plan approval cards
 
 **Files:** Create: `src/components/conversation/{QuestionCard,SpecSummaryCard,PlanReviewCard,ApprovalCard}.tsx`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §10.0.1 steps 2–3, §12.3, §13.1): QuestionCard renders grouped compact form (radio/checkbox/short-text per question option payload) + free-text alternative — one submit returns structured answers; SpecSummaryCard: agent's understanding summary + expandable full spec (sectioned; inline edit per section → consequence note from agent before accept), actions: **Start building** (primary) / Keep discussing / Edit details; PlanReviewCard: phases accordion (tasks, AC count, risk chips, cost/effort estimate, approval points), actions Approve plan / Request changes; ApprovalCard (generic, drives AR-14/AR-20/deploy approvals): typed payload rendering (budget increase, plan diff (added/removed/modified lists), destructive migration with SQL preview) + Approve/Reject + reason.
-- [ ] e2e: scripted interview → answers submitted as structured payload; spec approve → `POST .../approve` called; plan diff card renders fixture diff.
-- [ ] Commit: `feat(web): interview + spec/plan approval cards`
+- [x] Binding behavior (PRD §10.0.1 steps 2–3, §12.3, §13.1): QuestionCard renders grouped compact form (radio/checkbox/short-text per question option payload) + free-text alternative — one submit returns structured answers; SpecSummaryCard: agent's understanding summary + expandable full spec (sectioned; inline edit per section → consequence note from agent before accept), actions: **Start building** (primary) / Keep discussing / Edit details; PlanReviewCard: phases accordion (tasks, AC count, risk chips, cost/effort estimate, approval points), actions Approve plan / Request changes; ApprovalCard (generic, drives AR-14/AR-20/deploy approvals): typed payload rendering (budget increase, plan diff (added/removed/modified lists), destructive migration with SQL preview) + Approve/Reject + reason.
+- [x] e2e: scripted interview → answers submitted as structured payload; spec approve → `POST .../approve` called; plan diff card renders fixture diff.
+- [x] Commit: `feat(web): interview + spec/plan approval cards`
 
 ### Task WEB-11 [M2]: Code, Logs, Tests surfaces
 
 **Files:** Create: `src/components/code/{FileTree,CodeView,DiffView}.tsx`, `src/components/logs/LogView.tsx`, `src/components/tests/{TestRuns,EvidenceViewer}.tsx`
 **Effort:** L
 
-- [ ] Binding behavior: **Code**: file tree (lazy via workspace files API), CodeMirror read view; edit mode for Owner/Builder (save = `write_file` through a user-attributed direct-edit endpoint creating its own commit "manual edit via web"); diff view for any commit (before/after, PRD §14.3 compare); **Logs**: dev-server + tool output streams (xterm.js, follow toggle, search) — reads WS-13 log API + tool.output events; **Tests**: `test_runs` list → cases with status/duration, evidence viewer: screenshots (with text description), console/network captures, Playwright trace download link; failed case → "Create Fix run" button (AR-19 entry).
-- [ ] e2e: open file renders content; commit diff renders; failed test fixture shows screenshot + fix CTA.
-- [ ] Commit: `feat(web): code/logs/tests surfaces`
+- [x] Binding behavior: **Code**: file tree (lazy via workspace files API), CodeMirror read view; edit mode for Owner/Builder (save = `write_file` through a user-attributed direct-edit endpoint creating its own commit "manual edit via web"); diff view for any commit (before/after, PRD §14.3 compare); **Logs**: dev-server + tool output streams (xterm.js, follow toggle, search) — reads WS-13 log API + tool.output events; **Tests**: `test_runs` list → cases with status/duration, evidence viewer: screenshots (with text description), console/network captures, Playwright trace download link; failed case → "Create Fix run" button (AR-19 entry).
+- [x] e2e: open file renders content; commit diff renders; failed test fixture shows screenshot + fix CTA.
+- [x] Commit: `feat(web): code/logs/tests surfaces`
 
 ### Task WEB-12 [M3]: Settings — secrets, integrations, members, GitHub
 
 **Files:** Create: `src/app/projects/[id]/settings/*` pages
 **Effort:** L
 
-- [ ] Binding behavior: Secrets: name+env scoped add (value write-only — after save shows metadata only, rotate = re-enter, PRD §22.2 "no read through UI"); Integrations: connect cards for GitHub/Supabase/Neon/Stripe/Vercel (status, connected account, disconnect) driving §32.5 routes; Members: org members with roles (Owner edits), invite flow, `builderCanDeploy` toggle (Owner); GitHub: sync policy picker (direct push / PR), sync state, manual sync now, export button; Danger: archive/delete with typed-name confirm (delete → CP-17 pipeline notice on timeline).
-- [ ] e2e: secret value never appears in any response after creation (network-level assertion); viewer sees no settings mutations.
-- [ ] Commit: `feat(web): project settings suite`
+- [x] Binding behavior: Secrets: name+env scoped add (value write-only — after save shows metadata only, rotate = re-enter, PRD §22.2 "no read through UI"); Integrations: connect cards for GitHub/Supabase/Neon/Stripe/Vercel (status, connected account, disconnect) driving §32.5 routes; Members: org members with roles (Owner edits), invite flow, `builderCanDeploy` toggle (Owner); GitHub: sync policy picker (direct push / PR), sync state, manual sync now, export button; Danger: archive/delete with typed-name confirm (delete → CP-17 pipeline notice on timeline).
+- [x] e2e: secret value never appears in any response after creation (network-level assertion); viewer sees no settings mutations.
+- [x] Commit: `feat(web): project settings suite`
 
 ### Task WEB-13 [M3]: Releases + evidence viewer
 
 **Files:** Create: `src/app/projects/[id]/releases/*`
 **Effort:** M
 
-- [ ] Binding behavior: release list (status, commit, env, support badge, created by/at, active-in-prod marker); detail: evidence manifest rendered as the Appendix D report (sections with pass/fail/waiver chips + artifact links), criteria table (VF-9: every criterion with result — unverified/failed never hidden), rollback target, deploy history; actions: Deploy (if ready+approved role), Fork to repair branch (DEP-12).
-- [ ] e2e: fixture manifest renders all criteria incl. a failed one prominently.
-- [ ] Commit: `feat(web): release history + evidence report viewer`
+- [x] Binding behavior: release list (status, commit, env, support badge, created by/at, active-in-prod marker); detail: evidence manifest rendered as the Appendix D report (sections with pass/fail/waiver chips + artifact links), criteria table (VF-9: every criterion with result — unverified/failed never hidden), rollback target, deploy history; actions: Deploy (if ready+approved role), Fork to repair branch (DEP-12).
+- [x] e2e: fixture manifest renders all criteria incl. a failed one prominently.
+- [x] Commit: `feat(web): release history + evidence report viewer`
 
 ### Task WEB-14 [M3–M4]: Deploy flow UI
 
 **Files:** Create: `src/components/deploy/{ReadinessSheet,ConfirmDialog,StageTimeline,SuccessCard}.tsx`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §26A): Deploy click → ReadinessSheet: three-state header (**Ready to deploy** green / **Warnings found** amber / **Deployment blocked** red) + findings list with per-finding action buttons (Fix and recheck → Fix run; Review; Waive where allowed w/ reason) — copy exactly from DEP-2 payloads; continue → ConfirmDialog: deployment type headline (First deploy / Redeploy / Replace deployment) + DEP-3 confirmation payload verbatim (data/secrets/URL/user impact bullets; Replace requires explicit data-disposition radio before enabling confirm); deploying → StageTimeline (8 DEP-6 stages, live status/elapsed/summary, failure = inline evidence + actions Retry stage-safe / Fix automatically / Ask agent, previous release banner "Production unaffected"); success → SuccessCard per §26A.5 (URL copy, Add custom domain, release id/commit, evidence link, health status, monitoring links, Rollback to rel_… secondary, "future changes stay in preview until you redeploy" note).
-- [ ] e2e: blocked state disables continue; replace w/o disposition disabled; timeline renders failure without success state; success card fields from fixture payload.
-- [ ] Commit: `feat(web): readiness → confirm → staged deploy → success flow`
+- [x] Binding behavior (PRD §26A): Deploy click → ReadinessSheet: three-state header (**Ready to deploy** green / **Warnings found** amber / **Deployment blocked** red) + findings list with per-finding action buttons (Fix and recheck → Fix run; Review; Waive where allowed w/ reason) — copy exactly from DEP-2 payloads; continue → ConfirmDialog: deployment type headline (First deploy / Redeploy / Replace deployment) + DEP-3 confirmation payload verbatim (data/secrets/URL/user impact bullets; Replace requires explicit data-disposition radio before enabling confirm); deploying → StageTimeline (8 DEP-6 stages, live status/elapsed/summary, failure = inline evidence + actions Retry stage-safe / Fix automatically / Ask agent, previous release banner "Production unaffected"); success → SuccessCard per §26A.5 (URL copy, Add custom domain, release id/commit, evidence link, health status, monitoring links, Rollback to rel_… secondary, "future changes stay in preview until you redeploy" note).
+- [x] e2e: blocked state disables continue; replace w/o disposition disabled; timeline renders failure without success state; success card fields from fixture payload.
+- [x] Commit: `feat(web): readiness → confirm → staged deploy → success flow`
 
 ### Task WEB-15 [M4]: Observability + health + rollback UI
 
 **Files:** Create: `src/app/projects/[id]/health/page.tsx` (or surface tab), rollback dialog
 **Effort:** M
 
-- [ ] Binding behavior: production health card (health checks, error rate from Grafana link-through (Faro/Loki panels), web vitals summary from Faro where available, synthetic check history sparkline + last failures with "Create Fix run"); release annotations timeline; Rollback dialog: target release picker (previous healthy default) + DEP-9 `databaseState` rendering — `incompatible` blocks with explanation, `requires_compensation` shows plan requirement (never "rollback complete" implication for DB, PRD §27.5).
-- [ ] Commit: `feat(web): production health + guarded rollback UI`
+- [x] Binding behavior: production health card (health checks, error rate from Grafana link-through (Faro/Loki panels), web vitals summary from Faro where available, synthetic check history sparkline + last failures with "Create Fix run"); release annotations timeline; Rollback dialog: target release picker (previous healthy default) + DEP-9 `databaseState` rendering — `incompatible` blocks with explanation, `requires_compensation` shows plan requirement (never "rollback complete" implication for DB, PRD §27.5).
+- [x] Commit: `feat(web): production health + guarded rollback UI`
 
 ### Task WEB-17 [M2]: Template gallery + detail with live preview & Remix
 
-**Files:** Create: `src/app/templates/{page,[slug]/page}.tsx`, `src/components/templates/*`, `config/templates.json`
+**Files:** Create: `src/app/templates/{page,[slug]/page}.tsx`, `src/components/templates/*`
 **Effort:** M
 
-- [ ] Binding behavior (benchmark screenshots 2–3; PRD §8.1 templates + community templates): template registry `config/templates.json`: `{ slug, name, description, pagesIncluded[], highlights[] (e.g. "Auth pre-built", "AI included"), demoUrl (pre-deployed static demo), repoRef (template repo in internal Git), stack }`; gallery grid from home ("Try these" chips deep-link here too); detail view mirrors the benchmark layout: left info panel (name, description paragraph, "Pages included" chips, Highlights badges), right = live demo preview iframe (`demoUrl`) with the WEB-7 toolbar pattern (device toggles centered, open-in-new-tab + refresh top-right); primary action **"Remix this template"** → creates project from `repoRef` (CP-6 template source) and opens the builder with a seeded first message ("I'm starting from the <name> template"); demo previews are pre-deployed once per template release (no live sandbox needed for browsing).
-- [ ] e2e: gallery renders registry; detail shows chips/highlights + iframe; Remix creates project and lands in builder.
-- [ ] Commit: `feat(web): template gallery + detail with demo preview and remix`
+- [x] Binding behavior (benchmark screenshots 2–3; PRD §8.1 templates + community templates): consume CP-25's public template projection `{ slug, name, description, pagesIncluded[], highlights[] (e.g. "Auth pre-built", "AI included"), demoUrl (pre-deployed static demo), stack }`; GIT-6 keeps the internal `repoRef` server-side and it is never serialized to the browser. Gallery grid from home ("Try these" chips deep-link here too); detail view mirrors the benchmark layout: left info panel (name, description paragraph, "Pages included" chips, Highlights badges), right = live demo preview iframe (`demoUrl`) with the WEB-7 toolbar pattern (device toggles centered, open-in-new-tab + refresh top-right); primary action **"Remix this template"** → creates a project from the public template `slug`, whose approved source CP-25 resolves server-side, and opens the builder with a seeded first message ("I'm starting from the <name> template"); demo previews are pre-deployed once per template release (no live sandbox needed for browsing).
+- [x] e2e: gallery renders registry; detail shows chips/highlights + iframe; Remix creates project and lands in builder.
+- [x] Commit: `feat(web): template gallery + detail with demo preview and remix`
 
 ### Task WEB-16 [M5]: Usage/billing, audit log, a11y pass, activation instrumentation
 
 **Files:** Create: `src/app/org/{usage,billing,audit}/page.tsx`; a11y fixes across app
 **Effort:** L
 
-- [ ] Binding behavior: Usage: credits balance, burn-down by project/run/category (ledger aggregates), budget alerts config; Billing: plan card, seats, payment method (Stripe portal link), top-up credits (OPS-5 checkout); Audit: filterable table (Owner only); a11y: axe clean on home/dashboard/builder/deploy (CI gate), full keyboard e2e for prompt→preview→deploy path; activation analytics (PostHog via OPS-6): `signup, project_created, first_preview_ready, first_change_applied, plan_approved, first_deploy_succeeded` fired from event stream (client-side, org-scoped).
-- [ ] Commit: `feat(web): usage/billing/audit + accessibility gate + activation funnel`
+- [x] Binding behavior: Usage: credits balance, burn-down by project/run/category (ledger aggregates), budget alerts config; Billing: plan card, seats, payment method (Stripe portal link), top-up credits (OPS-5 checkout); Audit: filterable table (Owner only); a11y: axe clean on home/dashboard/builder/deploy (CI gate), full keyboard e2e for prompt→preview→deploy path; activation analytics (PostHog via OPS-6): `signup, project_created, first_preview_ready, first_change_applied, plan_approved, first_deploy_succeeded` fired from event stream (client-side, org-scoped).
+- [x] Commit: `feat(web): usage/billing/audit + accessibility gate + activation funnel`
 
 ---
 
@@ -222,6 +258,13 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-12 WEB-16 done — Closed the final WEB-14-dependent acceptance gap with a single keyboard-only prompt→preview→release→successful-deploy path, preserved the existing usage/billing/Owner-audit and exact activation contracts, and passed focused web E2E 6/6 plus activation 3/3, lint, and typecheck; no provider call was required.
+- 2026-08-12 WEB-15 done — Added the public production health/synthetic/monitoring annotation view, Fix creation, healthy-target selection, and non-mutating database compatibility preview that blocks incompatible and unapproved-compensation rollback; focused E2E passed 1/1 and web lint/typecheck/build passed.
+- 2026-08-12 WEB-14 done — Connected readiness/actions, server-classified confirmation, keyed deployment, live progress polling, safe failure actions, terminal success, custom-domain and rollback links through the generated public SDK; focused E2E passed 4/4 and web lint/typecheck/build passed.
+- 2026-08-12 WEB-16-FIX-1 done — The DEP-12a pre-push cold gate exposed WEB-16's manifest/test contract drift: the new activation test restored a broad glob while the gate still required the enumerated non-rebuilding command. Enumerated activation alongside the existing Node tests so it runs without weakening the cold task-graph assertion.
+
+- 2026-08-11 WEB-COLD-FIX-2 done — Updated the stale cross-package manifest assertion exposed by the uncached OPS-4 pre-push gate; the config suite now covers the shipped cleanup-unit-plus-Playwright command without changing build scheduling, and no provider call was required.
+- 2026-08-11 WEB-COLD-FIX-1 done — Removed only the absolute web `.next` before fixture ports bind, added exact-target/tree/sibling coverage, and passed final 2/2 unit plus build→88/88 E2E, lint, typecheck, and capped review; the previously captured cold manifest/chunk failure was the RED while one fresh pre-fix rerun was non-reproducing, and no provider call was required.
 - 2026-08-05 WEB-1 done — Next.js scaffold uses the generated SDK for CP-2 cookie-session validation, per-user active organization context, and explicit device consent; independent review passed after three rounds, 18/18 E2E passed on Node 26 and 22, and the uncached repository gate passed 34/34 (live Stytch remains credential-gated).
 - 2026-08-05 WEB-2 done — shipped semantic Tailwind v4 tokens and 23 React components with CI-wired Storybook axe (23/23), Next+Vite package-boundary proofs, independent review clean after three rounds, UI 16/16, web 19/19, and the uncached repository gate passed 38/38.
 - 2026-08-05 WEB-3 BLOCKED — independent review found that the locked run API cannot carry the required model or Web/Mobile selection; ADR-0009 proposes structured public/durable fields. The task stays unchecked, and its uncommitted branch also retains five repair findings for resumption.
@@ -239,8 +282,23 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - 2026-08-08 WEB-6 unblocked by ADR-0027 — the missing public conversation contract (typed `message.*` events, required tool `userSummary`, `POST /v1/runs/:runId/messages` continuation, attachment upload) is now defined and assigned: CP-20 (plan 02) and AR-22 (plan 04) precede WEB-6 in the tracker. WEB-6 executes against the regenerated SDK once both land; assistant streaming deltas remain M2.
 - 2026-08-10 WEB-6 done — shipped the public-SDK event-sourced conversation, keyed continuation/new-run retry handling, persisted run controls, live progress, cancellation, and image paste/upload capped at 10; two review rounds closed with 74/74 web tests plus repository lint/typecheck green.
 - 2026-08-10 WEB-4 done — Slices B/C shipped; review round 1 found duplicate import submission, shared discovery abort, and active-close identity loss, all fixed test-first, and round 2 accepted; projects E2E passed 17/17, full web passed 82/82, API client passed 52/52, web/root lint and typecheck plus web build and the cold gate passed (90/90 package tasks, 21/21 integration tasks, tenant isolation 54/54); credential-aware GitHub live checks skipped for missing GitHub App callback/discovery credentials, verification-only ports 3114/4114 were temporarily used while a sibling owned 3100/4100 and fully restored, and the final cold gate loaded the existing `.env` after initial contention/timeouts; no product deviation.
+- 2026-08-10 WEB-7 done — shipped the public-SDK live preview, lifecycle states, bounded cursor logs, expiring share renewal, capture drawer, keyed recovery actions, and structured screenshot-to-composer handoff; final review residuals were re-scoped to WEB-7-FIX-1 and no provider call was required.
+- 2026-08-10 WEB-7-FIX-1 done — fenced workspace transitions and concurrent actions, retained screenshot keys through body consumption, refreshed terminal failure logs, acknowledged composer capacity, and passed two fresh review rounds with no provider call.
+- 2026-08-10 WEB-7-FIX-2 done — reconciled the preview Fix action with AR-19's strict public request, uploaded retry-stable screenshot evidence with the implicated commit and boot log, passed 76/76 browser and 55/55 SDK tests, and required no provider call.
+- 2026-08-11 WEB-8 done — shipped trusted iframe element selection with stale-preview fencing, public screenshot attachments, bounded canonical context, and a 77/77 web E2E acceptance run; no provider call was required.
+- 2026-08-11 WEB-9 BLOCKED — the generated public SDK supports the Mission Control aggregate plus pause/resume/cancel/redirect, but exposes neither eligibility fields nor operations for PRD §14.3 retry-failed-task and skip-optional-phase actions; the only run-approval resolution route is structurally budget-increase-only. API-first and the structural-over-heuristic constraint forbid mapping these actions to natural-language redirects or fixture-private behavior, so WEB-9 remains unchecked pending an approved public builder-control/approval contract expansion.
+- 2026-08-11 WEB-10 BLOCKED — public `message.assistant` events expose only plain content or an artifact reference, not typed interview questions, specification summaries, plan review payloads, or typed approval-card data; no public plan-approval signal route exists, and run-approval resolution is budget-increase-only. API-first and the no-prose-parsing constraint forbid fixture-private card payloads or inferred plan state, so WEB-10 remains unchecked pending an approved structured conversation-card and generic approval contract.
+- 2026-08-11 WEB-11 BLOCKED — the generated public SDK exposes dev-server logs and aggregate Mission Control test/commit summaries, but no browser-safe workspace file list/read/direct-edit commit operations, no commit before/after diff operation, and no test-case or evidence-artifact read/download operations. API-first forbids direct workspace-agent access or fixture-private file/evidence routes, so WEB-11 remains unchecked pending approved public code, diff, and verification-evidence contracts.
+- 2026-08-11 WEB-17 BLOCKED — the public project-create contract accepts `sourceType: "template"` but no template identity or `repoRef`, and CP-6 still provisions an empty internal repository for every create. Shipping the gallery while making Remix create an empty project would be a false success, so WEB-17 remains unchecked pending an approved public template registry/source-clone contract.
+- 2026-08-12 WEB-9 done — Replaced the empty shell with typed aggregate views and SDK-backed run/task/phase/approval actions, reconciled by bounded refresh; focused Playwright and web gates passed.
+- 2026-08-12 WEB-10 done — Rendered typed question/specification/plan/generic approval cards directly from validated events and public SDK reads/mutations; connected Playwright flow and web gates passed.
+- 2026-08-12 WEB-11 done — Replaced placeholder tabs with tenant-scoped file/edit/diff, searchable follow logs, and test/evidence/Fix-run surfaces; focused Playwright and web gates passed.
+- 2026-08-12 WEB-17 done — Added the public template gallery/detail demo, server-resolved slug Remix, and seeded builder handoff; focused Playwright passed 2/2 and web lint/typecheck passed without provider calls.
+- 2026-08-12 WEB-12 done — Added SDK-backed project settings for write-only secrets, all five integrations (including the missing public Vercel connect route), member roles/invites/deploy policy, GitHub sync/export, and archive/delete; focused E2E passed 2/2 with a network-level secret-value assertion and read-only Viewer proof.
+- 2026-08-12 WEB-13 done — Added SDK-backed release history/detail pages with support and active-production markers, deployment/rollback data, actionable lifecycle controls, and a complete evidence/criteria report; focused E2E passed 1/1 including prominent failed and unverified criteria.
 - 2026-08-11 WEB-4 controller correction done — under explicit bounded post-cap authority, added independently paginated/deduped branch discovery with keyboard page-2 selection, preserved durable import identity and public progress across close/reopen without create/enqueue replay, consumed failed callbacks before completion to prevent credential replay, and cleared aborted branch loading synchronously; all four fixes followed RED→GREEN, focused cases passed 5/5, projects E2E passed 17/17 on canonical ports, and web lint/typecheck/build plus API client 52/52 passed; the one-time live GitHub gate was not rerun and no product/API deviation was needed.
 - 2026-08-11 WEB-12 BLOCKED — API-first audit found secrets and the organization `builderCanDeploy` setting available, but no public integration status/disconnect or Vercel operations, organization member-list read model, GitHub sync-policy/state/manual-sync/export operations, or project archive/delete pipeline; those contracts are owned by INT-1..4, DEP-5, and CP-17, so the task remains unchecked and no fixture-only settings state was introduced.
 - 2026-08-11 WEB-13 BLOCKED — API-first audit found release detail/readiness and evidence-manifest reads, but no public project release-list read, active-production marker, deploy-history or rollback-target projection, or DEP-12 repair-fork operation; the task remains unchecked pending Plan 07 release lifecycle contracts, and no fixture-only release state was introduced.
 - 2026-08-11 WEB-14 BLOCKED — API-first audit confirmed the prerequisite DEP-12 lifecycle is not live: the release service has no callable readiness/deploy/evidence/rollback runtime, and the public API exposes neither DEP-3 confirmation effects nor DEP-6 live deployment-stage reads/events. Rendering the flow from UI fixtures would create a browser-private success path, so the task remains unchecked and no mock-only deploy UI was added.
 - 2026-08-11 WEB-15 BLOCKED — API-first audit found no public production-health, synthetic-history, release-annotation, deploy-history, rollback-target, or DEP-9 database-compatibility projection for this screen; its DEP-12/OPS-8 prerequisites are also incomplete. The task remains unchecked and no inferred Grafana/Faro or rollback state was introduced.
+- 2026-08-12 WEB-16 phased — Shipped versioned credit burn-down plus generated SDK, authoritative Stripe-synced seat status, usage/billing/audit screens, budget alerts, exact org-scoped activation events, axe-clean home/dashboard/builder/deploy-readiness entry, and keyboard-activated prompt/create/preview/deploy-entry slices; one capped review's three Important findings were fixed, real PostgreSQL credit/seat lifecycle tests passed, and the final web gate passed 95/95. The connected successful prompt→preview→deploy acceptance remains BLOCKED on WEB-14's missing public deploy lifecycle, so WEB-16 and its tracker remain unchecked; no provider call was required.

@@ -10,6 +10,8 @@ import { newId } from '@zapp/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp, type BuildAppOptions } from '../../src/app.js';
+import type { CheckpointRecord } from '../../src/checkpoint/service.js';
+import { createMemoryCostRecordingStateStore } from '../../src/cost/state.js';
 import {
   SandboxQuotaExceededError,
   type RunawayComputeGovernor,
@@ -196,6 +198,12 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
   waitUntilReadyError: Error | undefined;
   disappearAfterTags = false;
   disappearDuringTags = false;
+  readonly snapshotEvents: string[] = [];
+  readonly networkPolicyUpdates: Array<{
+    readonly outboundCidrAllowlist: readonly string[];
+    readonly outboundDomainAllowlist: readonly string[];
+  }> = [];
+  networkPolicyError: Error | undefined;
 
   constructor(private readonly owner: FakeModalWorkspaceSdk) {}
 
@@ -213,6 +221,16 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
     return this.waitUntilReadyError === undefined
       ? Promise.resolve()
       : Promise.reject(this.waitUntilReadyError);
+  }
+
+  updateNetworkPolicy(input: {
+    readonly outboundCidrAllowlist: readonly string[];
+    readonly outboundDomainAllowlist: readonly string[];
+  }): Promise<void> {
+    this.networkPolicyUpdates.push(input);
+    return this.networkPolicyError === undefined
+      ? Promise.resolve()
+      : Promise.reject(this.networkPolicyError);
   }
 
   agentHealth(token: string): Promise<unknown> {
@@ -240,6 +258,12 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
     this.terminateCalls += 1;
     this.owner.present = false;
     return Promise.resolve();
+  }
+
+  snapshotFilesystem(input: { readonly timeoutMs: number; readonly ttlMs: number }): Promise<string> {
+    expect(input).toEqual({ timeoutMs: 55_000, ttlMs: 30 * 86_400_000 });
+    this.snapshotEvents.push('snapshot');
+    return Promise.resolve('im-checkpoint0123');
   }
 
   agentRequest(request: AgentRequest): Promise<AgentResponse> {
@@ -405,7 +429,16 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
     return jsonResponse([{ path: 'src/index.ts', type: 'file' }]);
   }
   if (key === 'POST /git') {
-    return jsonResponse({ exitCode: 0, stdout: 'clean', stderr: '' });
+    const body = JSON.parse(Buffer.from(request.body ?? []).toString('utf8')) as {
+      operation: string;
+    };
+    return jsonResponse({
+      exitCode: 0,
+      stdout: body.operation === 'add_commit'
+        ? '[main abcdef012345] manual edit via web\n'
+        : 'clean',
+      stderr: '',
+    });
   }
   if (key === 'GET /healthz') {
     return jsonResponse({ ok: true, details: 'workspace-agent ready', devServer: null });
@@ -492,6 +525,9 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
   present = false;
   createError: Error | undefined;
   private createBarrier: Promise<void> = Promise.resolve();
+  readonly volumeMeasurements: Array<
+    Parameters<ModalWorkspaceSdkPort['measureProjectVolumeBytes']>[0]
+  > = [];
 
   holdCreation(): () => void {
     let release = (): void => undefined;
@@ -519,12 +555,19 @@ class FakeModalWorkspaceSdk implements ModalWorkspaceSdkPort {
     );
   }
 
+  measureProjectVolumeBytes(
+    input: Parameters<ModalWorkspaceSdkPort['measureProjectVolumeBytes']>[0],
+  ): Promise<string> {
+    this.volumeMeasurements.push(input);
+    return Promise.resolve('17');
+  }
+
   close(): void {
     this.closeCalls += 1;
   }
 }
 
-function requestedRow(id = IDS.workspaceId): WorkspaceLifecycleRow {
+function requestedRow(id: string = IDS.workspaceId): WorkspaceLifecycleRow {
   return {
     id,
     organizationId: IDS.organizationId,
@@ -651,8 +694,7 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary, PreviewMonitorCoordin
         const attachment = this.attachments.get(row.id);
         return row.status === 'ready' &&
           row.providerWorkspaceId !== null &&
-          attachment !== undefined &&
-          this.previewMonitorsEnabled.has(row.id)
+          attachment !== undefined
           ? [{ row, attachment }]
           : [];
       }),
@@ -742,6 +784,34 @@ describe('attach reattach recovery and ownership', () => {
 
   afterEach(async () => {
     await Promise.all(apps.splice(0).map(async (app) => app.close()));
+  });
+
+  it('measures the project volume through the provider-owned temporary sandbox seam', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    });
+
+    await expect(
+      provider.measureProjectVolumeBytes({
+        organizationId: IDS.organizationId,
+        projectId: IDS.projectId,
+      }),
+    ).resolves.toBe('17');
+    expect(sdk.volumeMeasurements).toEqual([
+      {
+        organizationId: IDS.organizationId,
+        projectId: IDS.projectId,
+        environment: 'zapp-dev',
+        appName: 'zapp-workspaces',
+        digest: IMAGE_LOCK.environments.dev.images['forge-node-base'].digest,
+        volumeName: `vol-proj_${IDS.projectId}`,
+      },
+    ]);
+    expect(sdk.closeCalls).toBe(1);
   });
 
   it('reattaches from persisted provider identity after a fresh provider instance and preserves exec/file access', async () => {
@@ -1213,6 +1283,44 @@ describe('attach reattach recovery and ownership', () => {
     });
     expect(file.statusCode).toBe(200);
     expect(file.rawPayload).toEqual(Buffer.from('file bytes'));
+
+    const editorRead = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${IDS.workspaceId}/editor/file?path=src%2Findex.ts`,
+      headers,
+    });
+    expect(editorRead.statusCode, editorRead.body).toBe(200);
+    const editorSnapshot = editorRead.json<{ compareToken: string; dataBase64: string }>();
+    expect(editorSnapshot.dataBase64).toBe(Buffer.from('file bytes').toString('base64'));
+    const editorList = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${IDS.workspaceId}/editor/files?path=src&maxDepth=1`,
+      headers,
+    });
+    expect(editorList.statusCode, editorList.body).toBe(200);
+    expect(editorList.json()).toEqual({
+      entries: [{ path: 'src/index.ts', type: 'file' }],
+      truncated: false,
+    });
+    const editorWrite = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/editor/edits`,
+      headers,
+      payload: {
+        path: 'src/index.ts',
+        dataBase64: Buffer.from('next').toString('base64'),
+        expectedCompareToken: editorSnapshot.compareToken,
+        actorUserId: newId('user'),
+      },
+    });
+    expect(editorWrite.statusCode, editorWrite.body).toBe(200);
+    expect(editorWrite.json()).toMatchObject({ path: 'src/index.ts', commitRef: 'abcdef012345' });
+    const unsafeEditorRead = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${IDS.workspaceId}/editor/file?path=..%2Fsecret`,
+      headers,
+    });
+    expect(unsafeEditorRead.statusCode, unsafeEditorRead.body).toBe(400);
   });
 
   it('reconciles unknown, terminated, unready, disappeared, and mismatched provider state without replacement', async () => {
@@ -1450,6 +1558,623 @@ describe('create status terminate and idempotency', () => {
 
   afterEach(async () => {
     await Promise.all(apps.splice(0).map(async (app) => app.close()));
+  });
+
+  it('serves persisted snapshot plus probed volume bytes through the internal project boundary', async () => {
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => new FakeModalWorkspaceSdk(),
+    });
+    const app = buildTestApp({
+      provider,
+      rows: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      storageMeasurements: {
+        measureProjectBytes(input) {
+          expect(input).toEqual({
+            organizationId: IDS.organizationId,
+            projectId: IDS.projectId,
+          });
+          return Promise.resolve({ snapshotBytes: '13', volumeBytes: '17' });
+        },
+      },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/internal/projects/${IDS.projectId}/storage-measurement`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ snapshotBytes: '13', volumeBytes: '17' });
+  });
+
+  it('deletes and probes project snapshots only for a tenant-scoped control-api caller', async () => {
+    const remove = vi.fn(() => Promise.resolve());
+    const absent = vi.fn(() => Promise.resolve(true));
+    const app = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => new FakeModalWorkspaceSdk(),
+      }),
+      rows: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      snapshotDeletion: { remove, absent },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+    const headers = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+    };
+
+    const deletion = await app.inject({
+      method: 'POST',
+      url: `/internal/projects/${IDS.projectId}/snapshots/delete`,
+      headers: { ...headers, 'idempotency-key': OPERATION_KEY },
+    });
+    const probe = await app.inject({
+      method: 'GET',
+      url: `/internal/projects/${IDS.projectId}/snapshots/absent`,
+      headers,
+    });
+    const mismatched = await app.inject({
+      method: 'POST',
+      url: `/internal/projects/${IDS.projectId}/snapshots/delete`,
+      headers: {
+        ...headers,
+        'x-zapp-project-id': OTHER_PROJECT_ID,
+        'idempotency-key': OPERATION_KEY,
+      },
+    });
+
+    expect(deletion.statusCode).toBe(200);
+    expect(deletion.json()).toEqual({ absent: true });
+    expect(probe.statusCode).toBe(200);
+    expect(probe.json()).toEqual({ absent: true });
+    expect(mismatched.statusCode).toBe(400);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(absent).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledWith({
+      organizationId: IDS.organizationId,
+      projectId: IDS.projectId,
+    });
+  });
+
+  it('hides snapshot deletion from non-control-api service callers', async () => {
+    const remove = vi.fn(() => Promise.resolve());
+    const absent = vi.fn(() => Promise.resolve(true));
+    const app = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => new FakeModalWorkspaceSdk(),
+      }),
+      rows: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens: {
+        verifyServiceToken: () =>
+          Promise.resolve({
+            ok: true as const,
+            claims: { service: 'orchestrator-worker', audience: 'sandbox-service' },
+          }),
+      },
+      snapshotDeletion: { remove, absent },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/internal/projects/${IDS.projectId}/snapshots/delete`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(remove).not.toHaveBeenCalled();
+    expect(absent).not.toHaveBeenCalled();
+  });
+
+  it('hides the billing storage measurement route from non-control-api callers', async () => {
+    const measureProjectBytes = vi.fn(() =>
+      Promise.resolve({ snapshotBytes: '13', volumeBytes: '17' }),
+    );
+    const app = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => new FakeModalWorkspaceSdk(),
+      }),
+      rows: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens: {
+        verifyServiceToken: () =>
+          Promise.resolve({
+            ok: true as const,
+            claims: { service: 'orchestrator-worker', audience: 'sandbox-service' },
+          }),
+      },
+      storageMeasurements: { measureProjectBytes },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/internal/projects/${IDS.projectId}/storage-measurement`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+      },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(measureProjectBytes).not.toHaveBeenCalled();
+  });
+
+  it('measures logical bytes before the real Modal snapshot and persists the structured result', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    sdk.sandbox.agentResponder = (request) => {
+      if (request.method === 'POST' && request.path === '/exec') {
+        sdk.sandbox.snapshotEvents.push('measure');
+        return jsonResponse({
+          exitCode: 0,
+          stdout: '4096\t/workspace\n',
+          stderr: '',
+          durationMs: 1,
+          truncated: false,
+        });
+      }
+      return strictAgentResponse(request);
+    };
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+    });
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+      status: 'ready',
+    });
+    const record = vi.fn((measurement: unknown) => {
+      sdk.sandbox.snapshotEvents.push('persist');
+      return Promise.resolve(measurement);
+    });
+    let savedCheckpoint: CheckpointRecord | undefined;
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      snapshotMeasurements: { record, sumActiveBytes: () => Promise.resolve('0') },
+      checkpointing: {
+        git: {
+          commitAndPush: () => {
+            sdk.sandbox.snapshotEvents.push('commit-push');
+            return Promise.resolve();
+          },
+          captureUncommitted: () => {
+            sdk.sandbox.snapshotEvents.push('capture');
+            return Promise.resolve({
+              patch: new TextEncoder().encode('patch'),
+              untrackedTar: new TextEncoder().encode('untracked'),
+            });
+          },
+          clone: () => Promise.resolve(),
+          applyUncommitted: () => Promise.resolve(),
+        },
+        codec: {
+          compressZstd: () => {
+            sdk.sandbox.snapshotEvents.push('compress');
+            return Promise.resolve(new Uint8Array([1, 2, 3]));
+          },
+          decompressZstd: () =>
+            Promise.resolve({ patch: new Uint8Array(), untrackedTar: new Uint8Array() }),
+        },
+        crypto: {
+          encrypt: () => {
+            sdk.sandbox.snapshotEvents.push('encrypt');
+            return Promise.resolve({ ciphertext: new Uint8Array([4, 5, 6]), keyVersion: 1 });
+          },
+          decrypt: () => Promise.resolve(new Uint8Array([1, 2, 3])),
+        },
+        artifacts: {
+          putIfAbsent: (input) => {
+            sdk.sandbox.snapshotEvents.push('artifact-put');
+            return Promise.resolve({ key: input.key, sha256: 'a'.repeat(64), keyVersion: 1 });
+          },
+          get: () => Promise.resolve(undefined),
+        },
+        records: {
+          findByOperationKey: () => Promise.resolve(savedCheckpoint),
+          claimCheckpoint: () =>
+            Promise.resolve(
+              savedCheckpoint === undefined
+                ? { status: 'claimed' as const }
+                : { status: 'completed' as const, record: savedCheckpoint },
+            ),
+          save: (checkpoint) => {
+            sdk.sandbox.snapshotEvents.push('record-save');
+            savedCheckpoint = checkpoint;
+            return Promise.resolve(checkpoint);
+          },
+          resolve: () => Promise.resolve(savedCheckpoint),
+          claimRestore: () => Promise.resolve({ status: 'conflict' as const }),
+          completeRestore: () => Promise.resolve(),
+        },
+        restoreSnapshot: () => Promise.resolve(false),
+      },
+      now: () => NOW,
+    } as Parameters<typeof buildTestApp>[0]);
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/checkpoint`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: { kind: 'active', operationKey: OPERATION_KEY },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const responseBody = response.json<{ snapshotRef: string }>();
+    expect(responseBody.snapshotRef).toMatch(/^ckpt_[a-f0-9]{64}$/u);
+    expect(sdk.sandbox.snapshotEvents).toEqual([
+      'commit-push',
+      'capture',
+      'compress',
+      'encrypt',
+      'artifact-put',
+      'measure',
+      'snapshot',
+      'persist',
+      'record-save',
+    ]);
+    expect(record).toHaveBeenCalledWith({
+      providerSnapshotId: 'im-checkpoint0123',
+      organizationId: IDS.organizationId,
+      projectId: IDS.projectId,
+      logicalBytes: '4096',
+      kind: 'active',
+      createdAt: '2026-08-08T12:00:00.000Z',
+      expiresAt: '2026-09-07T12:00:00.000Z',
+    });
+  });
+
+  it('keeps the encrypted patch checkpoint route available when snapshots are unsupported', async () => {
+    // Break caught: buildApp omitted the entire WS-7 checkpoint route whenever
+    // a provider lacked optional snapshot support.
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => new FakeModalWorkspaceSdk(),
+      now: () => NOW,
+    });
+    Object.defineProperty(provider, 'snapshotWorkspace', { value: undefined });
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      providerWorkspaceId: 'sb-patch-only',
+      status: 'ready',
+    });
+    let savedCheckpoint: CheckpointRecord | undefined;
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      checkpointing: {
+        git: {
+          commitAndPush: () => Promise.resolve(),
+          captureUncommitted: () =>
+            Promise.resolve({
+              patch: new TextEncoder().encode('patch'),
+              untrackedTar: new TextEncoder().encode('untracked'),
+            }),
+          clone: () => Promise.resolve(),
+          applyUncommitted: () => Promise.resolve(),
+        },
+        codec: {
+          compressZstd: () => Promise.resolve(new Uint8Array([1, 2, 3])),
+          decompressZstd: () =>
+            Promise.resolve({ patch: new Uint8Array(), untrackedTar: new Uint8Array() }),
+        },
+        crypto: {
+          encrypt: () =>
+            Promise.resolve({ ciphertext: new Uint8Array([4, 5, 6]), keyVersion: 1 }),
+          decrypt: () => Promise.resolve(new Uint8Array([1, 2, 3])),
+        },
+        artifacts: {
+          putIfAbsent: (input) =>
+            Promise.resolve({ key: input.key, sha256: 'a'.repeat(64), keyVersion: 1 }),
+          get: () => Promise.resolve(undefined),
+        },
+        records: {
+          findByOperationKey: () => Promise.resolve(savedCheckpoint),
+          claimCheckpoint: () => Promise.resolve({ status: 'claimed' as const }),
+          save: (checkpoint) => {
+            savedCheckpoint = checkpoint;
+            return Promise.resolve(checkpoint);
+          },
+          resolve: () => Promise.resolve(savedCheckpoint),
+          claimRestore: () => Promise.resolve({ status: 'conflict' as const }),
+          completeRestore: () => Promise.resolve(),
+        },
+        restoreSnapshot: () => Promise.resolve(false),
+      },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/internal/workspaces/${IDS.workspaceId}/checkpoint`,
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: { kind: 'active', operationKey: OPERATION_KEY },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(savedCheckpoint?.snapshot).toBeNull();
+    expect(response.json<{ snapshotRef: string }>().snapshotRef).toBe(
+      savedCheckpoint?.checkpointId,
+    );
+  });
+
+  it('preserves CPU and memory usage across restart, create replay, attach, and termination', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    const meteringState = createMemoryCostRecordingStateStore();
+    const ledgerRows: Array<{ category: string; quantity: string }> = [];
+    let clock = NOW.getTime();
+    const usageMetering = {
+      state: meteringState,
+      pricing: {
+        cpuSecondUsd: 0.00001,
+        memoryGibSecondUsd: 0.00001,
+        creditsPerUsd: 100,
+      },
+      controlPlane: {
+        baseUrl: 'https://control.zapp.test',
+        serviceTokens: { secret: 'u'.repeat(32) },
+        fetch(_input: string | URL | globalThis.Request, init?: RequestInit) {
+          if (typeof init?.body !== 'string') throw new Error('usage request body was not JSON');
+          ledgerRows.push(JSON.parse(init.body) as { category: string; quantity: string });
+          return Promise.resolve(
+            new Response(JSON.stringify({ ledgerRowId: 'usage_recorded', event: {} }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        },
+      },
+      nowMs: () => clock,
+      scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
+    } as const;
+    const firstApp = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      usageMetering,
+      now: () => new Date(clock),
+    });
+    await firstApp.ready();
+    const headers = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+      'idempotency-key': OPERATION_KEY,
+    };
+    const payload = {
+      workspace: requestedRow(),
+      branchName: 'main',
+      runId: IDS.runId,
+      taskId: IDS.taskId,
+      purpose: 'builder' as const,
+      env: {},
+      networkProfile: 'dependency_install' as const,
+      operationKey: OPERATION_KEY,
+    };
+
+    expect(
+      (await firstApp.inject({ method: 'POST', url: '/internal/workspaces', headers, payload }))
+        .statusCode,
+    ).toBe(201);
+    clock += 1_000;
+    await firstApp.close();
+
+    clock += 1_000;
+    const restartedApp = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      usageMetering,
+      now: () => new Date(clock),
+    });
+    apps.push(restartedApp);
+    await restartedApp.ready();
+    expect(
+      (await restartedApp.inject({ method: 'POST', url: '/internal/workspaces', headers, payload }))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await restartedApp.inject({
+          method: 'POST',
+          url: `/internal/workspaces/${IDS.workspaceId}/attach`,
+          headers,
+          payload: { operationKey: OPERATION_KEY },
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    clock += 1_000;
+    expect(
+      (
+        await restartedApp.inject({
+          method: 'POST',
+          url: `/internal/workspaces/${IDS.workspaceId}/terminate`,
+          headers,
+          payload: { operationKey: OPERATION_KEY },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(ledgerRows.map(({ category }) => category).sort()).toEqual([
+      'sandbox_cpu_seconds',
+      'sandbox_mem_gib_seconds',
+    ]);
+    expect(ledgerRows.map(({ category, quantity }) => ({ category, quantity }))).toEqual([
+      { category: 'sandbox_cpu_seconds', quantity: '1.5' },
+      { category: 'sandbox_mem_gib_seconds', quantity: '3' },
+    ]);
+  });
+
+  it('recovers 1000 legacy metering rows in the background and closes while metrics never settle', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+    });
+    let releaseMetrics: (() => void) | undefined;
+    const metricsGate = new Promise<void>((resolve) => {
+      releaseMetrics = resolve;
+    });
+    let activeMetrics = 0;
+    let maxActiveMetrics = 0;
+    let metricCalls = 0;
+    Object.assign(provider, {
+      async metrics() {
+        metricCalls += 1;
+        activeMetrics += 1;
+        maxActiveMetrics = Math.max(maxActiveMetrics, activeMetrics);
+        await metricsGate;
+        activeMetrics -= 1;
+        throw new Error('metrics unavailable');
+      },
+    });
+    const rows = new MemoryWorkspaceRows();
+    for (let index = 0; index < 1_000; index += 1) {
+      rows.seed({
+        ...requestedRow(newId('ws')),
+        providerWorkspaceId: `${sdk.sandbox.providerWorkspaceId}-${String(index)}`,
+        status: 'ready',
+      });
+    }
+    const app = buildTestApp({
+      provider,
+      rows,
+      previewMonitors: new MemoryWorkspaceRows(),
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      usageMetering: {
+        state: createMemoryCostRecordingStateStore(),
+        pricing: {
+          cpuSecondUsd: 0.00001,
+          memoryGibSecondUsd: 0.00001,
+          creditsPerUsd: 100,
+        },
+        ledger: { appendIfAbsent: () => Promise.resolve() },
+        nowMs: () => NOW.getTime(),
+        scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
+      },
+      now: () => NOW,
+    });
+    apps.push(app);
+
+    const readyPromise = app.ready();
+    const readiness = await Promise.race([
+      readyPromise.then(() => 'ready' as const),
+      new Promise<'blocked'>((resolve) =>
+        setTimeout(() => {
+          resolve('blocked');
+        }, 100),
+      ),
+    ]);
+    let closeResult: 'closed' | 'blocked' | 'not-run' = 'not-run';
+    if (readiness === 'ready') {
+      for (let attempt = 0; attempt < 100 && metricCalls === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      apps.splice(apps.indexOf(app), 1);
+      const closePromise = app.close();
+      closeResult = await Promise.race([
+        closePromise.then(() => 'closed' as const),
+        new Promise<'blocked'>((resolve) =>
+          setTimeout(() => {
+            resolve('blocked');
+          }, 100),
+        ),
+      ]);
+      if (closeResult === 'blocked') {
+        releaseMetrics?.();
+        await closePromise;
+      }
+    } else {
+      releaseMetrics?.();
+      await readyPromise;
+    }
+
+    expect(readiness).toBe('ready');
+    expect(metricCalls).toBeGreaterThan(0);
+    expect(maxActiveMetrics).toBeGreaterThan(1);
+    expect(maxActiveMetrics).toBeLessThanOrEqual(8);
+    expect(closeResult).toBe('closed');
   });
 
   it('enforces the runaway compute governor across create, replay, terminate, and app lifetime', async () => {
@@ -1794,6 +2519,8 @@ describe('create status terminate and idempotency', () => {
         },
         encryptedPorts: [8877, 8080],
         readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist: ['github.com', 'registry.npmjs.org'],
         timeoutMs: 14_400_000,
       },
     );
@@ -1805,6 +2532,38 @@ describe('create status terminate and idempotency', () => {
     await provider.terminateWorkspace(handle.providerWorkspaceId);
     expect(sdk.sandbox.terminateCalls).toBe(1);
     expect(await provider.getStatus(handle.providerWorkspaceId)).toBe('terminated');
+  });
+
+  it('creates empty-domain profiles in Modal allowlist mode so the exact policy can replace them', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: 'agent-test-token',
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      clockMs: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+
+    await provider.createWorkspace(
+      { ...createInput(), networkProfile: 'build_test' },
+      async (providerWorkspaceId) => {
+        await provider.updateNetworkPolicy({
+          providerWorkspaceId,
+          profile: 'build_test',
+          allowedDomains: [],
+        });
+      },
+    );
+
+    expect(sdk.creates[0]).toMatchObject({
+      outboundCidrAllowlist: [],
+      outboundDomainAllowlist: ['zapp.invalid'],
+    });
+    expect(sdk.sandbox.networkPolicyUpdates).toEqual([
+      { outboundCidrAllowlist: [], outboundDomainAllowlist: [] },
+    ]);
   });
 
   it('accepts the locked c58 image health payload without managed-dev-server evidence', async () => {
@@ -1996,7 +2755,7 @@ describe('create status terminate and idempotency', () => {
     expect(rows.transitions).toHaveLength(0);
   });
 
-  it('records the complete network policy before provider allocation and fails closed when recording fails', async () => {
+  it('records and provider-enforces the complete network policy before readiness and fails closed when recording fails', async () => {
     const sdk = new FakeModalWorkspaceSdk();
     const provider = createModalSandboxProvider({
       environment: 'dev',
@@ -2052,9 +2811,19 @@ describe('create status terminate and idempotency', () => {
         outboundDomains: ['api.stripe.com', 'github.com', 'registry.npmjs.org'],
         blockAll: false,
       },
-      providerEnforced: false,
+      providerEnforced: true,
       recordedAt: NOW,
     });
+    expect(sdk.creates[0]).toMatchObject({
+      outboundCidrAllowlist: [],
+      outboundDomainAllowlist: ['github.com', 'registry.npmjs.org'],
+    });
+    expect(sdk.sandbox.networkPolicyUpdates).toEqual([
+      {
+        outboundCidrAllowlist: [],
+        outboundDomainAllowlist: ['api.stripe.com', 'github.com', 'registry.npmjs.org'],
+      },
+    ]);
     const blockedSdk = new FakeModalWorkspaceSdk();
     const blockedRows = new MemoryWorkspaceRows();
     const blocked = buildTestApp({
@@ -2074,8 +2843,35 @@ describe('create status terminate and idempotency', () => {
     await blocked.ready();
     const blockedResponse = await blocked.inject(request);
     expect(blockedResponse.statusCode).toBe(500);
-    expect(blockedSdk.creates).toHaveLength(0);
-    expect(blockedRows.transitions).toHaveLength(0);
+    expect(blockedSdk.creates).toHaveLength(1);
+    expect(blockedSdk.sandbox.networkPolicyUpdates).toHaveLength(1);
+    expect(blockedSdk.sandbox.terminateCalls).toBe(1);
+    expect(blockedRows.transitions.at(-1)).toMatchObject({ status: 'terminated' });
+
+    const enforcementSdk = new FakeModalWorkspaceSdk();
+    enforcementSdk.sandbox.networkPolicyError = new Error('provider policy unavailable');
+    const enforcementRows = new MemoryWorkspaceRows();
+    const enforcementRecord = vi.fn(() => Promise.resolve());
+    const enforcement = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => enforcementSdk,
+      }),
+      rows: enforcementRows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      networkPolicies: { record: enforcementRecord },
+      now: () => NOW,
+    });
+    apps.push(enforcement);
+    await enforcement.ready();
+    const enforcementResponse = await enforcement.inject(request);
+    expect(enforcementResponse.statusCode).toBe(500);
+    expect(enforcementRecord).not.toHaveBeenCalled();
+    expect(enforcementSdk.sandbox.terminateCalls).toBe(1);
+    expect(enforcementRows.transitions.at(-1)).toMatchObject({ status: 'terminated' });
   });
 
   it.each([

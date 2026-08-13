@@ -1,18 +1,28 @@
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
-import { newId } from '@zapp/contracts';
+import { ConversationCardSchema, newId, type ConversationCard } from '@zapp/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EventActivities, PendingAgentEvent } from '../../src/activities/events.js';
+import type { ApprovalActivities } from '../../src/activities/approvals.js';
+import type { FeatureFlagActivities } from '../../src/activities/feature-flags.js';
 import { createTemporalOrchestrator, TASK_QUEUES } from '../../src/worker.js';
 import {
   autonomousCancelSignal,
+  autonomousCreditBalanceExhaustedSignal,
+  conversationCardResponseSignal,
   autonomousPlanApprovalSignal,
+  autonomousResumeSignal,
   autonomousSpecificationApprovalSignal,
   autonomousWorkflow,
   type AutonomousActivities,
   type AutonomousWorkflowInput,
 } from '../../src/workflows/autonomous.js';
+import { budgetApprovalResolvedSignal } from '../../src/workflows/budget-approval.js';
+import {
+  retryFailedTaskSignal,
+  skipOptionalPhaseSignal,
+} from '../../src/workflows/builder-control.js';
 
 const PLAN = {
   phases: [
@@ -22,6 +32,7 @@ const PLAN = {
       title: 'Foundation',
       acceptanceCriteria: ['AC-1'],
       approvalAfter: false,
+      optional: false,
     },
     {
       id: 'phase_01J00000000000000000000002',
@@ -29,6 +40,7 @@ const PLAN = {
       title: 'Acceptance',
       acceptanceCriteria: ['AC-1'],
       approvalAfter: false,
+      optional: false,
     },
   ],
   tasks: [
@@ -75,6 +87,10 @@ const PLAN = {
   budget: { credits: 25, wallClockHours: 1 },
 };
 
+const allowAllFeatureFlags: FeatureFlagActivities = {
+  evaluateFeatureFlag: () => Promise.resolve({ enabled: true }),
+};
+
 describe('AR-17 autonomous workflow', () => {
   let environment: TestWorkflowEnvironment | undefined;
   const workers: Worker[] = [];
@@ -91,6 +107,278 @@ describe('AR-17 autonomous workflow', () => {
     workerRuns.length = 0;
     environment = undefined;
   });
+
+  it('waits for matching keyed question cards and typed specification approval', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar24-cards-${Date.now().toString(36)}`;
+    const runId = newId('run');
+    const specificationVersionId = newId('spec');
+    const approvalId = newId('appr');
+    const queuedCards: ConversationCard[] = [];
+    let wakeCards: (() => void) | undefined;
+    const nextCard = async (): Promise<ConversationCard> => {
+      while (queuedCards.length === 0) {
+        await new Promise<void>((resolve) => { wakeCards = resolve; });
+      }
+      const card = queuedCards.shift();
+      if (card === undefined) throw new Error('card queue disappeared');
+      return card;
+    };
+    const conductStates: unknown[] = [];
+    const activities = {
+      emitEvents(input: { events: PendingAgentEvent[] }) {
+        for (const emitted of input.events) {
+          if (emitted.type !== 'conversation.card') continue;
+          queuedCards.push(ConversationCardSchema.parse(emitted.payload['card']));
+          wakeCards?.();
+          wakeCards = undefined;
+        }
+        return Promise.resolve();
+      },
+      transitionRunStatus: () => Promise.resolve(),
+      storeAssistantContent: () => Promise.reject(new Error('cards are structured events')),
+      conductInterview(input: { interviewState: unknown }) {
+        conductStates.push(input.interviewState);
+        return Promise.resolve({ interviewArtifactId: newId('art'), status: 'executable' as const });
+      },
+      createSpecificationDraft: () => Promise.resolve({
+        specificationVersionId, version: 1, contentEtag: `sha256:${'a'.repeat(64)}`,
+      }),
+      requestRunApproval: () => Promise.resolve({ approvalId }),
+      approveSpecification: () => Promise.reject(new Error('rejected specification must not be approved')),
+    };
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
+      activities: { ...activities, ...allowAllFeatureFlags },
+    });
+    workers.push(worker);
+    workerRuns.push(worker.run());
+    const handle = await environment.client.workflow.start(autonomousWorkflow, {
+      taskQueue, workflowId: runId,
+      args: [{
+        workflowId: runId, runId, organizationId: newId('org'), projectId: newId('proj'),
+        prompt: 'Build an app interactively.', model: null, budget: { maxCredits: 100 },
+        planMaxCredits: 1000, maxConcurrency: 1, conversationCardsVersion: 1,
+      } satisfies AutonomousWorkflowInput],
+    });
+
+    let questionTurn = 0;
+    for (;;) {
+      const card = await nextCard();
+      if (card.kind !== 'question') {
+        expect(card).toMatchObject({
+          kind: 'specification', approvalId, artifactId: specificationVersionId,
+        });
+        await handle.signal(autonomousSpecificationApprovalSignal, {
+          runId, approvalId, approvalKind: 'specification',
+          artifactId: specificationVersionId, decision: 'rejected',
+          operationKey: `op_${'b'.repeat(64)}`,
+        });
+        break;
+      }
+      questionTurn += 1;
+      await handle.signal(conversationCardResponseSignal, {
+        runId,
+        operationKey: `op_${questionTurn.toString(16).padStart(64, '0')}`,
+        cardId: card.cardId,
+        response: {
+          version: 1, kind: 'question_answers', cardId: card.cardId,
+          answers: card.questions.map(({ questionId }) => ({ questionId, answer: 'decide for me' })),
+        },
+      });
+    }
+
+    await expect(handle.result()).resolves.toEqual({ status: 'rejected', gate: 'specification' });
+    expect(questionTurn).toBeGreaterThan(1);
+    expect(conductStates).toHaveLength(1);
+  });
+
+  async function runPreparationCreditInterleaving(
+    stage: 'interview' | 'specification' | 'plan',
+  ): Promise<boolean> {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar17-preparation-credit-${stage}-${Date.now().toString(36)}`;
+    const runId = newId('run');
+    const specificationVersionId = `specification-version-credit-${stage}`;
+    const planArtifactId = newId('art');
+    const paidCalls: string[] = [];
+    let resolveBoundaryStarted: (() => void) | undefined;
+    const boundaryStarted = new Promise<void>((resolve) => {
+      resolveBoundaryStarted = resolve;
+    });
+    let releaseBoundary: (() => void) | undefined;
+    const boundaryReleased = new Promise<void>((resolve) => {
+      releaseBoundary = resolve;
+    });
+    let resolveCreditApprovalRequested: (() => void) | undefined;
+    const creditApprovalRequested = new Promise<void>((resolve) => {
+      resolveCreditApprovalRequested = resolve;
+    });
+    let resolveSpecificationRequested: (() => void) | undefined;
+    const specificationRequested = new Promise<void>((resolve) => {
+      resolveSpecificationRequested = resolve;
+    });
+    let resolvePlanRequested: (() => void) | undefined;
+    const planRequested = new Promise<void>((resolve) => {
+      resolvePlanRequested = resolve;
+    });
+
+    const autonomousActivities = {
+      conductInterview() {
+        paidCalls.push('interview');
+        return Promise.resolve({ interviewArtifactId: newId('art'), status: 'executable' as const });
+      },
+      createSpecificationDraft() {
+        paidCalls.push('specification');
+        return Promise.resolve({
+          specificationVersionId,
+          version: 1,
+          contentEtag: `sha256:${'a'.repeat(64)}`,
+        });
+      },
+      approveSpecification() {
+        return Promise.resolve({ specificationVersionId, version: 1, status: 'approved' as const });
+      },
+      producePlan() {
+        paidCalls.push('plan');
+        return Promise.resolve({ planArtifactId, plan: PLAN });
+      },
+      approvePlan() {
+        return Promise.reject(new Error('rejected plan must not be approved'));
+      },
+      requestBudgetIncrease() {
+        resolveCreditApprovalRequested?.();
+        return Promise.resolve({
+          approvalId: 'appr_01J00000000000000000000009',
+          absoluteCeiling: '100.0000',
+        });
+      },
+      checkpointBudgetStop() {
+        return Promise.reject(new Error('credit approval must resume preparation'));
+      },
+    } satisfies Partial<AutonomousActivities> & Partial<ApprovalActivities>;
+    let blocked = false;
+    const eventActivities: EventActivities = {
+      async emitEvents(input) {
+        for (const emitted of input.events) {
+          if (emitted.type === 'approval.requested' && emitted.payload['gate'] === 'specification') {
+            resolveSpecificationRequested?.();
+          }
+          if (emitted.type === 'approval.requested' && emitted.payload['gate'] === 'plan') {
+            resolvePlanRequested?.();
+          }
+        }
+        const blocksInterview =
+          stage === 'interview' &&
+          input.events.some(
+            ({ type, payload }) => type === 'phase.started' && payload['stage'] === 'interview',
+          );
+        const blocksSpecification =
+          stage === 'specification' &&
+          input.events.some(
+            ({ type, payload }) => type === 'phase.completed' && payload['stage'] === 'interview',
+          );
+        if (!blocked && (blocksInterview || blocksSpecification)) {
+          blocked = true;
+          resolveBoundaryStarted?.();
+          await boundaryReleased;
+        }
+      },
+      async transitionRunStatus(input) {
+        if (
+          !blocked &&
+          stage === 'plan' &&
+          input.idempotencyKey.endsWith('status-specification-approved')
+        ) {
+          blocked = true;
+          resolveBoundaryStarted?.();
+          await boundaryReleased;
+        }
+      },
+      storeAssistantContent() {
+        return Promise.reject(new Error('preparation fixture stores no assistant content'));
+      },
+    };
+    const worker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
+      activities: { ...eventActivities, ...autonomousActivities, ...allowAllFeatureFlags },
+    });
+    workers.push(worker);
+    workerRuns.push(worker.run());
+    const handle = await environment.client.workflow.start(autonomousWorkflow, {
+      taskQueue,
+      workflowId: runId,
+      args: [{
+        workflowId: runId,
+        runId,
+        organizationId: newId('org'),
+        projectId: newId('proj'),
+        prompt: 'Exercise the preparation credit boundary.',
+        model: null,
+        budget: { maxCredits: 100 },
+        planMaxCredits: 1000,
+        maxConcurrency: 1,
+      } satisfies AutonomousWorkflowInput],
+    });
+
+    if (stage === 'plan') {
+      await specificationRequested;
+      await handle.signal(autonomousSpecificationApprovalSignal, {
+        runId,
+        artifactId: specificationVersionId,
+        decision: 'approved',
+        operationKey: `op_${'1'.repeat(64)}`,
+      });
+    }
+    await boundaryStarted;
+    await handle.signal(autonomousCreditBalanceExhaustedSignal, {
+      runId,
+      operationKey: `op_${'2'.repeat(64)}`,
+    });
+    releaseBoundary?.();
+    await creditApprovalRequested;
+    const paidCallStartedBeforeApproval = paidCalls.includes(stage);
+    await handle.signal(budgetApprovalResolvedSignal, {
+      approvalId: 'appr_01J00000000000000000000009',
+      decision: 'approved',
+      absoluteCeiling: '100.0000',
+      reason: 'organization_credit_exhausted',
+    });
+    if (stage !== 'plan') {
+      await specificationRequested;
+      await handle.signal(autonomousSpecificationApprovalSignal, {
+        runId,
+        artifactId: specificationVersionId,
+        decision: 'approved',
+        operationKey: `op_${'1'.repeat(64)}`,
+      });
+    }
+    await planRequested;
+    await handle.signal(autonomousPlanApprovalSignal, {
+      runId,
+      artifactId: planArtifactId,
+      decision: 'rejected',
+      operationKey: `op_${'3'.repeat(64)}`,
+    });
+    await expect(handle.result()).resolves.toEqual({ status: 'rejected', gate: 'plan' });
+    return paidCallStartedBeforeApproval;
+  }
+
+  it.each([
+    ['interview event', 'interview'],
+    ['interview completion event', 'specification'],
+    ['specification approval status', 'plan'],
+  ] as const)(
+    'holds the next paid preparation call when credit exhausts during %s',
+    async (_label, stage) => {
+      await expect(runPreparationCreditInterleaving(stage)).resolves.toBe(false);
+    },
+    30_000,
+  );
 
   it('dispatches production Autonomous starts and approval signals to the autonomous workflow', async () => {
     const start = vi.fn().mockResolvedValue(undefined);
@@ -114,6 +402,7 @@ describe('AR-17 autonomous workflow', () => {
       model: null,
       prompt: 'Build this product autonomously.',
       budget: { maxCredits: 50 },
+      planMaxCredits: 1000,
       operationKey: `op_${'1'.repeat(64)}`,
     };
 
@@ -168,6 +457,7 @@ describe('AR-17 autonomous workflow', () => {
     const events: PendingAgentEvent[] = [];
     const activityCalls: string[] = [];
     const runStatuses: string[] = [];
+    const budgetApprovalRequests: unknown[] = [];
     let resolveSpecificationRequest: (() => void) | undefined;
     const specificationRequested = new Promise<void>((resolve) => {
       resolveSpecificationRequest = resolve;
@@ -210,7 +500,15 @@ describe('AR-17 autonomous workflow', () => {
         activityCalls.push(`plan-approved:${input.idempotencyKey}`);
         return Promise.resolve({ planArtifactId: input.planArtifactId, status: 'approved' as const });
       },
-    } satisfies Partial<AutonomousActivities>;
+      requestBudgetIncrease(input: unknown) {
+        budgetApprovalRequests.push(input);
+        return Promise.resolve({
+          approvalId: 'appr_01J00000000000000000000009',
+          absoluteCeiling: '100.0000',
+        });
+      },
+      checkpointBudgetStop: () => Promise.resolve({ checkpointRef: 'autonomous-credit-stop' }),
+    } satisfies Partial<AutonomousActivities> & Partial<ApprovalActivities>;
     const eventActivities: EventActivities = {
       emitEvents(input) {
         events.push(...input.events);
@@ -240,7 +538,7 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...autonomousActivities },
+      activities: { ...eventActivities, ...autonomousActivities, ...allowAllFeatureFlags },
     });
     workers.push(worker);
     workerRuns.push(worker.run());
@@ -253,6 +551,7 @@ describe('AR-17 autonomous workflow', () => {
       prompt: 'Build the approved product autonomously.',
       model: null,
       budget: { maxCredits: 100 },
+      planMaxCredits: 1000,
       maxConcurrency: 3,
     };
     const handle = await environment.client.workflow.start(autonomousWorkflow, {
@@ -264,11 +563,38 @@ describe('AR-17 autonomous workflow', () => {
     await specificationRequested;
     expect(activityCalls.some((call) => call.startsWith('specification-approved:'))).toBe(false);
     expect(activityCalls.some((call) => call.startsWith('plan-produced:'))).toBe(false);
+    await handle.signal(autonomousCreditBalanceExhaustedSignal, {
+      runId,
+      operationKey: `op_${'d'.repeat(64)}`,
+    });
+    await vi.waitFor(() => {
+      expect(budgetApprovalRequests).toHaveLength(1);
+    });
+    expect(budgetApprovalRequests).toEqual([
+      expect.objectContaining({
+        currentCeiling: '100.0000',
+        absoluteCeiling: '100.0000',
+        reason: 'organization_credit_exhausted',
+      }),
+    ]);
+    expect(activityCalls.some((call) => call.startsWith('specification-approved:'))).toBe(false);
+    await handle.signal(autonomousResumeSignal, {
+      runId,
+      operationKey: `op_${'e'.repeat(64)}`,
+    });
     await handle.signal(autonomousSpecificationApprovalSignal, {
       runId,
       artifactId: specificationVersionId,
       decision: 'approved',
       operationKey: `op_${'b'.repeat(64)}`,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(activityCalls.some((call) => call.startsWith('plan-produced:'))).toBe(false);
+    await handle.signal(budgetApprovalResolvedSignal, {
+      approvalId: 'appr_01J00000000000000000000009',
+      decision: 'approved',
+      absoluteCeiling: '100.0000',
+      reason: 'organization_credit_exhausted',
     });
 
     await planRequested;
@@ -284,15 +610,275 @@ describe('AR-17 autonomous workflow', () => {
 
     await expect(handle.result()).resolves.toEqual({ status: 'rejected', gate: 'plan' });
     expect(activityCalls.some((call) => call.startsWith('plan-approved:'))).toBe(false);
-    expect(events.filter(({ type }) => type === 'approval.requested')).toHaveLength(2);
-    expect(events.filter(({ type }) => type === 'approval.resolved')).toHaveLength(2);
+    expect(events.filter(({ type }) => type === 'approval.requested')).toHaveLength(3);
+    expect(events.filter(({ type }) => type === 'approval.resolved')).toHaveLength(3);
     expect(runStatuses).toEqual([
       'running',
       'waiting_for_approval',
+      'waiting_for_approval',
+      'running',
       'running',
       'waiting_for_approval',
       'cancelled',
     ]);
+  }, 30_000);
+
+  it('replays a keyed failed-task retry and enforces optional-phase skip boundaries', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const nativeConnection = environment.nativeConnection;
+    const taskQueue = `ar23-builder-controls-${Date.now().toString(36)}`;
+    const runId = newId('run');
+    const specificationVersionId = 'specification-version-ar23';
+    const planArtifactId = newId('art');
+    const phaseIds = [
+      'phase_01J00000000000000000000011',
+      'phase_01J00000000000000000000012',
+      'phase_01J00000000000000000000013',
+    ] as const;
+    const taskIds = [
+      'task_01J00000000000000000000011',
+      'task_01J00000000000000000000012',
+      'task_01J00000000000000000000013',
+    ] as const;
+    const controlPlan = {
+      phases: phaseIds.map((id, index) => ({
+        id,
+        sequence: index + 1,
+        title: `Phase ${String(index + 1)}`,
+        acceptanceCriteria: [`AC-${String(index + 1)}`],
+        approvalAfter: false,
+        optional: index > 0,
+      })),
+      tasks: taskIds.map((id, index) => ({
+        id,
+        phaseId: phaseIds[index],
+        title: `Task ${String(index + 1)}`,
+        dependsOn: index === 0 ? [] : [taskIds[index - 1]],
+        riskLevel: 'low' as const,
+        requiredTools: ['read_file'],
+        expectedFiles: [`src/task-${String(index + 1)}.ts`],
+        acceptanceCriteriaIds: [`AC-${String(index + 1)}`],
+        requiredTests: [],
+        estimate: { credits: 1, wallClockMinutes: 1 },
+      })),
+      budget: { credits: 10, wallClockHours: 1 },
+    };
+    const emitted: PendingAgentEvent[] = [];
+    const sessionAttempts = new Map<string, number>();
+    let resolveFailedTask: (() => void) | undefined;
+    const failedTask = new Promise<void>((resolve) => {
+      resolveFailedTask = resolve;
+    });
+    let resolveSecondTaskStarted: (() => void) | undefined;
+    const secondTaskStarted = new Promise<void>((resolve) => {
+      resolveSecondTaskStarted = resolve;
+    });
+    let releaseSecondTask: (() => void) | undefined;
+    const secondTaskReleased = new Promise<void>((resolve) => {
+      releaseSecondTask = resolve;
+    });
+    let resolveSecondPhaseCompleted: (() => void) | undefined;
+    const secondPhaseCompleted = new Promise<void>((resolve) => {
+      resolveSecondPhaseCompleted = resolve;
+    });
+    let releaseSecondPhaseCompletion: (() => void) | undefined;
+    const secondPhaseCompletionReleased = new Promise<void>((resolve) => {
+      releaseSecondPhaseCompletion = resolve;
+    });
+    let resolveSpecificationRequest: (() => void) | undefined;
+    const specificationRequested = new Promise<void>((resolve) => {
+      resolveSpecificationRequest = resolve;
+    });
+    let resolvePlanRequest: (() => void) | undefined;
+    const planRequested = new Promise<void>((resolve) => {
+      resolvePlanRequest = resolve;
+    });
+
+    const activities = {
+      ...allowAllFeatureFlags,
+      conductInterview: () => Promise.resolve({ interviewArtifactId: newId('art'), status: 'executable' as const }),
+      createSpecificationDraft: () => Promise.resolve({
+        specificationVersionId,
+        version: 1,
+        contentEtag: `sha256:${'a'.repeat(64)}`,
+      }),
+      approveSpecification: () => Promise.resolve({ specificationVersionId, version: 1, status: 'approved' as const }),
+      producePlan: () => Promise.resolve({ planArtifactId, plan: controlPlan }),
+      approvePlan: () => Promise.resolve({ planArtifactId, status: 'approved' as const }),
+      recordBaseCommit: () => Promise.resolve({ baseCommitSha: 'a'.repeat(40) }),
+      createTaskWorkspace: (input: { taskId: string }) => Promise.resolve({
+        workspaceId: `workspace:${input.taskId}`,
+        workspacePath: `/tmp/${input.taskId}`,
+      }),
+      transitionTaskState: () => Promise.resolve(),
+      async runTaskBuilderSession(input: { taskId: string }) {
+        const attempt = (sessionAttempts.get(input.taskId) ?? 0) + 1;
+        sessionAttempts.set(input.taskId, attempt);
+        if (input.taskId === taskIds[0] && attempt === 1) return { status: 'failed' as const };
+        if (input.taskId === taskIds[1]) {
+          resolveSecondTaskStarted?.();
+          await secondTaskReleased;
+        }
+        return { status: 'completed' as const };
+      },
+      commitAndPushTask: (input: { taskId: string }) => Promise.resolve({
+        commitSha: input.taskId === taskIds[0] ? 'b'.repeat(40) : 'c'.repeat(40),
+      }),
+      mergeTask: () => Promise.resolve({ outcome: 'merged' as const }),
+      createConflictTask: () => Promise.reject(new Error('AR-23 fixture creates no conflicts')),
+      emitTaskBlocked: () => Promise.reject(new Error('AR-23 fixture creates no blocked tasks')),
+      resolveIntegrationHead: (input: { phaseId: string }) => Promise.resolve({
+        commitSha: input.phaseId === phaseIds[0] ? 'b'.repeat(40) : 'c'.repeat(40),
+      }),
+      transitionPhaseTasks: () => Promise.resolve(),
+      checkpointPhase: (input: { phaseId: string }) => Promise.resolve({ checkpointRef: `checkpoint:${input.phaseId}` }),
+      repairPhase: () => Promise.reject(new Error('AR-23 fixture verification never rejects')),
+      createFinalEvidence: (input: {
+        runId: string;
+        organizationId: string;
+        projectId: string;
+        specificationVersionId: string;
+        planArtifactId: string;
+        commitSha: string;
+      }) => Promise.resolve({
+        releaseId: 'rel_01J00000000000000000000011',
+        evidenceArtifactId: 'art_01J00000000000000000000019',
+        commitSha: input.commitSha,
+        runId: input.runId,
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+        specificationVersionId: input.specificationVersionId,
+        planArtifactId: input.planArtifactId,
+      }),
+      verifyPhase: (_verifiedRunId: string, phaseId: string) => Promise.resolve({
+        verificationResultId: phaseId === phaseIds[0]
+          ? 'vr_01J00000000000000000000011'
+          : 'vr_01J00000000000000000000012',
+        decision: 'approved' as const,
+        criteriaResults: [{}],
+        risks: [],
+      }),
+      async emitEvents(input: { events: PendingAgentEvent[] }) {
+        emitted.push(...input.events);
+        for (const value of input.events) {
+          if (value.type === 'approval.requested' && value.payload['gate'] === 'specification') {
+            resolveSpecificationRequest?.();
+          }
+          if (value.type === 'approval.requested' && value.payload['gate'] === 'plan') {
+            resolvePlanRequest?.();
+          }
+          if (value.type === 'task.failed' && value.taskId === taskIds[0]) resolveFailedTask?.();
+          if (
+            value.type === 'phase.completed' &&
+            value.phaseId === phaseIds[1] &&
+            value.payload['status'] !== 'skipped'
+          ) {
+            resolveSecondPhaseCompleted?.();
+            await secondPhaseCompletionReleased;
+          }
+        }
+      },
+      transitionRunStatus: () => Promise.resolve(),
+      storeAssistantContent: () => Promise.reject(new Error('AR-23 fixture stores no assistant content')),
+    };
+
+    const startWorker = async (): Promise<void> => {
+      const worker = await Worker.create({
+        connection: nativeConnection,
+        taskQueue,
+        workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
+        activities,
+      });
+      workers.push(worker);
+      workerRuns.push(worker.run());
+    };
+    const verificationWorker = await Worker.create({
+      connection: nativeConnection,
+      taskQueue: 'verification',
+      workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
+      activities,
+    });
+    workers.push(verificationWorker);
+    workerRuns.push(verificationWorker.run());
+    await startWorker();
+
+    const handle = await environment.client.workflow.start(autonomousWorkflow, {
+      taskQueue,
+      workflowId: runId,
+      args: [{
+        workflowId: runId,
+        runId,
+        organizationId: newId('org'),
+        projectId: newId('proj'),
+        prompt: 'Exercise durable builder controls.',
+        model: null,
+        budget: { maxCredits: 10 },
+        planMaxCredits: 10,
+        maxConcurrency: 1,
+      } satisfies AutonomousWorkflowInput],
+    });
+    await specificationRequested;
+    await handle.signal(autonomousSpecificationApprovalSignal, {
+      runId,
+      artifactId: specificationVersionId,
+      decision: 'approved',
+      operationKey: `op_${'1'.repeat(64)}`,
+    });
+    await planRequested;
+    await handle.signal(autonomousPlanApprovalSignal, {
+      runId,
+      artifactId: planArtifactId,
+      decision: 'approved',
+      operationKey: `op_${'2'.repeat(64)}`,
+    });
+
+    await Promise.race([
+      failedTask,
+      handle.result().then(() => Promise.reject(new Error('workflow completed before retry wait'))),
+    ]);
+    const firstWorker = workers.find((worker) => worker.options.taskQueue === taskQueue);
+    if (firstWorker !== undefined) {
+      workers.splice(workers.indexOf(firstWorker), 1);
+      firstWorker.shutdown();
+    }
+    await startWorker();
+    const retryOperationKey = `op_${'3'.repeat(64)}`;
+    await handle.signal(retryFailedTaskSignal, { runId, taskId: taskIds[0], operationKey: retryOperationKey });
+    await handle.signal(retryFailedTaskSignal, { runId, taskId: taskIds[0], operationKey: retryOperationKey });
+
+    await secondTaskStarted;
+    await handle.signal(skipOptionalPhaseSignal, {
+      runId,
+      phaseId: phaseIds[1],
+      operationKey: `op_${'4'.repeat(64)}`,
+    });
+    releaseSecondTask?.();
+    await secondPhaseCompleted;
+    await handle.signal(skipOptionalPhaseSignal, {
+      runId,
+      phaseId: phaseIds[2],
+      operationKey: `op_${'5'.repeat(64)}`,
+    });
+    releaseSecondPhaseCompletion?.();
+
+    await expect(handle.result()).resolves.toMatchObject({ status: 'completed', commitSha: 'c'.repeat(40) });
+    expect(sessionAttempts).toEqual(new Map([[taskIds[0], 2], [taskIds[1], 1]]));
+    expect(
+      emitted
+        .filter((value) => value.type === 'task.updated' && value.payload['control'] === 'retry_failed_task')
+        .map(({ payload }) => ({ outcome: payload['outcome'], operationKey: payload['operationKey'] })),
+    ).toEqual([{ outcome: 'accepted', operationKey: retryOperationKey }]);
+    expect(emitted.some((value) =>
+      value.type === 'task.updated' &&
+      value.payload['control'] === 'skip_optional_phase' &&
+      value.payload['outcome'] === 'rejected' &&
+      value.payload['reason'] === 'phase_task_started',
+    )).toBe(true);
+    expect(
+      emitted
+        .filter((value) => value.type === 'phase.completed' && value.payload['status'] === 'skipped')
+        .map(({ phaseId, payload }) => ({ phaseId, operationKey: payload['operationKey'] })),
+    ).toEqual([{ phaseId: phaseIds[2], operationKey: `op_${'5'.repeat(64)}` }]);
   }, 30_000);
 
   it('rejects a caller-supplied continuation that tries to skip both approval gates', async () => {
@@ -325,7 +911,7 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...autonomousActivities },
+      activities: { ...eventActivities, ...autonomousActivities, ...allowAllFeatureFlags },
     });
     workers.push(forgedWorker);
     workerRuns.push(forgedWorker.run());
@@ -338,6 +924,7 @@ describe('AR-17 autonomous workflow', () => {
       prompt: 'Skip directly to release evidence.',
       model: null,
       budget: { maxCredits: 100 },
+      planMaxCredits: 1000,
       maxConcurrency: 2,
       continuation: {
         specificationVersionId: 'specification-version-forged',
@@ -366,7 +953,17 @@ describe('AR-17 autonomous workflow', () => {
           pauseRequested: false,
           resumeRequested: false,
           cancelRequested: false,
+          creditBalanceExhausted: false,
+          creditBalanceOperationKey: null,
+          creditApprovalResolution: null,
           pendingRedirects: [],
+          pendingRetries: [],
+          pendingSkips: [],
+          failedTaskIds: [],
+          startedTaskIds: [],
+          skippedPhaseIds: [],
+          taskAttempts: {},
+          conversationResponses: [],
         },
       },
     };
@@ -406,6 +1003,7 @@ describe('AR-17 autonomous workflow', () => {
       },
       transitionRunStatus: () => Promise.resolve(),
       storeAssistantContent: () => Promise.reject(new Error('No assistant content expected')),
+      ...allowAllFeatureFlags,
     } satisfies Partial<AutonomousActivities> & Partial<EventActivities>;
     const cancelWorker = await Worker.create({
       connection: environment.nativeConnection,
@@ -426,6 +1024,7 @@ describe('AR-17 autonomous workflow', () => {
         prompt: 'Cancel this run at the first durable gate.',
         model: null,
         budget: { maxCredits: 10 },
+        planMaxCredits: 1000,
         maxConcurrency: 1,
       } satisfies AutonomousWorkflowInput],
     });
@@ -446,7 +1045,7 @@ describe('AR-17 autonomous workflow', () => {
     expect(outcome).toEqual({ status: 'cancelled', checkpointRef: `run:${runId}:cancelled` });
   }, 10_000);
 
-  it('survives a worker restart between task-scoped phases and creates final evidence once', async () => {
+  it('survives a worker restart, pauses the next phase after a flag flip, and creates final evidence once', async () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar17-phases-${Date.now().toString(36)}`;
     const runId = newId('run');
@@ -459,6 +1058,15 @@ describe('AR-17 autonomous workflow', () => {
     const taskBudgets: number[] = [];
     const phaseTaskTransitions: unknown[] = [];
     const finalEvidenceInputs: unknown[] = [];
+    const budgetApprovalRequests: unknown[] = [];
+    let resolveFirstCreditApprovalRequested: (() => void) | undefined;
+    const firstCreditApprovalRequested = new Promise<void>((resolve) => {
+      resolveFirstCreditApprovalRequested = resolve;
+    });
+    let resolveFirstTaskSessionStarted: (() => void) | undefined;
+    const firstTaskSessionStarted = new Promise<void>((resolve) => {
+      resolveFirstTaskSessionStarted = resolve;
+    });
     let resolveSpecificationRequest: (() => void) | undefined;
     const specificationRequested = new Promise<void>((resolve) => {
       resolveSpecificationRequest = resolve;
@@ -471,11 +1079,48 @@ describe('AR-17 autonomous workflow', () => {
     const phaseTwoEntered = new Promise<void>((resolve) => {
       resolvePhaseTwoEntered = resolve;
     });
+    let resolveFlagPause: (() => void) | undefined;
+    const flagPaused = new Promise<void>((resolve) => {
+      resolveFlagPause = resolve;
+    });
     let releasePhaseTwoTransition: (() => void) | undefined;
     const phaseTwoTransitionReleased = new Promise<void>((resolve) => {
       releasePhaseTwoTransition = resolve;
     });
     let phaseTwoTransitionBlocked = false;
+    let resolveWaveEventStarted: (() => void) | undefined;
+    const waveEventStarted = new Promise<void>((resolve) => {
+      resolveWaveEventStarted = resolve;
+    });
+    let releaseWaveEvent: (() => void) | undefined;
+    const waveEventReleased = new Promise<void>((resolve) => {
+      releaseWaveEvent = resolve;
+    });
+    let waveEventBlocked = false;
+    let resolveFirstVerificationStarted: (() => void) | undefined;
+    const firstVerificationStarted = new Promise<void>((resolve) => {
+      resolveFirstVerificationStarted = resolve;
+    });
+    let releaseFirstVerification: (() => void) | undefined;
+    const firstVerificationReleased = new Promise<void>((resolve) => {
+      releaseFirstVerification = resolve;
+    });
+    let resolveRepairStarted: (() => void) | undefined;
+    const repairStarted = new Promise<void>((resolve) => {
+      resolveRepairStarted = resolve;
+    });
+    let releaseRepair: (() => void) | undefined;
+    const repairReleased = new Promise<void>((resolve) => {
+      releaseRepair = resolve;
+    });
+    let resolveRepairTransitionStarted: (() => void) | undefined;
+    const repairTransitionStarted = new Promise<void>((resolve) => {
+      resolveRepairTransitionStarted = resolve;
+    });
+    let releaseRepairTransition: (() => void) | undefined;
+    const repairTransitionReleased = new Promise<void>((resolve) => {
+      releaseRepairTransition = resolve;
+    });
 
     const phaseOneCommit = 'a'.repeat(40);
     const repairedCommit = 'b'.repeat(40);
@@ -485,6 +1130,17 @@ describe('AR-17 autonomous workflow', () => {
       ['task_01J00000000000000000000002', '2'.repeat(40)],
       ['task_01J00000000000000000000003', '3'.repeat(40)],
     ]);
+    let autonomousFlagEnabled = true;
+    const flagChecks: string[] = [];
+    const featureFlagActivities: FeatureFlagActivities = {
+      evaluateFeatureFlag(input) {
+        flagChecks.push(input.flag);
+        timeline.push(`flag:${input.flag}`);
+        return Promise.resolve({
+          enabled: input.flag === 'autonomous-mode' ? autonomousFlagEnabled : true,
+        });
+      },
+    };
 
     const autonomousActivities = {
       conductInterview() {
@@ -516,23 +1172,41 @@ describe('AR-17 autonomous workflow', () => {
         timeline.push(`head:${input.phaseId}:${commitSha}`);
         return Promise.resolve({ commitSha });
       },
-      repairPhase(input) {
+      async repairPhase(input) {
         timeline.push(`repair:${input.phaseId}:${input.failingCommitSha}`);
         expect(input.maxCredits).toBe(5);
-        return Promise.resolve({
+        resolveRepairStarted?.();
+        await repairReleased;
+        return {
           status: 'repaired' as const,
           commitSha: repairedCommit,
           evidenceArtifactIds: [newId('art')],
           creditsConsumed: 0,
+        };
+      },
+      requestBudgetIncrease(input) {
+        budgetApprovalRequests.push(input);
+        if (budgetApprovalRequests.length === 1) resolveFirstCreditApprovalRequested?.();
+        const sequence = String(9 + budgetApprovalRequests.length);
+        return Promise.resolve({
+          approvalId: `appr_01J000000000000000000000${sequence.padStart(2, '0')}`,
+          absoluteCeiling: '100.0000',
         });
       },
-      transitionPhaseTasks(input) {
+      checkpointBudgetStop() {
+        return Promise.reject(new Error('organization-credit approval must resume'));
+      },
+      async transitionPhaseTasks(input) {
         phaseTaskTransitions.push(input);
         timeline.push(`tasks:${input.phaseId}:${input.status}`);
-        return Promise.resolve();
+        if (input.status === 'repairing') {
+          resolveRepairTransitionStarted?.();
+          await repairTransitionReleased;
+        }
       },
       checkpointPhase(input) {
         timeline.push(`checkpoint:${input.phaseId}:${input.commitSha}`);
+        if (input.phaseId.endsWith('1')) autonomousFlagEnabled = false;
         return Promise.resolve({ checkpointRef: `checkpoint:${input.phaseId}` });
       },
       createFinalEvidence(input) {
@@ -549,9 +1223,9 @@ describe('AR-17 autonomous workflow', () => {
           planArtifactId: input.planArtifactId,
         });
       },
-    } satisfies Partial<AutonomousActivities>;
+    } satisfies Partial<AutonomousActivities> & Partial<ApprovalActivities>;
     const eventActivities: EventActivities = {
-      emitEvents(input) {
+      async emitEvents(input) {
         for (const event of input.events) {
           if (event.type === 'approval.requested' && event.payload['gate'] === 'specification') {
             resolveSpecificationRequest?.();
@@ -559,8 +1233,25 @@ describe('AR-17 autonomous workflow', () => {
           if (event.type === 'approval.requested' && event.payload['gate'] === 'plan') {
             resolvePlanRequest?.();
           }
+          if (
+            event.type === 'run.paused' &&
+            event.payload['reason'] === 'feature_flag_disabled'
+          ) {
+            resolveFlagPause?.();
+          }
         }
-        return Promise.resolve();
+        if (
+          !waveEventBlocked &&
+          input.events.some(
+            (event) =>
+              event.type === 'agent.started' &&
+              event.phaseId === 'phase_01J00000000000000000000001',
+          )
+        ) {
+          waveEventBlocked = true;
+          resolveWaveEventStarted?.();
+          await waveEventReleased;
+        }
       },
       async transitionRunStatus(input) {
         if (input.idempotencyKey.endsWith('status-running:1') && !phaseTwoTransitionBlocked) {
@@ -586,6 +1277,7 @@ describe('AR-17 autonomous workflow', () => {
       runTaskBuilderSession(input: { taskId: string; prompt: string }) {
         timeline.push(`session:${input.taskId}`);
         sessionPrompts.set(input.taskId, input.prompt);
+        resolveFirstTaskSessionStarted?.();
         taskBudgets.push(
           (input as unknown as { budget: { maxCredits: number } }).budget.maxCredits,
         );
@@ -602,11 +1294,15 @@ describe('AR-17 autonomous workflow', () => {
     };
     let phaseOneVerificationAttempt = 0;
     const verificationActivities = {
-      verifyPhase(_verifiedRunId: string, phaseId: string, commitSha: string) {
+      async verifyPhase(_verifiedRunId: string, phaseId: string, commitSha: string) {
         timeline.push(`verify:${phaseId}:${commitSha}`);
         if (phaseId.endsWith('1')) {
           phaseOneVerificationAttempt += 1;
-          return Promise.resolve({
+          if (phaseOneVerificationAttempt === 1) {
+            resolveFirstVerificationStarted?.();
+            await firstVerificationReleased;
+          }
+          return {
             verificationResultId:
               phaseOneVerificationAttempt === 1
                 ? 'vr_01J00000000000000000000001'
@@ -614,14 +1310,14 @@ describe('AR-17 autonomous workflow', () => {
             decision: phaseOneVerificationAttempt === 1 ? 'rejected' as const : 'approved' as const,
             criteriaResults: [{}],
             risks: phaseOneVerificationAttempt === 1 ? [{}] : [],
-          });
+          };
         }
-        return Promise.resolve({
+        return {
           verificationResultId: 'vr_01J00000000000000000000003',
           decision: 'approved' as const,
           criteriaResults: [{}],
           risks: [],
-        });
+        };
       },
     };
 
@@ -629,7 +1325,12 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...taskActivities, ...autonomousActivities },
+      activities: {
+        ...eventActivities,
+        ...taskActivities,
+        ...autonomousActivities,
+        ...featureFlagActivities,
+      },
     });
     const verificationWorker = await Worker.create({
       connection: environment.nativeConnection,
@@ -650,6 +1351,7 @@ describe('AR-17 autonomous workflow', () => {
       prompt: 'Build the two-phase product.',
       model: null,
       budget: { maxCredits: 100 },
+      planMaxCredits: 1000,
       maxConcurrency: 2,
     };
     const handle = await environment.client.workflow.start(autonomousWorkflow, {
@@ -672,6 +1374,70 @@ describe('AR-17 autonomous workflow', () => {
       operationKey: `op_${'f'.repeat(64)}`,
     });
 
+    await waveEventStarted;
+    await handle.signal(autonomousCreditBalanceExhaustedSignal, {
+      runId,
+      operationKey: `op_${'6'.repeat(64)}`,
+    });
+    releaseWaveEvent?.();
+    const waveBoundaryOutcome = await Promise.race([
+      firstCreditApprovalRequested.then(() => 'approval' as const),
+      firstTaskSessionStarted.then(() => 'task' as const),
+    ]);
+    await firstCreditApprovalRequested;
+    const taskSessionsBeforeWaveApproval = sessionPrompts.size;
+    await handle.signal(budgetApprovalResolvedSignal, {
+      approvalId: 'appr_01J00000000000000000000010',
+      decision: 'approved',
+      absoluteCeiling: '100.0000',
+      reason: 'organization_credit_exhausted',
+    });
+
+    await firstVerificationStarted;
+    releaseFirstVerification?.();
+    await repairTransitionStarted;
+    await handle.signal(autonomousCreditBalanceExhaustedSignal, {
+      runId,
+      operationKey: `op_${'7'.repeat(64)}`,
+    });
+    releaseRepairTransition?.();
+    const repairBoundaryOutcome = await Promise.race([
+      vi.waitFor(() => {
+        expect(budgetApprovalRequests).toHaveLength(2);
+      }).then(() => 'approval' as const),
+      repairStarted.then(() => 'repair' as const),
+    ]);
+    if (repairBoundaryOutcome === 'repair') releaseRepair?.();
+    await vi.waitFor(() => {
+      expect(budgetApprovalRequests).toHaveLength(2);
+    });
+    await handle.signal(budgetApprovalResolvedSignal, {
+      approvalId: 'appr_01J00000000000000000000011',
+      decision: 'approved',
+      absoluteCeiling: '100.0000',
+      reason: 'organization_credit_exhausted',
+    });
+
+    let reverificationAttemptsBeforeApproval = phaseOneVerificationAttempt;
+    if (repairBoundaryOutcome === 'approval') {
+      await repairStarted;
+      await handle.signal(autonomousCreditBalanceExhaustedSignal, {
+        runId,
+        operationKey: `op_${'8'.repeat(64)}`,
+      });
+      releaseRepair?.();
+      await vi.waitFor(() => {
+        expect(budgetApprovalRequests).toHaveLength(3);
+      });
+      reverificationAttemptsBeforeApproval = phaseOneVerificationAttempt;
+      await handle.signal(budgetApprovalResolvedSignal, {
+        approvalId: 'appr_01J00000000000000000000012',
+        decision: 'approved',
+        absoluteCeiling: '100.0000',
+        reason: 'organization_credit_exhausted',
+      });
+    }
+
     await phaseTwoEntered;
     mainWorker.shutdown();
     releasePhaseTwoTransition?.();
@@ -682,10 +1448,23 @@ describe('AR-17 autonomous workflow', () => {
       connection: environment.nativeConnection,
       taskQueue,
       workflowsPath: new URL('../../src/workflows/run.ts', import.meta.url).pathname,
-      activities: { ...eventActivities, ...taskActivities, ...autonomousActivities },
+      activities: {
+        ...eventActivities,
+        ...taskActivities,
+        ...autonomousActivities,
+        ...featureFlagActivities,
+      },
     });
     workers.push(restartedWorker);
     workerRuns.push(restartedWorker.run());
+
+    await flagPaused;
+    expect(timeline).not.toContain('session:task_01J00000000000000000000003');
+    autonomousFlagEnabled = true;
+    await handle.signal(autonomousResumeSignal, {
+      runId,
+      operationKey: `op_${'9'.repeat(64)}`,
+    });
 
     await expect(handle.result()).resolves.toEqual({
       status: 'completed',
@@ -712,6 +1491,17 @@ describe('AR-17 autonomous workflow', () => {
       `verify:phase_01J00000000000000000000001:${repairedCommit}`,
     );
     expect(phaseOneVerificationAttempt).toBe(2);
+    expect({
+      taskSessionsBeforeWaveApproval,
+      waveBoundaryOutcome,
+      repairBoundaryOutcome,
+      reverificationAttemptsBeforeApproval,
+    }).toEqual({
+      taskSessionsBeforeWaveApproval: 0,
+      waveBoundaryOutcome: 'approval',
+      repairBoundaryOutcome: 'approval',
+      reverificationAttemptsBeforeApproval: 1,
+    });
     expect(taskBudgets.reduce((sum, value) => sum + value, 0)).toBe(25);
     expect(phaseTaskTransitions).toEqual([
       expect.objectContaining({
@@ -729,6 +1519,8 @@ describe('AR-17 autonomous workflow', () => {
     ]);
     expect(timeline.filter((entry) => entry === 'interview')).toHaveLength(1);
     expect(timeline.filter((entry) => entry === 'plan:produced')).toHaveLength(1);
+    expect(timeline.indexOf('flag:autonomous-mode')).toBeLessThan(timeline.indexOf('interview'));
+    expect(flagChecks.filter((flag) => flag === 'autonomous-mode')).toHaveLength(4);
     expect(finalEvidenceInputs).toEqual([
       expect.objectContaining({
         commitSha: phaseTwoCommit,

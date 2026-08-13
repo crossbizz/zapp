@@ -12,6 +12,8 @@ import {
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import { z } from 'zod';
+import type { Database } from '@zapp/db';
+import { createHttpServerTelemetry, tenantSafePinoOptions } from '@zapp/config';
 
 import {
   createGitTokenClient,
@@ -31,14 +33,39 @@ import type { NetworkPolicyRecorder } from './network/profiles.js';
 import { createFetchPreviewTransport, type PreviewTransport } from './preview/transport.js';
 import type { ScopedSecretInjector } from './secrets/injector.js';
 import { registerPreviewRoutes } from './routes/preview.js';
+import { registerSandboxTelemetryRoute, type SandboxTelemetryRelay } from './routes/telemetry.js';
 import {
   createControlPlanePreviewEventClient,
   type ControlPlanePreviewEventClientOptions,
 } from './events/client.js';
+import { SandboxQuotaExceededError, type RunawayComputeGovernor } from './lifecycle/governor.js';
+import { WorkspaceFileBoundaryError } from './workspace-files.js';
 import {
-  SandboxQuotaExceededError,
-  type RunawayComputeGovernor,
-} from './lifecycle/governor.js';
+  createCostRecorder,
+  type CostRecorderDependencies,
+  type SandboxPricing,
+} from './cost/recorder.js';
+import {
+  createControlPlaneUsageLedgerClient,
+  type ControlPlaneUsageLedgerClientOptions,
+} from './cost/client.js';
+import {
+  createDatabaseSnapshotMeasurementStore,
+  createProjectSnapshotDeletionService,
+  createProjectStorageMeasurementService,
+  type SnapshotDeletionStore,
+  type SnapshotMeasurementStore,
+} from './storage/measurements.js';
+import {
+  createDatabaseCostRecordingStateStore,
+  type CostRecordingStateStore,
+} from './cost/state.js';
+import {
+  createCheckpointService,
+  type CheckpointServiceDependencies,
+} from './checkpoint/service.js';
+
+const httpServerTelemetry = createHttpServerTelemetry();
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
 
@@ -86,6 +113,44 @@ interface BuildAppCommonOptions {
   readonly previewFailurePollIntervalMs?: number;
   readonly now?: () => Date;
   readonly logger?: FastifyServerOptions['logger'];
+  readonly telemetryRelay?: SandboxTelemetryRelay;
+  readonly storageMeasurements?: {
+    measureProjectBytes(input: {
+      readonly organizationId: string;
+      readonly projectId: string;
+    }): Promise<unknown>;
+  };
+  readonly storageMetering?: { readonly database: Database };
+  readonly snapshotMeasurements?: SnapshotMeasurementStore;
+  /** CP-17 test seam; production derives this from the Modal provider and DB store. */
+  readonly snapshotDeletion?: {
+    remove(input: { readonly organizationId: string; readonly projectId: string }): Promise<void>;
+    absent(input: { readonly organizationId: string; readonly projectId: string }): Promise<boolean>;
+  };
+  readonly checkpointing?: Omit<
+    CheckpointServiceDependencies,
+    'now' | 'snapshots' | 'snapshotMeasurements'
+  > & {
+    readonly restoreSnapshot: CheckpointServiceDependencies['snapshots']['restore'];
+  };
+  readonly usageMetering?: {
+    readonly pricing: SandboxPricing;
+    readonly nowMs?: () => number;
+    readonly scheduler?: CostRecorderDependencies['scheduler'];
+  } & (
+    | { readonly state: CostRecordingStateStore; readonly database?: never }
+    | { readonly state?: never; readonly database: Database }
+  ) &
+    (
+      | {
+          readonly ledger: CostRecorderDependencies['ledger'];
+          readonly controlPlane?: never;
+        }
+      | {
+          readonly ledger?: never;
+          readonly controlPlane: ControlPlaneUsageLedgerClientOptions;
+        }
+    );
 }
 
 export type BuildAppOptions = BuildAppCommonOptions &
@@ -116,13 +181,123 @@ export function buildApp(options: BuildAppOptions) {
       tokens: createGitTokenClient(options.gitService),
       commands: options.provider,
     });
-  const events =
-    options.events ?? createControlPlanePreviewEventClient(options.controlPlaneEvents);
+  const events = options.events ?? createControlPlanePreviewEventClient(options.controlPlaneEvents);
+  const snapshotMeasurements =
+    options.snapshotMeasurements ??
+    (options.storageMetering === undefined
+      ? undefined
+      : createDatabaseSnapshotMeasurementStore(options.storageMetering.database));
+  const storageMeasurements =
+    options.storageMeasurements ??
+    (snapshotMeasurements === undefined
+      ? undefined
+      : createProjectStorageMeasurementService({
+          snapshots: snapshotMeasurements,
+          volumes: {
+            measureProjectVolumeBytes(input) {
+              if (options.provider.measureProjectVolumeBytes === undefined) {
+                throw new Error('workspace provider cannot measure project volume bytes');
+              }
+              return options.provider.measureProjectVolumeBytes(input);
+            },
+          },
+          now,
+        }));
+  const snapshotDeletion =
+    options.snapshotDeletion ??
+    (snapshotMeasurements !== undefined &&
+    isSnapshotDeletionStore(snapshotMeasurements) &&
+    options.provider.deleteSnapshot !== undefined &&
+    options.provider.snapshotExists !== undefined
+      ? createProjectSnapshotDeletionService({
+          snapshots: snapshotMeasurements,
+          provider: {
+            deleteSnapshot: (providerSnapshotId) =>
+              options.provider.deleteSnapshot?.(providerSnapshotId) ?? Promise.resolve(),
+            snapshotExists: (providerSnapshotId) =>
+              options.provider.snapshotExists?.(providerSnapshotId) ?? Promise.resolve(true),
+          },
+        })
+      : undefined);
+  const rawCostRecorder =
+    options.usageMetering === undefined
+      ? undefined
+      : createCostRecorder({
+          nowMs: options.usageMetering.nowMs ?? Date.now,
+          metrics: {
+            sample: (providerWorkspaceId) => options.provider.metrics(providerWorkspaceId),
+          },
+          ledger:
+            options.usageMetering.ledger ??
+            createControlPlaneUsageLedgerClient(options.usageMetering.controlPlane),
+          state:
+            options.usageMetering.state ??
+            createDatabaseCostRecordingStateStore(options.usageMetering.database),
+          scheduler: options.usageMetering.scheduler ?? {
+            setInterval: (callback, intervalMs) => setInterval(() => void callback(), intervalMs),
+            clearInterval: (handle) => {
+              clearInterval(handle as ReturnType<typeof setInterval>);
+            },
+          },
+        });
+  const checkpointService =
+    options.checkpointing === undefined
+      ? undefined
+      : createCheckpointService({
+          now,
+          git: options.checkpointing.git,
+          codec: options.checkpointing.codec,
+          crypto: options.checkpointing.crypto,
+          artifacts: options.checkpointing.artifacts,
+          records: options.checkpointing.records,
+          snapshots: {
+            create: async (input) => {
+              if (options.provider.snapshotWorkspace === undefined) {
+                throw new Error('workspace provider cannot create snapshots');
+              }
+              const row = await options.rows.get(
+                input.workspaceId,
+                input.organizationId,
+                input.projectId,
+              );
+              if (row?.providerWorkspaceId === null || row?.providerWorkspaceId === undefined) {
+                throw new Error('workspace provider identity is unavailable for snapshot');
+              }
+              const created = await options.provider.snapshotWorkspace(
+                row.providerWorkspaceId,
+                input.ttlMs,
+              );
+              return {
+                providerSnapshotId: created.providerSnapshotId,
+                logicalBytes: created.logicalBytes,
+              };
+            },
+            restore: options.checkpointing.restoreSnapshot,
+          },
+          snapshotMeasurements: snapshotMeasurements ?? {
+            record() {
+              throw new Error('snapshot measurement persistence is not configured');
+            },
+          },
+        });
   const app = Fastify({
-    logger: options.logger ?? false,
+    logger: options.logger ?? tenantSafePinoOptions({ serviceName: 'sandbox-service' }),
     requestIdHeader: false,
     trustProxy: false,
   }).withTypeProvider<ZodTypeProvider>();
+
+  app.addHook('onRequest', (request, _reply, done) => {
+    httpServerTelemetry.start(request);
+    done();
+  });
+  app.addHook('onResponse', (request, reply, done) => {
+    httpServerTelemetry.finish(request, {
+      method: request.method,
+      route: request.routeOptions.url ?? 'unmatched',
+      statusCode: reply.statusCode,
+    });
+    done();
+  });
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -152,6 +327,13 @@ export function buildApp(options: BuildAppOptions) {
       void reply.status(409).send({
         code: 'atomic_write_conflict',
         message: 'Atomic file changed before commit.',
+      });
+      return;
+    }
+    if (error instanceof WorkspaceFileBoundaryError) {
+      void reply.status(error.statusCode).send({
+        code: error.code,
+        message: error.message,
       });
       return;
     }
@@ -212,13 +394,23 @@ export function buildApp(options: BuildAppOptions) {
     ...(options.previewMonitorStandbyPollIntervalMs === undefined
       ? {}
       : {
-          previewMonitorStandbyPollIntervalMs:
-            options.previewMonitorStandbyPollIntervalMs,
+          previewMonitorStandbyPollIntervalMs: options.previewMonitorStandbyPollIntervalMs,
         }),
     ...(options.previewFailurePollIntervalMs === undefined
       ? {}
       : { previewFailurePollIntervalMs: options.previewFailurePollIntervalMs }),
     now,
+    ...(storageMeasurements === undefined ? {} : { storageMeasurements }),
+    ...(snapshotDeletion === undefined ? {} : { snapshotDeletion }),
+    ...(checkpointService === undefined ? {} : { checkpointService }),
+    ...(rawCostRecorder === undefined || options.usageMetering === undefined
+      ? {}
+      : {
+          costRecorder: {
+            start: (input: object) =>
+              rawCostRecorder.start({ ...input, pricing: options.usageMetering?.pricing }),
+          },
+        }),
   });
   const previewTransport =
     options.previewTransport ??
@@ -234,5 +426,13 @@ export function buildApp(options: BuildAppOptions) {
     registerPreviewRoutes(previewApp, { rows: options.rows, transport: previewTransport });
     done();
   });
+  if (options.telemetryRelay !== undefined) {
+    registerSandboxTelemetryRoute(app, { relay: options.telemetryRelay });
+  }
   return app;
+}
+
+function isSnapshotDeletionStore(value: SnapshotMeasurementStore): value is SnapshotMeasurementStore & SnapshotDeletionStore {
+  const candidate = value as Partial<SnapshotDeletionStore>;
+  return typeof candidate.listProject === 'function' && typeof candidate.removeVerified === 'function';
 }

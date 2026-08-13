@@ -62,6 +62,7 @@ describe('specification and planning (PRD §23.3)', () => {
       'temporal_workflow_id',
       'started_by',
       'budget_json',
+      'plan_max_credits',
       'started_at',
       'completed_at',
     ]);
@@ -171,6 +172,7 @@ describe('specification and planning (PRD §23.3)', () => {
     expect(checkNames(agentRuns)).toEqual([
       'agent_runs_mode_check',
       'agent_runs_app_type_check',
+      'agent_runs_plan_max_credits_check',
     ]);
     expect(checkExpression(agentRuns, 'agent_runs_mode_check')).toBe(
       "mode in ('ask', 'prototype', 'build', 'fix', 'autonomous')",

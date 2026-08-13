@@ -36,6 +36,7 @@ import {
   type SourceRevision,
 } from './images/forge-node-base.js';
 import { createForgeWebTestRecipe } from './images/forge-web-test.js';
+import { ForgeNodeOciReferenceSchema } from './images/oci.js';
 
 const execFileAsync = promisify(execFile);
 const EnvironmentKeySchema = z.enum(['dev', 'staging', 'prod']);
@@ -111,6 +112,7 @@ const LockedEnvironmentSchema = z
 export const ImageLockSchema = z
   .object({
     version: z.literal(1),
+    publicMirrors: z.object({ 'forge-node-base': ForgeNodeOciReferenceSchema }).strict().optional(),
     environments: z
       .object({
         dev: LockedEnvironmentSchema.optional(),

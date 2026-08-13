@@ -1,9 +1,11 @@
 import { APP_TYPES, RunModeSchema, TaskStateSchema } from '@zapp/contracts';
+import { sql } from 'drizzle-orm';
 import {
   check,
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   text,
   timestamp,
@@ -36,7 +38,7 @@ export const specifications = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Monotonic per project. An approved version is immutable and every task and test cites one (PRD §12.3). */
     version: integer('version').notNull(),
     status: text('status').notNull(),
@@ -62,7 +64,7 @@ export const decisions = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Null when the question was settled before the specification existed. */
     specificationId: text('specification_id').references(() => specifications.id),
     question: text('question').notNull(),
@@ -89,7 +91,7 @@ export const agentRuns = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Null in ask mode, which answers questions without touching a branch (PRD §11.1). */
     branchId: text('branch_id').references(() => branches.id),
     mode: text('mode', { enum: RUN_MODES }).notNull(),
@@ -107,12 +109,19 @@ export const agentRuns = pgTable(
       .references(() => users.id),
     /** Token/credit ceiling for this run; null falls back to the organization's default (PRD §31). */
     budgetJson: jsonb('budget_json'),
+    /** Immutable organization-plan ceiling resolved when this run intent is first admitted. */
+    planMaxCredits: numeric('plan_max_credits', { precision: 20, scale: 4 })
+      .notNull(),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp('completed_at', { withTimezone: true }),
   },
   (t) => [
     check('agent_runs_mode_check', oneOf('mode', RUN_MODES)),
     check('agent_runs_app_type_check', oneOf('app_type', APP_TYPES)),
+    check(
+      'agent_runs_plan_max_credits_check',
+      sql`${t.planMaxCredits} >= 1 and ${t.planMaxCredits} <= 1000000 and trunc(${t.planMaxCredits}) = ${t.planMaxCredits}`,
+    ),
     // Mission Control reads a project's runs newest-first; the organization
     // index serves the cross-project dashboard and every tenant-scoped read.
     index('agent_runs_project_started_at_idx').on(t.projectId, t.startedAt),
@@ -128,7 +137,7 @@ export const agentPhases = pgTable(
     organizationId: organizationId(),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     /** Position in the plan, 1-based. Unique per run: two phases cannot claim one slot. */
     sequence: integer('sequence').notNull(),
     title: text('title').notNull(),
@@ -146,7 +155,7 @@ export const agentTasks = pgTable(
     organizationId: organizationId(),
     phaseId: text('phase_id')
       .notNull()
-      .references(() => agentPhases.id),
+      .references(() => agentPhases.id, { onDelete: 'cascade' }),
     /** Set when a task was split during execution (PRD §13.4); Drizzle's self-reference form. */
     parentTaskId: text('parent_task_id').references((): AnyPgColumn => agentTasks.id),
     title: text('title').notNull(),
@@ -185,13 +194,13 @@ export const desktopLocalAgentSessions = pgTable(
       .references(() => users.id),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     taskId: text('task_id')
       .notNull()
-      .references(() => agentTasks.id),
+      .references(() => agentTasks.id, { onDelete: 'cascade' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -218,9 +227,9 @@ export const approvals = pgTable(
     organizationId: organizationId(),
     runId: text('run_id')
       .notNull()
-      .references(() => agentRuns.id),
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
     /** Null for run-level gates (specification approval, production deploy). */
-    taskId: text('task_id').references(() => agentTasks.id),
+    taskId: text('task_id').references(() => agentTasks.id, { onDelete: 'cascade' }),
     type: text('type').notNull(),
     status: text('status').notNull(),
     /** What is being asked, rendered by the client: the tool call, the diff, the deploy target. */

@@ -1,0 +1,229 @@
+{
+  "schemaVersion": 1,
+  "baseline": "1155e94",
+  "capturedAt": "2026-08-12T20:16:23.000Z",
+  "environment": {
+    "platform": "darwin-arm64",
+    "node": "26.5.0",
+    "pnpm": "9.15.0",
+    "postgres": "16 (isolated fresh container)"
+  },
+  "report": "validation/exit-criteria/evidence/2026-08-12-local.md",
+  "results": [
+    {
+      "criterionId": "E4",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "control-api projects PostgreSQL integration",
+          "exitCode": 0,
+          "summary": "10/10 passed"
+        },
+        {
+          "command": "control-api GitHub import route suite",
+          "exitCode": 0,
+          "summary": "16/16 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E5",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "desktop local runtime focused suite",
+          "exitCode": 0,
+          "summary": "6/6 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E6",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "sandbox checkpoint integration",
+          "exitCode": 0,
+          "summary": "11/11 passed"
+        },
+        {
+          "command": "orchestrator task-isolation integration",
+          "exitCode": 0,
+          "summary": "4/4 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E7",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "specification-engine suite",
+          "exitCode": 0,
+          "summary": "7/7 passed"
+        },
+        {
+          "command": "orchestrator autonomous integration",
+          "exitCode": 0,
+          "summary": "8/8 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E9",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "workspace-runtime suite",
+          "exitCode": 0,
+          "summary": "35/35 passed"
+        },
+        {
+          "command": "orchestrator task-isolation integration",
+          "exitCode": 0,
+          "summary": "4/4 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E10",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "orchestrator verifier integration",
+          "exitCode": 0,
+          "summary": "11/11 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E11",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "verification-service Playwright runner suite",
+          "exitCode": 0,
+          "summary": "4/4 passed"
+        },
+        {
+          "command": "verification-engine evidence suite",
+          "exitCode": 0,
+          "summary": "6/6 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E12",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "orchestrator repair integration",
+          "exitCode": 0,
+          "summary": "9/9 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E13",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "sandbox authenticated preview suite",
+          "exitCode": 0,
+          "summary": "10/10 passed"
+        },
+        {
+          "command": "web preview-panel Playwright suite",
+          "exitCode": 0,
+          "summary": "4/4 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E16",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "release-service deployment workflow",
+          "exitCode": 0,
+          "summary": "4/4 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E17",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "verification-engine evidence suite",
+          "exitCode": 0,
+          "summary": "6/6 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E18",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "release-service rollback integration",
+          "exitCode": 0,
+          "summary": "8/8 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E19",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "control-api usage ledger PostgreSQL integration",
+          "exitCode": 0,
+          "summary": "15/15 passed"
+        },
+        {
+          "command": "control-api usage collector suite",
+          "exitCode": 0,
+          "summary": "19/19 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E20",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "control-api tenant-isolation PostgreSQL integration",
+          "exitCode": 0,
+          "summary": "55/55 passed"
+        },
+        {
+          "command": "control-api route-isolation suite",
+          "exitCode": 0,
+          "summary": "30/30 passed"
+        },
+        {
+          "command": "sandbox abuse boundary suite",
+          "exitCode": 0,
+          "summary": "6/6 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E21",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "control-api incident route suite",
+          "exitCode": 0,
+          "summary": "6/6 passed"
+        },
+        {
+          "command": "control-api incident PostgreSQL integration",
+          "exitCode": 0,
+          "summary": "1/1 passed"
+        }
+      ]
+    }
+  ]
+}

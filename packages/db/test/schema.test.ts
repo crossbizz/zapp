@@ -25,11 +25,15 @@ import {
   runCreditAccounts,
   runCreditCeilingAdjustments,
   usageOutbox,
+  sandboxSnapshotMeasurements,
+  usageReconciliationCorrections,
   accountingLeaderLeases,
+  creditExhaustionEpisodes,
   runEventCounters,
   secretMetadata,
   specifications,
   subscriptions,
+  trialCreditGrants,
   syntheticChecks,
   testCases,
   testRuns,
@@ -80,9 +84,11 @@ describe('identity tables', () => {
       'slug',
       'plan',
       'billing_customer_id',
+      'deletion_requested_at',
       'created_at',
       'settings_json',
     ]);
+    expect(sqlType(organizations, 'deletion_requested_at')).toBe('timestamp with time zone');
     expect(requiredColumns(organizations)).toContain('settings_json');
     expect(sqlType(organizations, 'settings_json')).toBe('jsonb');
   });
@@ -128,9 +134,30 @@ describe('billing tables', () => {
     ]);
   });
 
+  it('makes the OPS-5 trial claim unique by both organization and user', () => {
+    expect(tableName(trialCreditGrants)).toBe('trial_credit_grants');
+    expect(columnNames(trialCreditGrants)).toEqual([
+      'organization_id',
+      'user_id',
+      'state',
+      'created_at',
+      'delivered_at',
+    ]);
+    expect(indexNames(trialCreditGrants)).toEqual([
+      'trial_credit_grants_user_idx',
+      'trial_credit_grants_pending_idx',
+    ]);
+    expect(foreignKeys(trialCreditGrants)).toEqual([
+      'organization_id -> organizations.id',
+      'user_id -> users.id',
+    ]);
+    expect(checkNames(trialCreditGrants)).toEqual(['trial_credit_grants_state_check']);
+  });
+
   it('gives usage_ledger exactly the PRD §23.1 columns, in order', () => {
     expect(columnNames(usageLedger)).toEqual([
       'id',
+      'operation_key',
       'organization_id',
       'project_id',
       'run_id',
@@ -141,6 +168,7 @@ describe('billing tables', () => {
       'unit',
       'cost_usd',
       'credits_charged',
+      'metadata',
       'occurred_at',
     ]);
   });
@@ -152,7 +180,10 @@ describe('billing tables', () => {
   });
 
   it('scopes every ledger read by organization and time', () => {
-    expect(indexNames(usageLedger)).toEqual(['usage_ledger_org_occurred_at_idx']);
+    expect(indexNames(usageLedger)).toEqual([
+      'usage_ledger_org_occurred_at_idx',
+      'usage_ledger_operation_idx',
+    ]);
     expect(foreignKeys(usageLedger)).toEqual(['organization_id -> organizations.id']);
     // project/run/task attribution is deliberately unconstrained: those tables
     // arrive with FND-6, and a purge there must never orphan a billing row.
@@ -175,6 +206,7 @@ describe('billing tables', () => {
       'storage_gib_hours',
       'deploy_provider',
       'artifact_storage',
+      'credit_grant',
     ]);
   });
 
@@ -185,14 +217,20 @@ describe('billing tables', () => {
         modelCompletionJournal,
         runCreditCeilingAdjustments,
         usageOutbox,
+        sandboxSnapshotMeasurements,
+        usageReconciliationCorrections,
         accountingLeaderLeases,
+        creditExhaustionEpisodes,
       ].map(tableName),
     ).toEqual([
       'run_credit_accounts',
       'model_completion_journal',
       'run_credit_ceiling_adjustments',
       'usage_outbox',
+      'sandbox_snapshot_measurements',
+      'usage_reconciliation_corrections',
       'accounting_leader_leases',
+      'credit_exhaustion_episodes',
     ]);
 
     expect(columnNames(runCreditAccounts)).toEqual([
@@ -231,6 +269,12 @@ describe('billing tables', () => {
       'absolute_ceiling',
       'created_at',
     ]);
+    // Immutable billing history retains textual run/approval attribution after
+    // project deletion, just like usage_ledger; purgeable parents cannot cascade
+    // into an append-only table.
+    expect(foreignKeys(runCreditCeilingAdjustments)).toEqual([
+      'organization_id -> organizations.id',
+    ]);
     expect(columnNames(usageOutbox)).toEqual([
       'id',
       'organization_id',
@@ -241,6 +285,37 @@ describe('billing tables', () => {
       'next_attempt_at',
       'created_at',
       'published_at',
+      'delivered_at',
+    ]);
+    expect(columnNames(sandboxSnapshotMeasurements)).toEqual([
+      'provider_snapshot_id',
+      'organization_id',
+      'project_id',
+      'logical_bytes',
+      'kind',
+      'created_at',
+      'expires_at',
+      'measured_at',
+    ]);
+    expect(columnNames(usageReconciliationCorrections)).toEqual([
+      'id',
+      'operation_key',
+      'organization_id',
+      'project_id',
+      'run_id',
+      'task_id',
+      'category',
+      'window_from',
+      'window_to',
+      'target_quantity',
+      'delta_quantity',
+      'event_json',
+      'status',
+      'attempts',
+      'created_at',
+      'submission_claimed_at',
+      'delivered_at',
+      'confirmed_at',
     ]);
     expect(columnNames(accountingLeaderLeases)).toEqual([
       'name',

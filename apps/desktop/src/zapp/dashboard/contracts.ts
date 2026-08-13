@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  ClientFeatureFlagsResponseSchema,
+  type ClientFeatureFlagsResponse,
+} from "@zapp/config/flags";
 
 import { createClient, defineContract } from "@/ipc/contracts/core";
 
@@ -8,7 +12,17 @@ import {
   CreateCloudProjectSchema,
 } from "./model";
 
+const DesktopClientFeatureFlagsResponseSchema =
+  z.custom<ClientFeatureFlagsResponse>(
+    (value) => ClientFeatureFlagsResponseSchema.safeParse(value).success,
+  );
+
 export const dashboardContracts = {
+  getFeatureFlags: defineContract({
+    channel: "zapp-dashboard:get-feature-flags",
+    input: z.object({}).strict(),
+    output: DesktopClientFeatureFlagsResponseSchema,
+  }),
   listProjects: defineContract({
     channel: "zapp-dashboard:list-projects",
     input: z

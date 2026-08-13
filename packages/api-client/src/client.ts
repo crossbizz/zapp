@@ -1,4 +1,9 @@
-import { AgentEventSchema, GatewayStreamEventSchema } from '@zapp/contracts';
+import {
+  AgentEventSchema,
+  BuilderPreviewEventSchema,
+  GatewayStreamEventSchema,
+  type BuilderPreviewEvent,
+} from '@zapp/contracts';
 import { createParser, type EventSourceMessage } from 'eventsource-parser';
 
 import { PUBLIC_API_OPERATIONS } from './generated-operations.js';
@@ -76,10 +81,17 @@ type NumericStatus<Status> = Status extends number
   : Status extends `${infer Value extends number}`
     ? Value
     : never;
+export interface BinaryApiResponse<Status extends number = number> {
+  readonly status: Status;
+  readonly contentType: 'image/png';
+  readonly body: ReadableStream<Uint8Array>;
+}
 type ResponseContent<Status, Value> = Value extends { content: infer Content }
-  ? Content extends object
-    ? Content[keyof Content]
-    : undefined
+  ? Content extends { 'image/png': unknown }
+    ? BinaryApiResponse<NumericStatus<Status>>
+    : Content extends object
+      ? Content[keyof Content]
+      : undefined
   : Value extends { headers: { Location: infer Location } }
     ? {
         readonly status: NumericStatus<Status>;
@@ -159,6 +171,12 @@ export interface SubscribeRunEventsOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface SubscribePreviewEventsOptions {
+  readonly onEvent: (event: BuilderPreviewEvent) => void | Promise<void>;
+  readonly onError?: (error: Error) => void;
+  readonly signal?: AbortSignal;
+}
+
 export interface EventSubscription {
   close(): void;
   readonly closed: Promise<void>;
@@ -170,6 +188,10 @@ export interface ZappClient {
     options: RequestOptions<Path, Method>,
   ): Promise<SuccessfulResponse<Operation<Path, Method>>>;
   subscribeRunEvents(runId: string, options: SubscribeRunEventsOptions): EventSubscription;
+  subscribePreviewEvents(
+    workspaceId: string,
+    options: SubscribePreviewEventsOptions,
+  ): EventSubscription;
   streamLocalAgentCompletion(
     sessionId: string,
     body: LocalAgentCompletionRequest,
@@ -316,6 +338,14 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
       if (mediaType === undefined || !responseMetadata.mediaTypes.includes(mediaType)) {
         throw new ZappProtocolError();
       }
+      if (mediaType === 'image/png') {
+        return {
+          status: response.status,
+          contentType: 'image/png',
+          body: response.body,
+        } as SuccessfulResponse<Operation<Path, Method>>;
+      }
+      if (mediaType !== 'application/json') throw new ZappProtocolError();
       const payload = await response.text();
       if (payload.trim().length === 0) throw new ZappProtocolError();
       let parsed: unknown;
@@ -351,6 +381,33 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
         retry: options.eventStreamRetry,
         signal: controller.signal,
         operation: publicOperation('/v1/runs/{runId}/events', 'GET'),
+      }).finally(() => {
+        subscribeOptions.signal?.removeEventListener('abort', abortFromCaller);
+      });
+
+      return { close, closed };
+    },
+
+    subscribePreviewEvents(workspaceId, subscribeOptions): EventSubscription {
+      const controller = new AbortController();
+      const close = (): void => {
+        controller.abort();
+      };
+      const abortFromCaller = (): void => {
+        controller.abort(subscribeOptions.signal?.reason);
+      };
+      subscribeOptions.signal?.addEventListener('abort', abortFromCaller, { once: true });
+      if (subscribeOptions.signal?.aborted) abortFromCaller();
+
+      const closed = previewEventSubscription({
+        baseUrl,
+        fetch,
+        getToken: options.getToken,
+        workspaceId,
+        options: subscribeOptions,
+        retry: options.eventStreamRetry,
+        signal: controller.signal,
+        operation: publicOperation('/v1/workspaces/{workspaceId}/preview/events', 'GET'),
       }).finally(() => {
         subscribeOptions.signal?.removeEventListener('abort', abortFromCaller);
       });
@@ -613,6 +670,147 @@ interface RunEventSubscriptionInput {
   readonly retry: EventStreamRetryOptions | undefined;
   readonly signal: AbortSignal;
   readonly operation: OperationMetadata;
+}
+
+interface PreviewEventSubscriptionInput {
+  readonly baseUrl: URL;
+  readonly fetch: FetchImplementation;
+  readonly getToken: ZappClientOptions['getToken'];
+  readonly workspaceId: string;
+  readonly options: SubscribePreviewEventsOptions;
+  readonly retry: EventStreamRetryOptions | undefined;
+  readonly signal: AbortSignal;
+  readonly operation: OperationMetadata;
+}
+
+async function previewEventSubscription(input: PreviewEventSubscriptionInput): Promise<void> {
+  const retryMs = boundedDelay(input.retry?.initialDelayMs ?? INITIAL_RECONNECT_DELAY_MS);
+  const maxDelayMs = boundedMaximum(input.retry?.maxDelayMs ?? MAX_RECONNECT_DELAY_MS);
+  const random = input.retry?.random ?? Math.random;
+  let failures = 0;
+  while (!input.signal.aborted) {
+    try {
+      const url = requestUrl(
+        input.baseUrl,
+        '/v1/workspaces/{workspaceId}/preview/events',
+        { workspaceId: input.workspaceId },
+      );
+      const headers = await requestHeaders(
+        input.getToken,
+        { accept: 'text/event-stream' },
+        undefined,
+        input.operation,
+        input.signal,
+      );
+      const response = await raceAbort(
+        input.fetch(url, {
+          headers,
+          signal: input.signal,
+          ...(operationUsesCookies(input.operation) ? { credentials: 'include' } : {}),
+        }),
+        input.signal,
+      );
+      if (!response.ok) throw await apiError(response);
+      assertEventStreamResponse(response);
+      if (response.body === null) throw new SseProtocolError('the stream response has no body.');
+      await consumePreviewEventStream(response.body, input.options.onEvent, input.signal);
+      failures = 0;
+    } catch (error) {
+      if (isAborted(input.signal)) return;
+      const safe = safePreviewError(error);
+      reportPreviewSseError(input.options, safe);
+      if (
+        safe instanceof SseParseError ||
+        safe instanceof SseCallbackError ||
+        (safe instanceof ZappApiError && !isRetryableStatus(safe.status))
+      ) {
+        return;
+      }
+    }
+    if (isAborted(input.signal)) return;
+    try {
+      await delay(reconnectDelay(retryMs, failures, maxDelayMs, random), input.signal);
+      failures += 1;
+    } catch {
+      return;
+    }
+  }
+}
+
+async function consumePreviewEventStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: SubscribePreviewEventsOptions['onEvent'],
+  signal: AbortSignal,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let buffered = '';
+  let data: string[] = [];
+  const dispatch = async (): Promise<void> => {
+    if (data.length === 0) return;
+    const captured = data;
+    data = [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(captured.join('\n')) as unknown;
+    } catch {
+      throw new SseParseError('data is not valid JSON.');
+    }
+    const event = BuilderPreviewEventSchema.safeParse(parsed);
+    if (!event.success) {
+      throw new SseParseError('data does not match the builder preview event contract.');
+    }
+    try {
+      await raceAbort(Promise.resolve(onEvent(event.data)), signal);
+    } catch {
+      if (signal.aborted) throw abortError(signal);
+      throw new SseCallbackError();
+    }
+  };
+  const line = async (value: string): Promise<void> => {
+    if (value === '') {
+      await dispatch();
+      return;
+    }
+    if (value.startsWith(':')) return;
+    const colon = value.indexOf(':');
+    const field = colon === -1 ? value : value.slice(0, colon);
+    const raw = colon === -1 ? '' : value.slice(colon + 1);
+    const valueData = raw.startsWith(' ') ? raw.slice(1) : raw;
+    if (field === 'data') data.push(valueData);
+  };
+  try {
+    for (;;) {
+      const next = await raceAbort(reader.read(), signal);
+      if (next.done) break;
+      buffered += decoder.decode(next.value, { stream: true });
+      let token = takeLine(buffered, false);
+      while (token !== undefined) {
+        buffered = token.rest;
+        await line(token.value);
+        token = takeLine(buffered, false);
+      }
+    }
+    buffered += decoder.decode();
+    let token = takeLine(buffered, true);
+    while (token !== undefined) {
+      buffered = token.rest;
+      await line(token.value);
+      token = takeLine(buffered, true);
+    }
+  } finally {
+    try {
+      const cancellation = reader.cancel(signal.aborted ? abortError(signal) : undefined);
+      void cancellation.catch(() => undefined);
+    } catch {
+      // Cancellation is best-effort after stream settlement.
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // A non-cooperative stream cannot retain the SDK reader lock.
+    }
+  }
 }
 
 interface EventStreamState {
@@ -905,6 +1103,23 @@ function reportSseError(options: SubscribeRunEventsOptions, error: Error): void 
   } catch {
     // Consumer callbacks must not keep an authenticated reconnect loop alive.
   }
+}
+
+function reportPreviewSseError(options: SubscribePreviewEventsOptions, error: Error): void {
+  try {
+    options.onError?.(error);
+  } catch {
+    // Consumer callbacks must not keep an authenticated reconnect loop alive.
+  }
+}
+
+function safePreviewError(error: unknown): Error {
+  return error instanceof ZappApiError ||
+    error instanceof SseParseError ||
+    error instanceof SseProtocolError ||
+    error instanceof SseCallbackError
+    ? error
+    : new Error('Preview event stream disconnected.');
 }
 
 function safeError(error: unknown): Error {

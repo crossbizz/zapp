@@ -121,6 +121,8 @@ describe('AGENT_EVENT_TYPES', () => {
       'agent.completed',
       'message.user',
       'message.assistant',
+      'conversation.card',
+      'conversation.response',
       'tool.started',
       'tool.output',
       'tool.completed',
@@ -143,7 +145,7 @@ describe('AGENT_EVENT_TYPES', () => {
     expect(new Set(AGENT_EVENT_TYPES).size).toBe(AGENT_EVENT_TYPES.length);
   });
   it('event type list matches PRD count', () => {
-    expect(AGENT_EVENT_TYPES).toHaveLength(36);
+    expect(AGENT_EVENT_TYPES).toHaveLength(38);
   });
 });
 

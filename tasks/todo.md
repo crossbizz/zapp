@@ -56,6 +56,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] M1-GATE-13 Await server-side SSE Accept-probe cleanup before connection reuse
 - [x] M1-GATE-14 Restore awaited SSE CancelRequest barrier before connection reuse
 - [x] M1-GATE-15 Bound the real PostgreSQL append-only reset proof
+- [x] M1-GATE-16 Track only committed sources and bound lifecycle cleanup under full cold-gate contention
 
 ### Plan 02 — Control plane (part 2)
 - [x] CP-9 Run + workspace routes
@@ -69,6 +70,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-20 Conversation continuation + attachments API (ADR-0027)
 ### Plan 03 — Workspace/sandbox core
 - [x] WS-1 workspace-runtime interface + path safety
+- [x] WS-1-FIX-1 Await Linux descendant reaping in cold CI
 - [x] WS-2 Modal images (forge-node-base, forge-web-test)
 - [x] WS-3 workspace-agent daemon
 - [x] WS-4 Modal provider create/exec/terminate/attach
@@ -109,6 +111,18 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M2 — Agentic core + Mission Control (Weeks 8–14)
 
+- [x] M2-M6-PLAN-2 Public product completion contracts + dependency graph (ADR-0032)
+- [x] AR-23 Durable retry/skip builder-control protocol
+- [x] CP-22 Public builder controls + generic approval contract
+- [x] AR-24 Typed interactive conversation-card workflow
+- [x] CP-23 Public card responses + artifact reads
+- [x] WS-16 Workspace file/list/read/direct-edit-commit boundary
+- [x] GIT-6 Approved template registry source pipeline
+- [x] GIT-5 Commit comparison + approved template seeding
+- [x] VF-17 Test/evidence read contract
+- [x] CP-24 Public code/diff/log/test/evidence bridge
+- [x] CP-25 Public template APIs + template project creation
+
 - [x] AR-9 Worker/queues/idempotency hardening
 - [x] AR-10 Pause/resume/cancel/redirect signals
 - [x] AR-10-FIX-1 Bound control acknowledgements + truthful approval status query
@@ -142,15 +156,27 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WS-15 Runaway-compute governor
 - [x] WS-15-FIX-1 Fenced sweep and shutdown closure
 - [x] WS-15-FIX-2 Preview-proxy smoke readiness
-- [ ] WEB-7 Preview panel + states + capture drawer
-- [ ] WEB-8 Element selection attachments
-- [ ] WEB-9 Mission Control drawer
-- [ ] WEB-10 Interview/spec/plan approval cards
-- [ ] WEB-11 Code/Logs/Tests surfaces
-- [ ] WEB-17 Template gallery + detail with demo preview & Remix
+- [x] M2-CI-PREVIEW-CDP Deterministic aborted CDP serialization gate
+- [x] CP-21 Public builder preview bridge (ADR-0028)
+- [x] CP-21-FIX-1 Durable screenshot operation reservation
+- [x] WEB-7 Preview panel + states + capture drawer
+- [x] WEB-7-FIX-1 Bounded preview lifecycle closure
+- [x] WEB-7-FIX-2 Structured preview Fix evidence
+- [x] WEB-8 Element selection attachments
+- [x] WEB-COLD-FIX-1 Isolate E2E Next build output
+- [x] WEB-COLD-FIX-2 Align the repository test contract with isolated E2E startup
+- [x] WEB-9 Mission Control drawer
+- [x] WEB-10 Interview/spec/plan approval cards
+- [x] WEB-11 Code/Logs/Tests surfaces
+- [x] WEB-17 Template gallery + detail with demo preview & Remix
 - [x] OPS-1B Flexprice bootstrap + usage summaries + complete metering acceptance
-- [ ] OPS-2 Metering coverage + three-way reconciliation
-- [ ] OPS-3 Plan quotas + budget enforcement
+- [x] OPS-1B-FIX-1 Application-role correction serialization
+- [x] OPS-2 Metering coverage + three-way reconciliation
+- [x] OPS-2-FIX-1 Durable metering and reconciliation closure
+- [x] OPS-3 Plan quotas + budget enforcement
+- [x] OPS-3-FIX-1 Production enforcement closure
+- [x] OPS-3-FIX-2 Credit-boundary and legacy-approval rollout closure
+- [x] OPS-3-FIX-3 Build scheduling and legacy activity boundary closure
 - [x] MAC-4 Platform auth + Keychain
 - [x] MAC-4-FIX-1 Close auth revocation and startup bounds
 - [x] MAC-5 Unified local+cloud dashboard
@@ -163,6 +189,10 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] MAC-6-FIX-3 Single-writer local operation finalization
 
 ## M3 — Verification-first + Autonomous (Weeks 12–18)
+
+- [x] CP-26 Settings + organization directory APIs
+- [x] INT-10 Public GitHub sync policy/state/manual-sync/export
+- [x] DEP-13 Release list/history/active-production projection
 
 - [x] VF-6 Preview health + browser smoke gates
 - [x] VF-7 Playwright runner + evidence artifacts
@@ -180,14 +210,21 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] AR-17 Autonomous mode workflow
 - [x] AR-18 Build mode
 - [x] AR-19 Fix mode (reproduce-first)
+- [x] AR-19-FIX-1 Serialize Temporal Fix/Autonomous acceptance
 - [x] AR-20 Redirect + plan diff
+- [x] AR-20-FIX-1 Serialize redirect Temporal acceptance
 - [x] AR-21 Forking (project/branch/conversation/run)
-- [ ] WEB-12 Settings suite (secrets/integrations/members/GitHub)
-- [ ] WEB-13 Releases + evidence viewer
+- [x] WEB-12 Settings suite (secrets/integrations/members/GitHub)
+- [x] WEB-13 Releases + evidence viewer
 - [x] OPS-12 Security suites (start; complete M5)
 - [x] OPS-13 Injection evals + Semgrep gates (start; complete M5)
 
 ## M4 — Integrations & deployment (Weeks 16–22)
+
+- [x] DEP-14 Public deployment progress/actions/domains contract
+- [x] DEP-15 Production health + rollback-preview projection
+- [x] WS-17 Immutable public forge-node-base OCI mirror
+- [x] GIT-7 Public short-lived repository credential lease
 
 - [x] INT-3 Sync engine (stale-base, conflicts)
 - [x] INT-4 GitHub export
@@ -196,7 +233,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] INT-6 Supabase migrations + RLS gen/tests
 - [x] INT-7 Neon branch workflows
 - [x] INT-8 Generated-app Stripe adapter
-- [ ] INT-9 Stripe E2E integration tests
+- [x] INT-9 Stripe E2E integration tests
 - [x] DEP-1 Release records + ReleasePort
 - [x] DEP-2 Three-state readiness check
 - [x] DEP-3 Deployment type classification
@@ -208,40 +245,48 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] DEP-9 Rollback with DB-compatibility gating
 - [x] DEP-10 Custom domains + SSL
 - [x] DEP-11 Synthetic checks
-- [ ] DEP-12 E2E release lifecycle + fork-to-repair
-- [ ] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
-- [ ] WEB-15 Production health + guarded rollback UI
-- [ ] MAC-7 Docker runtime mode
-- [ ] MAC-8 Cloud builder + Mission Control parity
-- [ ] MAC-9 Commit-boundary sync + guided merge
-- [ ] MAC-10 Local→cloud promotion
+- [x] DEP-12a Authenticated release lifecycle transport + public SDK
+- [x] DEP-12b Production adapter composition + real synthetic/E2E journey
+- [x] DEP-12 E2E release lifecycle + fork-to-repair (umbrella completion)
+- [x] WEB-16-FIX-1 Keep the cold web test command aligned with activation coverage
+- [x] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
+- [x] WEB-15 Production health + guarded rollback UI
+- [x] MAC-7 Docker runtime mode
+- [x] MAC-8 Cloud builder + Mission Control parity
+- [x] MAC-9 Commit-boundary sync + guided merge
+- [x] MAC-10 Local→cloud promotion
 
 ## M5 — SaaS hardening (Weeks 20–26)
 
-- [ ] OPS-4 Stripe platform billing
-- [ ] OPS-5 Top-ups + trial
-- [ ] OPS-6 PostHog analytics + feature flags + dashboards
-- [ ] OPS-7 Notification service
+- [x] CP-27 Public desktop notification projection
+
+- [x] OPS-4 Stripe platform billing
+- [x] OPS-4-FIX-1 Stripe fixture secret-scan repair
+- [x] OPS-5 Top-ups + trial
+- [x] OPS-6 PostHog analytics + feature flags + dashboards
+- [x] OPS-7 Notification service
 - [ ] OPS-8 OTel → Grafana Cloud across services (+ Faro)
-- [ ] OPS-10 Managed-app observability templates
-- [ ] OPS-11 Incident → Fix run closed loop
-- [ ] OPS-12 Security suites complete (isolation/redaction/abuse)
-- [ ] OPS-13 Injection evals + policy scans blocking
-- [ ] OPS-14 Retention archival + rehydration
-- [ ] OPS-17 Support/admin console
-- [ ] CP-17 Retention & deletion pipeline
-- [ ] CP-18 Export APIs
-- [ ] WEB-16 Usage/billing/audit UI + a11y gate + activation funnel
-- [ ] MAC-11 Notifications + auto-update
-- [ ] MAC-12 Dyad project migration
+- [x] OPS-10 Managed-app observability templates
+- [x] OPS-11 Incident → Fix run closed loop
+- [x] OPS-12 Security suites complete (isolation/redaction/abuse)
+- [x] OPS-12-FIX-1 Runtime enforcement evidence reconciliation
+- [x] OPS-12-FIX-2 Legacy completion replay redaction
+- [x] OPS-13 Injection evals + policy scans blocking
+- [x] OPS-14 Retention archival + rehydration
+- [x] OPS-17 Support/admin console
+- [x] CP-17 Retention & deletion pipeline
+- [x] CP-18 Export APIs
+- [x] WEB-16 Usage/billing/audit UI + a11y gate + activation funnel
+- [x] MAC-11 Notifications + auto-update
+- [x] MAC-12 Dyad project migration
 
 ## M6 — Private beta validation (Weeks 26–30)
 
-- [ ] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures
-- [ ] V-2 Run repeat-change protocol ×5 per app (PRD §40.3), record metrics
-- [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links
-- [ ] V-4 Measure §37.6 thresholds; go/no-go review; log invalidation signals (PRD §40.4)
-- [ ] V-5 Beta onboarding: 3–5 agencies, support rotation, feedback loop into tasks/
+- [x] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures
+- [ ] V-2 Run repeat-change protocol ×5 per app (PRD §40.3), record metrics *(10-app/50-change corpus is valid; 50 live executions and immutable result evidence require a dedicated run budget/window beyond the 10-minute task cap)*
+- [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links *(matrix is structurally green: 15 verified, 6 candidates, 1 V-2-blocked, 0 failed; live evidence still required for candidates)*
+- [ ] V-4 Measure §37.6 thresholds; go/no-go review; log invalidation signals (PRD §40.4) *(fail-closed evaluator is green; real measurements and V-2/V-5 evidence remain absent)*
+- [ ] V-5 Beta onboarding: 3–5 agencies, support rotation, feedback loop into tasks/ *(tooling is green; real agencies, support assignment, and task-linked feedback remain absent)*
 
 ## Deferred post-P0 (ADR-0022) — return before public beta
 
@@ -266,8 +311,8 @@ Blockers below must close before M0 is signed off.
 - [x] GATE-3 osv triaged and dispositioned at the gate: vitest 2→3 landed (closes CVE-2026-47429, 9.8 Critical — note: the ID I first cited was wrong, the implementer corrected it). Result 58→57, **everything outside apps/desktop is now vulnerability-free; 100% of the remainder is the vendored tree → OPS-13 owns it**. Two deliberate non-actions: (a) electron 40.8.5 (worth 18 findings) STOPPED — it reproducibly fails the desktop preserve suite's PTY test, and CI's `retries: 2` would likely have masked it; landing it would have been the green-isn't-evidence trap. Needs real triage, not a retry. (b) vite 5→6 (8.2 High) cannot close from our manifests — apps/desktop pins vite ^5.4.17 directly and no patched 5.x exists; adding vite@^6 to our packages would close zero findings while looking like a fix. Both are OPS-13 scope.
 - [x] GATE-4 dependabot scan permissions fixed (8f367fb; least-privilege pull-requests: read) — verify on the next dependabot PR
 - [x] GATE-5 No control-api → git-service → Forgejo integration test (each half proven separately; M1/CP-9 needs the join)
-- [ ] GATE-6 Desktop's own suites unwired from CI (363 vitest files, 123/125 Playwright specs never run)
-- [ ] GATE-7 Dev Forgejo has 42 orphaned test repos despite afterAll cleanup claims
+- [x] GATE-6 Desktop's own suites run on every pull request (full unit corpus plus four no-retry Playwright shards; signed tag/manual packaging retained)
+- [x] GATE-7 Forgejo fixture cleanup and guarded dev-orphan inventory
 
 **Unverified by credential absence (stated plainly, not hidden):** Stytch against a real
 IdP; macOS signing + notarization (steps skipped on every run — MAC-2's core claim has

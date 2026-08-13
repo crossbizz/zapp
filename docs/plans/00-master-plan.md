@@ -176,7 +176,9 @@ Plans: 03 (all core), 02 (CP-9..CP-16), 04 (AR-1..AR-8), 08 (WEB-1..WEB-6), 06 (
 **Exit:** in the browser: sign in → home prompt (Emergent-style) → project created from template → Modal sandbox boots `forge-node-base` → dev server runs → authenticated preview renders beside chat → a single Builder agent applies a chat-requested edit → commit lands in internal Git → sandbox killed mid-run and the project resumes from durable state (E4, E5-cloud, E6, E13; §38.2 exit).
 
 ### M2 — Agentic core: durable runs + Mission Control (Weeks 8–14)
-Plans: 04 (AR-9..AR-15), 05 (VF-1..VF-5), 08 (WEB-7..WEB-11, WEB-17), 10 (OPS-1..OPS-3), 09 (MAC-4..MAC-6).
+Plans: 04 (AR-9..AR-15, AR-23..AR-24), 05 (VF-1..VF-5, VF-17),
+02 (CP-22..CP-25), 03 (WS-16), 06 (GIT-5..GIT-6),
+08 (WEB-7..WEB-11, WEB-17), 10 (OPS-1..OPS-3), 09 (MAC-4..MAC-6).
 
 ADR-0025 pulls OPS-1A's authoritative model-completion write/reservation boundary into M1
 and orders AR-3A → OPS-1A → AR-3B before further real model traffic. OPS-1B retains the
@@ -184,15 +186,18 @@ remaining M2 Flexprice bootstrap and usage-summary acceptance.
 **Exit:** Ask/Prototype/Build modes on Temporal; task graph with per-task commits; pause/resume/redirect/cancel < 5 s ack; Mission Control renders structured events with replay/resume; capability detection produces execution contracts; dev-server + build + typecheck + smoke gates run; usage recorded per run (E7 partial, E8, E9, E19 partial; §38.4 exit).
 
 ### M3 — Verification-first: verifier, browser tests, repair, autonomous (Weeks 12–18, overlaps M2)
-Plans: 05 (VF-6..VF-16), 04 (AR-16..AR-21), 08 (WEB-12..WEB-13).
+Plans: 05 (VF-6..VF-16), 04 (AR-16..AR-21), 02 (CP-26), 06 (INT-10),
+07 (DEP-13), 08 (WEB-12..WEB-13).
 **Exit:** independent Verifier gates phases and can reject Builder output; Playwright generation + browser agent produce evidence tied to acceptance criteria; bounded repair loops; Autonomous mode runs interview → approved plan → multi-phase build surviving worker restart; Fix mode reproduces a seeded bug, writes regression test, patches, re-verifies (E7, E10, E11, E12, E21; §38.5 exit).
 
 ### M4 — Integrations & deployment (Weeks 16–22, overlaps M3)
-Plans: 06 (INT-1..INT-9), 07 (all), 08 (WEB-14..WEB-15), 09 (MAC-7..MAC-10).
+Plans: 06 (INT-1..INT-9, GIT-7), 07 (DEP-1..DEP-15), 03 (WS-17),
+08 (WEB-14..WEB-15), 09 (MAC-7..MAC-10).
 **Exit:** GitHub import/export/sync with conflict surfacing; Supabase + Neon connect/provision/migrate/typegen; Stripe adapter in generated apps passes integration tests; readiness check → deploy (Vercel or Fly) → permanent URL → release evidence manifest → rollback restores previous healthy deployment; custom domain flow (E14, E15, E16, E17, E18; §38.6 exit).
 
 ### M5 — SaaS hardening (Weeks 20–26, overlaps M4)
-Plans: 10 (OPS-4..OPS-18), 02 (CP-17..CP-18), 08 (WEB-16), 09 (MAC-11..MAC-12).
+Plans: 10 (OPS-4..OPS-18), 02 (CP-17..CP-18, CP-27), 08 (WEB-16),
+09 (MAC-11..MAC-12).
 **Exit:** Stripe platform billing + Flexprice credits + budgets enforce plan caps; OTel → Grafana Cloud across services; PostHog analytics + feature flags; generated-app observability (Faro + OTel) for Managed; synthetic checks; support dashboard + termination controls; retention/deletion pipeline; security suite green (tenant isolation, secret redaction, sandbox abuse, prompt-injection evals) (E19, E20, E22 prep; §38.7 exit).
 
 ### M6 — Private beta validation (Weeks 26–30)
@@ -289,6 +294,22 @@ North star (PRD §37.1): **verified production releases per active org per month
 
 ## Execution log
 
+- 2026-08-12 GATE-6 done — Pull requests now run the complete desktop `test:unit` corpus and all Playwright specs in four bounded, no-retry shards with failure reports; signed tag/manual packaging remains separate.
+- 2026-08-12 M2-GATE passed: Static and local acceptance evidence is green: Turbo completed 94 tasks, web Playwright 109/109, control-api unit 817 passed with 9 explicit provider skips, workspace-agent 114/114, orchestrator unit 220/220, planning 10/10, database 52/52, git-service live 18/18, verification 9/9, and orchestrator integration 45/45. The full hook was interrupted after an unrelated worktree contaminated the shared database, so the hook itself is not reported green; uncontaminated exact-head reruns passed control integration 307 with 6 explicit provider skips, tenant isolation 55/55, and local Forgejo Gate-5 1/1.
+- 2026-08-12 M3-GATE passed: The verifier, browser, repair, autonomous, and fix paths are covered by the green local suites above; the benchmark catalog validates 10 apps and 50 changes, and the evidence matrix reports 15 verified, 6 candidates, 1 V-2-blocked, and 0 failed without treating candidate evidence as complete.
+- 2026-08-12 M4-GATE BLOCKED: The local release E2E path passed 1/1 and local Forgejo Gate-5 passed 1/1, but GitHub, Supabase, Neon, Stripe, and Fly live-provider acceptance skipped visibly because credentials were absent. M4 remains open until those provider-backed exit paths produce evidence.
+- 2026-08-12 M5-GATE BLOCKED: Billing, analytics, and observability provider acceptance is incomplete: Stripe and PostHog credentials were absent, and OPS-8 remains unchecked because prior real Grafana OTLP attempts returned 401 while the current token is a placeholder. The beta policy is structurally valid but readiness remains blocked; no provider skip or failed acceptance is reported green.
+- 2026-08-12 M2-M6-PLAN-2 done — Accepted ADR-0032 and expanded the remaining dependency graph around durable public builder controls/cards, tenant-safe code/evidence/settings/deployment projections, immutable OCI distribution, public Git leases, and desktop notification delivery; no provider call was required.
+
+- 2026-08-12 V-5 BLOCKED: Implemented and twice reviewed an anonymous five-slot cohort registry, four-severity/two-person current support rotation, exact-shape privacy boundary, and atomic idempotent feedback-to-`tasks/beta-feedback/` bridge; all 5 operations tests pass and the readiness command deliberately exits 2 because no real agencies, support assignment, or task-linked feedback exist yet.
+- 2026-08-12 V-4 BLOCKED: Implemented and twice reviewed a fail-closed evaluator for all eight exact PRD §37.6 thresholds and seven §40.4 invalidation signals, with typed SHA-256-bound V-2/V-5 evidence, strict boundary behavior, and complete missing-input reporting; the policy gate is 5/5 green, while the real verdict remains blocked on all eight measurements, both evidence kinds, and the agency review.
+- 2026-08-12 V-3 BLOCKED: Commit `441259b` refreshed the fail-closed E1–E22 evidence matrix against exact PRD text, tracker state, repository-local sources, and machine-readable command outcomes. Local PostgreSQL reruns closed E10/E12 and release-workflow evidence closed E16, yielding 15 verified, 3 candidates, 4 dependency-blocked, and 0 failed criteria; V-3 remains unchecked until the four dependencies and candidate evidence close.
+- 2026-08-12 V-3 BLOCKED: Completed M2–M5 product work moved E1/E2/E8 from dependency-blocked to candidate without fabricating evidence; the matrix and all 20 validation-policy tests now pass at 15 verified, 6 candidates, 1 V-2-blocked, and 0 failed, while live sign-in/GitHub/database and end-to-end evidence remain required.
+- 2026-08-12 V-2 BLOCKED: The deterministic 10-app/50-change corpus is ready, but the repeat-change run would measure a knowingly incomplete product while WEB-9–16, INT-9, DEP-12, MAC-7–12, and OPS-8 remain unchecked; no benchmark results or success metrics were fabricated, and execution resumes after those public UI/runtime/provider gates land.
+- 2026-08-12 V-2 BLOCKED: The product-path dependencies are now complete except Grafana acceptance, and the 10-app/50-change catalog validates; executing and recording fifty real agent changes has no automated repository runner and cannot fit the controller's 10-minute-per-task limit, so no paid runs, timings, costs, or success metrics were fabricated.
+- 2026-08-12 V-2 BLOCKED: The public `/v1` preflight and strict result-evidence validator now fail closed, but the available environment has no operator-issued benchmark bearer credential or tenant selection. Device authentication requires interactive Stytch approval, so no real execution, cost, timing, verifier, repair, or result artifact was fabricated.
+- 2026-08-12 V-2 BLOCKED: Hardened the validator after integration review so a hash-matching unrelated file cannot stand in for evidence; five typed envelopes now bind each result to the exact execution, app, run, and claimed outcome. The live credential and tenant blocker above is unchanged.
+- 2026-08-12 V-1 done — Added and twice reviewed the deterministic 10-app/50-change PRD §40.2–40.3 catalog over checked-in VF fixtures, with fail-closed path, symlink, environment-file, metadata, and overwrite controls plus an isolated materializer; no provider credentials were used.
 - 2026-08-09 M1-PLAN-2 done — Split capped AR-3 into stable completion identity, Temporal-durable transcript replay, pre-dispatch OPS-1A reservations with append-only approved ceiling increases and fixed local run-rate snapshots, and final gateway wiring so retries do not rebill or bypass SQS/Flexprice; both review rounds were consumed and the final concrete plan findings were resolved without a third round (ADR-0025).
 
 ### M1-GATE-7 — Serialize shared-database integration suites
@@ -351,6 +372,10 @@ North star (PRD §37.1): **verified production releases per active org per month
 - 2026-08-07: M1-GATE-4 done — removed the redundant Playwright `/v1/me` response-within-route rewrite and reused the fake API's existing model-policy fixture; Fast Refresh stress passed 5/5 and the forced cold local gate passed 57/57, while credential-gated suites skipped loudly and GitHub Actions remains unverified because billing prevents job startup.
 - 2026-08-07: M1-GATE-5 done — replaced four literal synthetic basic-auth URLs in preview redaction tests with runtime URL construction after the pre-push secret guard blocked them; focused tests passed 3/3, the full preview suite passed 109/109, and GitHub Actions remains unverified because billing prevents job startup.
 - 2026-08-07: M1-GATE-6 done — raised only the workspace-runtime real-Git fixture's aggregate envelope to 60 seconds after cold-gate contention exceeded 15 seconds; individually enforced 5-second fixture and 30-second production Git deadlines remain authoritative, the package passed 35/35 locally, and GitHub Actions remains unverified because billing prevents job startup.
+- 2026-08-12 GATE-7 done — Forgejo integration fixtures now register each canonical private ref before provider creation, clean every owned ref idempotently with post-delete verification, and fail teardown on any error; the explicit local-only inventory removed 53 canonical private DB-orphaned refs (0 database-backed) and rechecked zero candidates.
+- 2026-08-12 GATE-7 follow-up done — The orphan command is now read-only: it rejects every argument, has no delete or locking path, ignores shell-overridden Forgejo URLs in favor of the exact generated local root, and the live inventory remains at zero candidates.
+- 2026-08-13 OPS-12-FIX-1 done — Provider-enforced network-policy evidence now follows a successful provider update, model-bound session input is redacted at the boundary, and the credential-gated Modal abuse proof requires descendant termination plus kernel cgroup OOM evidence; the real Modal check skipped visibly without credentials.
+- 2026-08-13 OPS-12-FIX-2 done — Re-scoped at Task 45's two-round cap, versioned legacy completion replay now retains the immutable accounting fingerprint and completion ID while redacting provider-bound bytes; recovery metadata is authenticated for orchestrator-worker only and removed before provider routing.
 
 ## M0 gate sign-off — 2026-08-04
 

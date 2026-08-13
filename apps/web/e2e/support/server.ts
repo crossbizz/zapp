@@ -4,7 +4,10 @@ import { buildApp } from '../../../../services/control-api/src/app.js';
 import { createInMemoryTokenDenylist } from '../../../../services/control-api/src/auth/denylist.js';
 import { createInMemoryDeviceStore } from '../../../../services/control-api/src/auth/device.js';
 import type { AuthIdentity } from '../../../../services/control-api/src/auth/port.js';
-import type { UserProfile } from '../../../../services/control-api/src/auth/users.js';
+import type {
+  UserProfile,
+  UserUpsertResult,
+} from '../../../../services/control-api/src/auth/users.js';
 import { createInMemoryIdempotencyStore } from '../../../../services/control-api/src/plugins/idempotency.js';
 import { createInMemoryRateLimiter } from '../../../../services/control-api/src/plugins/rate-limit.js';
 import {
@@ -15,8 +18,10 @@ import {
 } from '../../../../services/control-api/test/support/harness.js';
 import { FakeAuthPort } from '../../../../services/control-api/test/support/fake-auth-port.js';
 
-const appPort = 3100;
-const apiPort = 4100;
+import { resetNextDevOutput } from './next-dev-output.js';
+
+const appPort = Number(process.env['ZAPP_WEB_E2E_APP_PORT'] ?? 3100);
+const apiPort = Number(process.env['ZAPP_WEB_E2E_API_PORT'] ?? 4100);
 const appBaseUrl = `http://127.0.0.1:${String(appPort)}`;
 const apiBaseUrl = `http://127.0.0.1:${String(apiPort)}`;
 
@@ -42,7 +47,7 @@ const memberships: UserProfile['memberships'] = [
 ];
 
 class FixtureUserStore extends InMemoryUserStore {
-  override upsertFromIdentity(identity: AuthIdentity): Promise<UserProfile['user']> {
+  override upsertFromIdentity(identity: AuthIdentity): Promise<UserUpsertResult> {
     this.upsertCount += 1;
     const user = {
       id: 'user-ada',
@@ -52,7 +57,7 @@ class FixtureUserStore extends InMemoryUserStore {
     };
     this.users.set(user.id, user);
     this.memberships.set(user.id, memberships);
-    return Promise.resolve(user);
+    return Promise.resolve({ user, created: this.upsertCount === 1 });
   }
 }
 
@@ -113,6 +118,11 @@ let meRequestCount = 0;
 let failMeRequest: number | undefined;
 let failMeStatus = 500;
 let dropMeRequest: number | undefined;
+let clientFeatureFlags = {
+  'voice-input': false,
+  'mobile-app-tab': false,
+  'visual-editing': false,
+};
 
 function hasCookie(header: string | undefined, name: string): boolean {
   return header?.split(';').some((pair) => pair.trim().startsWith(`${name}=`)) ?? false;
@@ -171,6 +181,15 @@ built.app.addHook('preHandler', (request) => {
 });
 
 built.app.get('/__requests', () => ({ requests }));
+built.app.get('/v1/feature-flags', () => ({ flags: clientFeatureFlags }));
+built.app.get('/__feature-flags', (request) => {
+  const url = new URL(request.raw.url ?? '/', apiBaseUrl);
+  clientFeatureFlags = {
+    ...clientFeatureFlags,
+    'mobile-app-tab': url.searchParams.get('mobileApp') === 'true',
+  };
+  return { flags: clientFeatureFlags };
+});
 built.app.get('/__reset', () => {
   requests.length = 0;
   clockOffset = 0;
@@ -178,6 +197,11 @@ built.app.get('/__reset', () => {
   failMeRequest = undefined;
   failMeStatus = 500;
   dropMeRequest = undefined;
+  clientFeatureFlags = {
+    'voice-input': false,
+    'mobile-app-tab': false,
+    'visual-editing': false,
+  };
   return { ok: true };
 });
 built.app.get('/__advance-time', (request) => {
@@ -223,6 +247,7 @@ built.app.get('/__stytch', async (request, reply) => {
   return await reply.redirect(callback.toString(), 302);
 });
 
+await resetNextDevOutput();
 await built.app.listen({ host: '127.0.0.1', port: apiPort });
 
 const next = spawn('pnpm', ['exec', 'next', 'dev', '--port', String(appPort)], {

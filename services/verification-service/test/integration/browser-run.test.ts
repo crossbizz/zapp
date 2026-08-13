@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 
 import { createServiceTokenSigner } from '@zapp/config';
 import { newId } from '@zapp/contracts';
+import type { VerificationReadModel } from '@zapp/verification-engine';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../../src/app.js';
@@ -27,6 +28,10 @@ import {
 const NOW = new Date('2026-08-10T18:00:00.000Z');
 const TOKEN_CONFIG = { secret: 'v'.repeat(64) };
 const testRoots: string[] = [];
+const unusedReadModel: VerificationReadModel = {
+  listForRun: () => Promise.resolve([]),
+  signArtifact: () => Promise.reject(new Error('not used')),
+};
 
 function input(): BrowserRunInput {
   const organizationId = newId('org');
@@ -244,7 +249,13 @@ describe('VF-7 browser execution and evidence', () => {
       now: () => NOW,
     });
     const signer = createServiceTokenSigner(TOKEN_CONFIG);
-    const app = buildApp({ signer, browserRuns: runner, logger: false, now: () => NOW });
+    const app = buildApp({
+      signer,
+      browserRuns: runner,
+      readModel: unusedReadModel,
+      logger: false,
+      now: () => NOW,
+    });
     const token = await signer.signServiceToken({
       service: 'orchestrator-worker',
       aud: 'verification-service',
@@ -372,6 +383,7 @@ describe('VF-7 browser execution and evidence', () => {
     const workspaces = new ScriptedWorkspacePort([report('passed')], runInput.commitSha);
     const app = buildApp({
       signer: createServiceTokenSigner(TOKEN_CONFIG),
+      readModel: unusedReadModel,
       browserRuns: createPlaywrightBrowserRunner({
         workspaces,
         records: new MemoryRecords(),

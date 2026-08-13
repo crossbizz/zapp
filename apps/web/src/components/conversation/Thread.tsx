@@ -1,27 +1,36 @@
 'use client';
 
-import { ZappApiError, type RunEvent } from '@zapp/api-client';
+import { ZappApiError, type ConversationCard, type RunEvent } from '@zapp/api-client';
 import { EmptyState } from '@zapp/ui';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
 import { useRunEvents } from '../../hooks/useRunEvents';
-import { createControlPlaneClient, type CreateRunMessageInput } from '../../lib/api';
-import { Composer, type ConversationSubmission } from './Composer';
+import {
+  createControlPlaneClient,
+  type BuilderRun,
+  type CreateRunMessageInput,
+} from '../../lib/api';
+import { Composer, type ConversationImageInput, type ConversationSubmission } from './Composer';
 import { MessageBubble } from './MessageBubble';
 import { ProgressCard } from './ProgressCard';
 import { ToolActivityLine, type ToolActivity } from './ToolActivityLine';
+import { QuestionCard } from './QuestionCard';
+import { SpecSummaryCard } from './SpecSummaryCard';
+import { PlanReviewCard } from './PlanReviewCard';
+import { ApprovalCard } from './ApprovalCard';
 
 const activeRunStatuses = new Set(['paused', 'queued', 'running', 'waiting_for_approval']);
 
-type RunList = Awaited<ReturnType<ReturnType<typeof createControlPlaneClient>['listRuns']>>;
-type Run = RunList['items'][number];
 type Attachment = NonNullable<CreateRunMessageInput['attachments']>[number];
 
 interface ThreadProps {
+  readonly adoptedRun?: BuilderRun;
   readonly allowedModels: readonly string[];
   readonly branches: readonly { readonly id: string; readonly name: string }[];
+  readonly incomingImages?: readonly ConversationImageInput[];
   readonly initialPrompt?: string;
   readonly onOpenCommit: (commitSha: string) => void;
+  readonly onRunChange: (run: BuilderRun | undefined) => void;
   readonly organizationId: string;
   readonly projectId: string;
 }
@@ -60,7 +69,14 @@ interface CommitItem {
   readonly sha: string;
 }
 
-type ThreadItem = ActivityItem | CommitItem | MessageItem | PhaseItem;
+interface CardItem {
+  readonly card: ConversationCard;
+  readonly key: string;
+  readonly kind: 'card';
+  readonly sequence: number;
+}
+
+type ThreadItem = ActivityItem | CardItem | CommitItem | MessageItem | PhaseItem;
 
 interface PendingSend {
   readonly attachmentKeys: readonly string[];
@@ -142,6 +158,12 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
       continue;
     }
     flushActivities();
+
+    if (event.type === 'conversation.card') {
+      const card = event.data.payload['card'] as ConversationCard;
+      items.push({ card, key: card.cardId, kind: 'card', sequence: event.data.sequence });
+      continue;
+    }
 
     if (event.type === 'message.user' || event.type === 'message.assistant') {
       const content = payloadString(event, 'content');
@@ -233,7 +255,22 @@ function submissionFingerprint(submission: ConversationSubmission): string {
     files: submission.files.map((file) => [file.name, file.size, file.type, file.lastModified]),
     mode: submission.mode,
     model: submission.model,
+    selectedElements: submission.selectedElements,
   });
+}
+
+function messageContent(submission: ConversationSubmission): string {
+  if (submission.selectedElements.length === 0) return submission.content;
+  return JSON.stringify({
+    message: submission.content,
+    selectedElements: submission.selectedElements,
+  });
+}
+
+function newRunAttachmentContent(submission: ConversationSubmission): string {
+  return submission.selectedElements.length === 0
+    ? 'Use these reference images with my request.'
+    : messageContent(submission);
 }
 
 function recommendedMode(content: string): CreateRunInputMode {
@@ -329,7 +366,8 @@ function ThreadStyles(): ReactElement {
         font-size: var(--zapp-text-14);
       }
       .zapp-conversation-error {
-        color: var(--zapp-status-danger);
+        border: 1px solid var(--zapp-status-danger);
+        color: var(--zapp-text-primary);
         background: var(--zapp-danger-surface);
       }
       .zapp-conversation-composer {
@@ -410,14 +448,17 @@ function ThreadStyles(): ReactElement {
 }
 
 export function Thread({
+  adoptedRun,
   allowedModels,
   branches,
+  incomingImages = [],
   initialPrompt,
   onOpenCommit,
+  onRunChange,
   organizationId,
   projectId,
 }: ThreadProps): ReactElement {
-  const [currentRun, setCurrentRun] = useState<Run>();
+  const [currentRun, setCurrentRun] = useState<BuilderRun>();
   const [loading, setLoading] = useState(true);
   const [operationError, setOperationError] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -439,7 +480,10 @@ export function Thread({
     createControlPlaneClient(organizationId)
       .listRuns(projectId, controller.signal)
       .then((response) => {
-        setCurrentRun(response.items[0]);
+        if (controller.signal.aborted) return;
+        const run = response.items[0];
+        setCurrentRun(run);
+        onRunChange(run);
         setOperationError(undefined);
       })
       .catch(() => {
@@ -453,7 +497,12 @@ export function Thread({
     return () => {
       controller.abort();
     };
-  }, [organizationId, projectId]);
+  }, [onRunChange, organizationId, projectId]);
+
+  useEffect(() => {
+    if (adoptedRun === undefined || adoptedRun.id === currentRun?.id) return;
+    setCurrentRun(adoptedRun);
+  }, [adoptedRun, currentRun?.id]);
 
   const pendingSend = (submission: ConversationSubmission): PendingSend => {
     const fingerprint = submissionFingerprint(submission);
@@ -516,14 +565,15 @@ export function Thread({
       },
       pending.runKey,
     );
-    if (attachments.length > 0) {
+    if (attachments.length > 0 || submission.selectedElements.length > 0) {
       await client.sendRunMessage(
         created.run.id,
-        { attachments: [...attachments], content: 'Use these reference images with my request.' },
+        { attachments: [...attachments], content: newRunAttachmentContent(submission) },
         pending.newRunAttachmentKey,
       );
     }
     setCurrentRun(created.run);
+    onRunChange(created.run);
   };
 
   const send = async (submission: ConversationSubmission): Promise<boolean> => {
@@ -537,7 +587,7 @@ export function Thread({
         try {
           await createControlPlaneClient(organizationId).sendRunMessage(
             currentRun.id,
-            { attachments: [...attachments], content: submission.content },
+            { attachments: [...attachments], content: messageContent(submission) },
             pending.messageKey,
           );
         } catch (error) {
@@ -623,6 +673,14 @@ export function Thread({
           if (item.kind === 'activity') {
             return <ToolActivityLine activities={item.activities} key={item.key} />;
           }
+          if (item.kind === 'card') {
+            if (currentRun === undefined) return null;
+            const props = { organizationId, runId: currentRun.id } as const;
+            if (item.card.kind === 'question') return <QuestionCard card={item.card} key={item.key} {...props} />;
+            if (item.card.kind === 'specification') return <SpecSummaryCard card={item.card} key={item.key} {...props} />;
+            if (item.card.kind === 'plan') return <PlanReviewCard card={item.card} key={item.key} {...props} />;
+            return <ApprovalCard card={item.card} key={item.key} {...props} />;
+          }
           if (item.kind === 'phase') {
             return (
               <ProgressCard
@@ -653,6 +711,7 @@ export function Thread({
         active={active}
         allowedModels={allowedModels}
         branches={branches}
+        incomingImages={incomingImages}
         onStop={stop}
         onSubmit={send}
         projectId={projectId}

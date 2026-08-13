@@ -18,7 +18,12 @@ import { CommitShaSchema, idSchema, newId } from '@zapp/contracts';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
-import type { DeploymentConfirmation, DeploymentType } from './types.js';
+import {
+  DeploymentConfirmationSchema,
+  DeploymentTypeSchema,
+  type DeploymentConfirmation,
+  type DeploymentType,
+} from './types.js';
 
 export const ReleaseStatusSchema = z.enum([
   'candidate',
@@ -74,6 +79,7 @@ export const CreateReleaseCandidateInputSchema = z
     specificationWaiver: SpecificationWaiverSchema.optional(),
     actorId: idSchema('user'),
     operationKey: OperationKeySchema,
+    resolvedFixRunIds: z.array(idSchema('run')).max(100).default([]),
   })
   .strict()
   .superRefine((input, context) => {
@@ -121,6 +127,18 @@ const ApproveInputSchema = z
   .strict();
 export type ApproveInput = z.infer<typeof ApproveInputSchema>;
 
+const BeginDeploymentInputSchema = z
+  .object({
+    organizationId: idSchema('org'),
+    releaseId: idSchema('rel'),
+    actorId: idSchema('user'),
+    operationKey: OperationKeySchema,
+    deploymentType: DeploymentTypeSchema,
+    confirmation: DeploymentConfirmationSchema,
+  })
+  .strict();
+export type BeginDeploymentInput = z.infer<typeof BeginDeploymentInputSchema>;
+
 export interface ReadinessReport {
   readonly state: 'ready' | 'warnings' | 'blocked';
   readonly findings: readonly unknown[];
@@ -158,8 +176,13 @@ export interface ReleasePort {
 }
 
 export interface ReleaseGitPort {
-  getCommit(input: { readonly projectId: string; readonly sha: string }): Promise<boolean>;
+  getCommit(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly sha: string;
+  }): Promise<boolean>;
   createTag(input: {
+    readonly organizationId: string;
     readonly projectId: string;
     readonly tag: string;
     readonly sha: string;
@@ -192,7 +215,35 @@ export interface CreateCandidateStoreInput {
   readonly operationKey: string;
   readonly fingerprint: string;
   readonly release: Release;
+  readonly audit: ReleaseAudit;
+  readonly resolvedFixRunIds: readonly string[];
   readonly specificationWaiver?: SpecificationWaiver;
+}
+
+export interface ReleaseAudit {
+  readonly actorId: string;
+  readonly action: 'release.created' | 'release.approved' | 'release.deploy_requested';
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+export function releaseIncidentResolutionId(incidentId: string, releaseId: string): string {
+  const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const bytes = createHash('sha256')
+    .update(`incident-resolution:${incidentId}:${releaseId}`)
+    .digest();
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5 && output.length < 26) {
+      bits -= 5;
+      output += alphabet[(value >>> bits) & 31] ?? '';
+    }
+    if (output.length === 26) break;
+  }
+  return idSchema('aud').parse(`aud_${output}`);
 }
 
 export interface TransitionStoreInput {
@@ -202,6 +253,7 @@ export interface TransitionStoreInput {
   readonly to: ReleaseStatus;
   readonly operationKey: string;
   readonly fingerprint: string;
+  readonly audit?: ReleaseAudit;
 }
 
 export interface ReleaseStore {
@@ -377,9 +429,7 @@ export function createPostgresReleaseContext(database: Database): ReleaseContext
       const role = membershipRows[0]?.role;
       if (role === 'owner') return true;
       if (role !== 'builder') return false;
-      const settings = OrganizationDeploySettingsSchema.safeParse(
-        organizationRows[0]?.settings,
-      );
+      const settings = OrganizationDeploySettingsSchema.safeParse(organizationRows[0]?.settings);
       return settings.success && settings.data.builderCanDeploy;
     },
   };
@@ -389,7 +439,8 @@ function hash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-type OperationClaim = { readonly status: 'acquired' } | { readonly status: 'replay'; readonly release: Release };
+type OperationClaim =
+  { readonly status: 'acquired' } | { readonly status: 'replay'; readonly release: Release };
 
 async function claimOperation(
   transaction: Transaction,
@@ -523,11 +574,19 @@ export function createPostgresReleaseStore(database: Database): ReleaseStore {
           ownerId,
         });
         if (claim.status === 'replay') return claim.release;
-        const [created] = await transaction
-          .insert(releases)
-          .values(input.release)
-          .returning();
+        const [created] = await transaction.insert(releases).values(input.release).returning();
         const release = ReleaseSchema.parse(created);
+        await transaction.insert(auditEvents).values({
+          id: newId('aud'),
+          organizationId: release.organizationId,
+          actorType: 'user',
+          actorId: input.audit.actorId,
+          action: input.audit.action,
+          targetType: 'release',
+          targetId: release.id,
+          metadataJson: input.audit.metadata,
+          occurredAt: release.createdAt,
+        });
         if (input.specificationWaiver !== undefined) {
           await transaction.insert(auditEvents).values({
             id: newId('aud'),
@@ -543,6 +602,44 @@ export function createPostgresReleaseStore(database: Database): ReleaseStore {
             },
             occurredAt: release.createdAt,
           });
+        }
+        for (const fixRunId of input.resolvedFixRunIds) {
+          const links = await transaction
+            .select({ metadata: auditEvents.metadataJson })
+            .from(auditEvents)
+            .where(
+              and(
+                eq(auditEvents.organizationId, release.organizationId),
+                eq(auditEvents.action, 'incident.fix_run_created'),
+                eq(auditEvents.targetType, 'run'),
+                eq(auditEvents.targetId, fixRunId),
+                sql`${auditEvents.metadataJson}->>'projectId' = ${release.projectId}`,
+              ),
+            );
+          for (const link of links) {
+            const metadata = z
+              .object({ incidentId: idSchema('aud'), projectId: idSchema('proj') })
+              .passthrough()
+              .parse(link.metadata);
+            await transaction
+              .insert(auditEvents)
+              .values({
+                id: releaseIncidentResolutionId(metadata.incidentId, release.id),
+                organizationId: release.organizationId,
+                actorType: 'user',
+                actorId: input.audit.actorId,
+                action: 'incident.resolved',
+                targetType: 'release',
+                targetId: release.id,
+                metadataJson: {
+                  projectId: metadata.projectId,
+                  incidentId: metadata.incidentId,
+                  fixRunId,
+                },
+                occurredAt: release.createdAt,
+              })
+              .onConflictDoNothing();
+          }
         }
         await completeOperation(transaction, key, ownerId, release);
         return release;
@@ -623,6 +720,19 @@ export function createPostgresReleaseStore(database: Database): ReleaseStore {
           );
         }
         const release = ReleaseSchema.parse(changed);
+        if (input.audit !== undefined) {
+          await transaction.insert(auditEvents).values({
+            id: newId('aud'),
+            organizationId: release.organizationId,
+            actorType: 'user',
+            actorId: input.audit.actorId,
+            action: input.audit.action,
+            targetType: 'release',
+            targetId: release.id,
+            metadataJson: input.audit.metadata,
+            occurredAt: sql`clock_timestamp()`,
+          });
+        }
         await completeOperation(transaction, key, ownerId, release);
         return release;
       });
@@ -635,6 +745,7 @@ export interface ReleaseRecordService {
   getRelease(organizationId: string, releaseId: string): Promise<Release | undefined>;
   transitionStatus(input: TransitionInput): Promise<Release>;
   approve(input: ApproveInput): Promise<Release>;
+  beginDeployment(input: BeginDeploymentInput): Promise<Release>;
 }
 
 export function createReleaseRecordService(dependencies: {
@@ -647,9 +758,12 @@ export function createReleaseRecordService(dependencies: {
   const newReleaseId = dependencies.newReleaseId ?? (() => newId('rel'));
   const now = dependencies.now ?? (() => new Date());
 
-  async function transitionStatus(untrustedInput: TransitionInput): Promise<Release> {
+  async function transitionStatusWithAudit(
+    untrustedInput: TransitionInput,
+    audit?: ReleaseAudit,
+  ): Promise<Release> {
     const input = TransitionInputSchema.parse(untrustedInput);
-    const fingerprint = hash(input);
+    const fingerprint = hash({ ...input, audit });
     const replay = await dependencies.store.getTransitionReplay({
       operationKey: input.operationKey,
       fingerprint,
@@ -673,6 +787,7 @@ export function createReleaseRecordService(dependencies: {
       to: input.to,
       operationKey: input.operationKey,
       fingerprint,
+      ...(audit === undefined ? {} : { audit }),
     });
   }
 
@@ -716,7 +831,13 @@ export function createReleaseRecordService(dependencies: {
           'Prototype-only commits must be converted to Build before release creation.',
         );
       }
-      if (!(await dependencies.git.getCommit({ projectId: input.projectId, sha: input.commitSha }))) {
+      if (
+        !(await dependencies.git.getCommit({
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          sha: input.commitSha,
+        }))
+      ) {
         throw new ReleaseServiceError(
           'commit_not_found',
           422,
@@ -727,6 +848,16 @@ export function createReleaseRecordService(dependencies: {
       const created = await dependencies.store.createCandidate({
         operationKey: input.operationKey,
         fingerprint,
+        audit: {
+          actorId: input.actorId,
+          action: 'release.created',
+          metadata: {
+            projectId: input.projectId,
+            environmentId: input.environmentId,
+            operationKey: input.operationKey,
+          },
+        },
+        resolvedFixRunIds: input.resolvedFixRunIds,
         ...(input.specificationWaiver === undefined
           ? {}
           : { specificationWaiver: input.specificationWaiver }),
@@ -744,6 +875,7 @@ export function createReleaseRecordService(dependencies: {
         },
       });
       await dependencies.git.createTag({
+        organizationId: created.organizationId,
         projectId: created.projectId,
         tag: created.id,
         sha: created.commitSha,
@@ -752,17 +884,17 @@ export function createReleaseRecordService(dependencies: {
     },
 
     getRelease(organizationId, releaseId) {
-      return dependencies.store.get(idSchema('org').parse(organizationId), idSchema('rel').parse(releaseId));
+      return dependencies.store.get(
+        idSchema('org').parse(organizationId),
+        idSchema('rel').parse(releaseId),
+      );
     },
 
-    transitionStatus,
+    transitionStatus: (input) => transitionStatusWithAudit(input),
 
     async approve(untrustedInput) {
       const input = ApproveInputSchema.parse(untrustedInput);
-      const current = await dependencies.store.get(
-        input.actor.organizationId,
-        input.releaseId,
-      );
+      const current = await dependencies.store.get(input.actor.organizationId, input.releaseId);
       if (current === undefined) {
         throw new ReleaseServiceError('release_not_found', 404, 'Release not found.');
       }
@@ -777,12 +909,40 @@ export function createReleaseRecordService(dependencies: {
           'The actor may not approve a production deployment.',
         );
       }
-      return transitionStatus({
-        organizationId: input.actor.organizationId,
-        releaseId: input.releaseId,
-        to: 'approved',
-        operationKey: input.operationKey,
-      });
+      return transitionStatusWithAudit(
+        {
+          organizationId: input.actor.organizationId,
+          releaseId: input.releaseId,
+          to: 'approved',
+          operationKey: input.operationKey,
+        },
+        {
+          actorId: input.actor.id,
+          action: 'release.approved',
+          metadata: { operationKey: input.operationKey },
+        },
+      );
+    },
+
+    async beginDeployment(untrustedInput) {
+      const input = BeginDeploymentInputSchema.parse(untrustedInput);
+      return transitionStatusWithAudit(
+        {
+          organizationId: input.organizationId,
+          releaseId: input.releaseId,
+          to: 'deploying',
+          operationKey: input.operationKey,
+        },
+        {
+          actorId: input.actorId,
+          action: 'release.deploy_requested',
+          metadata: {
+            operationKey: input.operationKey,
+            deploymentType: input.deploymentType,
+            dataDisposition: input.confirmation.dataDisposition,
+          },
+        },
+      );
     },
   };
 }

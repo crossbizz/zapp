@@ -81,6 +81,12 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
           throw AUDIT_FAILED;
         }
       },
+      recordDetachedOnce: async (key, event) => {
+        await real.recordDetachedOnce(key, event);
+        if (auditFails) {
+          throw AUDIT_FAILED;
+        }
+      },
     };
     port = new FakeAuthPort();
     app = buildApp({
@@ -173,6 +179,31 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
       target_id: acme.id,
     });
     expect(written[0]?.metadata_json).toMatchObject({ slug: 'acme-rockets' });
+  });
+
+  it('delivers a detached completion audit exactly once across retries', async () => {
+    const acme = await found();
+    const onceSink = createDbAuditSink(database.db);
+    const workspaceId = newId('ws');
+    const event: AuditRecord = {
+      organizationId: acme.id,
+      actorType: 'user',
+      actorId: acme.userId,
+      action: 'workspace.previewed',
+      targetType: 'workspace',
+      targetId: workspaceId,
+      metadata: { operation: 'screenshot', operationKey: `op_${'a'.repeat(64)}` },
+      occurredAt: new Date('2026-08-10T21:00:00.000Z'),
+    };
+
+    await onceSink.recordDetachedOnce('cp21-screenshot-completed', event);
+    await onceSink.recordDetachedOnce('cp21-screenshot-completed', event);
+
+    const completed = (await rows()).filter(
+      (row) => row.action === 'workspace.previewed' && row.target_id === workspaceId,
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.metadata_json).toEqual(event.metadata);
   });
 
   it('walks filtered keyset pages without duplicates or foreign rows', async () => {

@@ -5,6 +5,7 @@ import {
   type ModelIdentifier,
   newId,
   type ResourceProfile,
+  type RunApprovalKind,
   type RunMode,
   type SupportLevel,
   type WorkspaceStatus,
@@ -24,6 +25,7 @@ import {
   githubImportOutbox,
   githubImports,
   integrationConnections,
+  organizations,
   MAX_EVENT_PAYLOAD_BYTES,
   projectContracts,
   projects,
@@ -66,7 +68,7 @@ import {
   CapabilityScanArtifactMetadataSchema,
   type CapabilityScanResult,
 } from '@zapp/project-adapters';
-import { and, asc, desc, eq, gt, gte, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { isUniqueViolation } from '../db/errors.js';
@@ -80,6 +82,7 @@ import type { AuditHook } from '../plugins/audit.js';
 import { IdempotencyKeySchema } from '../plugins/idempotency.js';
 import type { SecretEnvelope } from '../secrets/crypto.js';
 import type { PricingConfig } from '../usage/pricing.js';
+import { PlanLimitConcurrentRunsError } from '../usage/limits.js';
 import {
   BRANCH_ACTIVE,
   DEFAULT_BRANCH,
@@ -245,7 +248,7 @@ export interface UpdateProjectInput {
  * thrown, so no route module has to import an error class from the database
  * layer to handle it.
  */
-export type CreatedProject = ProjectResources | 'slug_taken';
+export type CreatedProject = ProjectResources | 'slug_taken' | 'organization_deleting';
 
 /** `undefined` when the project is not this tenant's, or does not exist. */
 export type UpdatedProject = Project | 'slug_taken' | undefined;
@@ -276,6 +279,11 @@ export interface TenantProjectSummaryRepository {
 export interface TenantRepositoryRepository {
   /** The project's repository; `undefined` for another tenant's project. */
   forProject(projectId: string): Promise<Repository | undefined>;
+  setSyncPolicy(input: {
+    readonly projectId: string;
+    readonly syncPolicy: 'direct_push' | 'pull_request';
+    readonly audit: AuditHook<Repository>;
+  }): Promise<Repository | undefined>;
 }
 
 export interface TenantBranchRepository {
@@ -323,6 +331,11 @@ export interface TenantAttachmentRepository {
   getById(attachmentId: string): Promise<Artifact | undefined>;
   /** Idempotently creates the deterministic artifact row after object storage succeeds. */
   create(input: CreateAttachmentInput): Promise<Artifact | undefined>;
+}
+
+export interface TenantRunArtifactRepository {
+  /** One immutable artifact only when it belongs to this tenant and exact run. */
+  getForRun(runId: string, artifactId: string): Promise<Artifact | undefined>;
 }
 
 export interface RecordCapabilityScanInput {
@@ -391,9 +404,12 @@ export interface NewRunInput {
   readonly projectId: string;
   readonly branchId: string | null;
   readonly mode: RunMode;
+  /** Local plan admission is serialized with this tenant's run creation. */
+  readonly concurrentAutonomousLimit?: number;
   readonly appType: AppType;
   readonly model: ModelIdentifier | null;
   readonly budget: unknown;
+  readonly planMaxCredits: string;
   readonly accounting: {
     readonly baseCeiling: string;
     readonly pricingVersion: string;
@@ -410,6 +426,13 @@ export type RunCreateResult =
   | { readonly outcome: 'created'; readonly run: AgentRun }
   | { readonly outcome: 'recovered'; readonly run: AgentRun }
   | { readonly outcome: 'conflict'; readonly run: AgentRun };
+
+export interface ReadmitRunDispatchInput {
+  readonly runId: string;
+  readonly requestFingerprint: string;
+  readonly concurrentAutonomousLimit?: number;
+  readonly audit: AuditHook<AgentRun>;
+}
 
 export type OperationOutcome = 'dispatch' | 'completed' | 'rejected' | 'blocked';
 
@@ -437,8 +460,14 @@ export interface CompleteRunOperationInput {
 }
 
 export interface TenantRunRepository extends Omit<TenantDb['runs'], 'byProject'> {
-  byProject(projectId: string): Promise<AgentRun[]>;
+  byProject(projectId: string, limit?: number): Promise<AgentRun[]>;
+  /** Plan-limit admission reads only active autonomous runs for this tenant. */
+  countActiveAutonomousRuns(): Promise<number>;
+  /** Redis credit mirrors are summed only for active runs in this tenant. */
+  listActiveRunIds(limit?: number): Promise<readonly string[]>;
   create(input: NewRunInput): Promise<RunCreateResult>;
+  readmitDispatch(input: ReadmitRunDispatchInput): Promise<RunCreateResult | undefined>;
+  markDispatchFailed(input: { readonly runId: string; readonly audit: AuditHook<AgentRun> }): Promise<AgentRun | undefined>;
   claimOperation(input: ClaimRunOperationInput): Promise<OperationClaim<AgentRun> | undefined>;
   completeOperation(input: CompleteRunOperationInput): Promise<AgentRun | undefined>;
   rejectOperation(
@@ -478,6 +507,8 @@ export interface CompleteWorkspaceOperationInput {
 }
 export interface TenantWorkspaceRepository {
   getById(workspaceId: string): Promise<Workspace | undefined>;
+  /** Bounded newest-first status projection for one tenant project. */
+  byProject(projectId: string, limit: number): Promise<Workspace[]>;
   create(input: NewWorkspaceInput): Promise<Workspace>;
   completeCreate(input: CompleteWorkspaceCreateInput): Promise<Workspace | undefined>;
   claimOperation(
@@ -638,7 +669,7 @@ export interface TenantMissionControlRepository {
 export interface ResolveRunApprovalInput {
   readonly runId: string;
   readonly approvalId: string;
-  readonly type: 'budget_increase';
+  readonly type: RunApprovalKind;
   readonly decision: 'approved' | 'rejected';
   readonly reason: string | null;
   readonly resolvedBy: string;
@@ -651,6 +682,7 @@ export type ResolveRunApprovalResult =
   | { readonly outcome: 'conflict'; readonly approval: Approval };
 
 export interface TenantApprovalRepository {
+  get(runId: string, approvalId: string): Promise<Approval | undefined>;
   resolve(input: ResolveRunApprovalInput): Promise<ResolveRunApprovalResult | undefined>;
 }
 
@@ -675,6 +707,11 @@ export interface ConnectGitHubInstallationInput {
 export interface TenantIntegrationRepository {
   getGitHubInstallation(installationId: string): Promise<IntegrationConnectionView | undefined>;
   connectGitHub(input: ConnectGitHubInstallationInput): Promise<IntegrationConnectionView>;
+  list(): Promise<readonly IntegrationConnectionView[]>;
+  disconnect(input: {
+    readonly connectionId: string;
+    readonly audit: AuditHook<IntegrationConnectionView>;
+  }): Promise<IntegrationConnectionView | undefined>;
 }
 
 export const AcceptGitHubImportInputSchema = GitHubImportRequestSchema.extend({
@@ -724,6 +761,7 @@ export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'ev
   readonly environments: TenantEnvironmentRepository;
   readonly contracts: TenantContractRepository;
   readonly attachments: TenantAttachmentRepository;
+  readonly runArtifacts: TenantRunArtifactRepository;
   readonly specifications: TenantSpecificationRepository;
   readonly secrets: TenantSecretRepository;
   readonly events: TenantEventRepository;
@@ -793,6 +831,27 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       ...base,
 
       integrations: {
+        async list() {
+          const rows = await db
+            .select()
+            .from(integrationConnections)
+            .where(eq(integrationConnections.organizationId, orgId))
+            .orderBy(asc(integrationConnections.provider), asc(integrationConnections.id));
+          return rows.map(integrationView);
+        },
+        async disconnect(input) {
+          return await db.transaction(async (tx) => {
+            const [row] = await tx
+              .update(integrationConnections)
+              .set({ status: 'disconnected', credentialRef: null })
+              .where(scoped(integrationConnections.organizationId, eq(integrationConnections.id, input.connectionId)))
+              .returning();
+            if (row === undefined) return undefined;
+            const view = integrationView(row);
+            await input.audit(tx, view);
+            return view;
+          });
+        },
         async getGitHubInstallation(installationId) {
           const [row] = await db
             .select()
@@ -1511,6 +1570,14 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
         async create(input: NewProjectInput): Promise<CreatedProject> {
           try {
             return await db.transaction(async (tx) => {
+              const [organization] = await tx
+                .select({ deletionRequestedAt: organizations.deletionRequestedAt })
+                .from(organizations)
+                .where(eq(organizations.id, orgId))
+                .for('update');
+              if (organization === undefined || organization.deletionRequestedAt !== null) {
+                return 'organization_deleting';
+              }
               const [project] = await tx
                 .insert(projects)
                 .values({
@@ -1821,8 +1888,70 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       runs: {
         ...base.runs,
 
+        async byProject(projectId, rawLimit): Promise<AgentRun[]> {
+          if (rawLimit === undefined) return await base.runs.byProject(projectId);
+          const limit = z.number().int().min(1).max(25).parse(rawLimit);
+          return await db
+            .select()
+            .from(agentRuns)
+            .where(
+              and(eq(agentRuns.organizationId, orgId), eq(agentRuns.projectId, projectId)),
+            )
+            .orderBy(desc(agentRuns.id))
+            .limit(limit);
+        },
+
+        async countActiveAutonomousRuns(): Promise<number> {
+          const [result] = await db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(agentRuns)
+            .where(
+              and(
+                eq(agentRuns.organizationId, orgId),
+                eq(agentRuns.mode, 'autonomous'),
+                inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+              ),
+            );
+          return result?.count ?? 0;
+        },
+
+        async listActiveRunIds(rawLimit = 101): Promise<readonly string[]> {
+          const limit = z.number().int().min(1).max(101).parse(rawLimit);
+          const rows = await db
+            .select({ id: agentRuns.id })
+            .from(agentRuns)
+            .where(
+              and(
+                eq(agentRuns.organizationId, orgId),
+                inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+              ),
+            )
+            .limit(limit);
+          return rows.map((row) => row.id);
+        },
+
         async create(input: NewRunInput): Promise<RunCreateResult> {
           return await db.transaction(async (tx) => {
+            if (input.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined) {
+              await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${orgId}))`);
+              const [replay] = await tx
+                .select()
+                .from(agentRuns)
+                .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.id)))
+                .limit(1);
+              if (replay !== undefined) {
+                return {
+                  outcome: replay.requestFingerprint === input.requestFingerprint ? 'recovered' : 'conflict',
+                  run: replay,
+                };
+              }
+              const [active] = await tx
+                .select({ count: sql<number>`count(*)::int` })
+                .from(agentRuns)
+                .where(and(eq(agentRuns.organizationId, orgId), eq(agentRuns.mode, 'autonomous'), inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval'])));
+              if ((active?.count ?? 0) >= input.concurrentAutonomousLimit)
+                throw new PlanLimitConcurrentRunsError();
+            }
             const [inserted] = await tx
               .insert(agentRuns)
               .values({
@@ -1841,6 +1970,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 temporalWorkflowId: input.workflowId,
                 startedBy: input.startedBy,
                 budgetJson: input.budget,
+                planMaxCredits: input.planMaxCredits,
                 startedAt: input.now,
                 completedAt: null,
               })
@@ -1874,6 +2004,65 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
                 run.requestFingerprint === input.requestFingerprint ? 'recovered' : 'conflict',
               run,
             };
+          });
+        },
+
+        async readmitDispatch(input): Promise<RunCreateResult | undefined> {
+          return await db.transaction(async (tx) => {
+            await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${orgId}))`);
+            const [existing] = await tx
+              .select()
+              .from(agentRuns)
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+              .limit(1);
+            if (existing === undefined) return undefined;
+            if (existing.requestFingerprint !== input.requestFingerprint) {
+              return { outcome: 'conflict', run: existing };
+            }
+            if (existing.status !== 'dispatch_failed') {
+              return { outcome: 'recovered', run: existing };
+            }
+            if (existing.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined) {
+              const [active] = await tx
+                .select({ count: sql<number>`count(*)::int` })
+                .from(agentRuns)
+                .where(and(
+                  eq(agentRuns.organizationId, orgId),
+                  eq(agentRuns.mode, 'autonomous'),
+                  inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+                ));
+              if ((active?.count ?? 0) >= input.concurrentAutonomousLimit) {
+                throw new PlanLimitConcurrentRunsError();
+              }
+            }
+            const [readmitted] = await tx
+              .update(agentRuns)
+              .set({ status: 'queued' })
+              .where(scoped(
+                agentRuns.organizationId,
+                eq(agentRuns.id, input.runId),
+                eq(agentRuns.status, 'dispatch_failed'),
+              ))
+              .returning();
+            if (readmitted === undefined) return undefined;
+            await input.audit(tx, readmitted);
+            return { outcome: 'recovered', run: readmitted };
+          });
+        },
+
+        async markDispatchFailed(input): Promise<AgentRun | undefined> {
+          return await db.transaction(async (tx) => {
+            const [failed] = await tx
+              .update(agentRuns)
+              .set({ status: 'dispatch_failed' })
+              .where(scoped(
+                agentRuns.organizationId,
+                eq(agentRuns.id, input.runId),
+                eq(agentRuns.status, 'queued'),
+              ))
+              .returning();
+            if (failed !== undefined) await input.audit(tx, failed);
+            return failed;
           });
         },
 
@@ -1973,6 +2162,20 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
       },
 
       approvals: {
+        async get(runId, approvalId) {
+          const [approval] = await db
+            .select()
+            .from(approvals)
+            .where(
+              scoped(
+                approvals.organizationId,
+                eq(approvals.runId, runId),
+                eq(approvals.id, approvalId),
+              ),
+            )
+            .limit(1);
+          return approval;
+        },
         async resolve(input) {
           return await db.transaction(async (tx) => {
             const [locked] = await tx
@@ -2027,6 +2230,20 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             .where(scoped(workspaces.organizationId, eq(workspaces.id, id)))
             .limit(1);
           return row;
+        },
+        async byProject(projectId, rawLimit) {
+          const limit = z.number().int().min(1).max(25).parse(rawLimit);
+          return await db
+            .select()
+            .from(workspaces)
+            .where(
+              scoped(
+                workspaces.organizationId,
+                eq(workspaces.projectId, projectId),
+              ),
+            )
+            .orderBy(desc(workspaces.id))
+            .limit(limit);
         },
         async create(input) {
           return await db.transaction(async (tx) => {
@@ -2183,6 +2400,18 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             .where(scoped(repositories.organizationId, eq(repositories.projectId, projectId)))
             .limit(1);
           return row;
+        },
+        async setSyncPolicy(input) {
+          return await db.transaction(async (tx) => {
+            const [row] = await tx
+              .update(repositories)
+              .set({ syncPolicy: input.syncPolicy })
+              .where(scoped(repositories.organizationId, eq(repositories.projectId, input.projectId)))
+              .returning();
+            if (row === undefined) return undefined;
+            await input.audit(tx, row);
+            return row;
+          });
         },
       },
 
@@ -2595,6 +2824,23 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             await input.audit(tx, created);
             return created;
           });
+        },
+      },
+
+      runArtifacts: {
+        async getForRun(runId, artifactId) {
+          const [row] = await db
+            .select()
+            .from(artifacts)
+            .where(
+              scoped(
+                artifacts.organizationId,
+                eq(artifacts.runId, runId),
+                eq(artifacts.id, artifactId),
+              ),
+            )
+            .limit(1);
+          return row;
         },
       },
     };

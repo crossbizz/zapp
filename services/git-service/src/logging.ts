@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
+import { tenantSafePinoOptions } from '@zapp/config';
 
 /** Pino levels, ordered by severity. `silent` disables output entirely. */
 export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
@@ -63,6 +64,7 @@ export const REDACTED_LOG_PATHS = [
  */
 export function loggerOptions(options: { level: LogLevel; pretty: boolean }): LoggerConfig {
   return {
+    ...tenantSafePinoOptions({ serviceName: 'git-service', level: options.level }),
     level: options.level,
     serializers: logSerializers,
     redact: { paths: REDACTED_LOG_PATHS, remove: true },

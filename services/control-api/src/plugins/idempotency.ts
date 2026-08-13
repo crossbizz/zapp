@@ -395,7 +395,12 @@ declare module 'fastify' {
      * invitation is better than a duplicated one. Here the request is a *read*,
      * so replay protects nothing and the stored copy is pure exposure.
      */
-    idempotency?: 'exempt';
+    /**
+     * `exempt` opts a route out entirely. `refresh-response` preserves the
+     * reservation/concurrency fence but lets a completed replay run the route
+     * so it can mint a fresh short-lived signed URL from a durable receipt.
+     */
+    idempotency?: 'exempt' | 'refresh-response';
     /** Route-owned replay identity for append-only events whose first timestamp wins. */
     idempotencyFingerprint?: 'event-body-without-occurred-at';
   }
@@ -455,6 +460,9 @@ export const idempotency = fp<IdempotencyOptions>(
 
       request.idempotency = { key, fingerprint, replayed: true };
       reply.header(IDEMPOTENT_REPLAY_HEADER, 'true');
+      if (request.routeOptions.config.idempotency === 'refresh-response') {
+        return;
+      }
       if (existing.response.contentType !== undefined && existing.response.contentType !== '') {
         reply.header('content-type', existing.response.contentType);
       }

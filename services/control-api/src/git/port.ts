@@ -1,4 +1,4 @@
-import { CommitShaSchema, idSchema, internalRepoRef } from '@zapp/contracts';
+import { CommitShaSchema, OperationKeySchema, idSchema, internalRepoRef } from '@zapp/contracts';
 import { z } from 'zod';
 
 /**
@@ -101,6 +101,15 @@ export class GitServiceImportConflictError extends GitServiceError {
  */
 export const GIT_CREATE_DEADLINE_MS = 10_000;
 export const GIT_IMPORT_DEADLINE_MS = 120_000;
+export const GIT_LEASE_DEADLINE_MS = 10_000;
+
+export const RepositoryCredentialLeaseSchema = z.object({
+  token: z.string().min(1),
+  username: z.string().min(1),
+  cloneUrl: z.string().url(),
+  expiresAt: z.string().datetime(),
+}).strict();
+export type RepositoryCredentialLease = z.infer<typeof RepositoryCredentialLeaseSchema>;
 
 export const GitRepositoryImportInputSchema = z
   .object({
@@ -127,6 +136,24 @@ export const GitRepositoryImportResultSchema = z
 export type GitRepositoryImportInput = z.infer<typeof GitRepositoryImportInputSchema>;
 export type GitRepositoryImportResult = z.infer<typeof GitRepositoryImportResultSchema>;
 
+export const GitTemplateSeedInputSchema = z
+  .object({
+    organizationId: idSchema('org'),
+    projectId: idSchema('proj'),
+    templateSlug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u).max(80),
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+export const GitTemplateSeedResultSchema = z
+  .object({
+    templateSlug: z.string().min(1),
+    branch: z.literal('main'),
+    headCommitSha: CommitShaSchema,
+  })
+  .strict();
+export type GitTemplateSeedInput = z.infer<typeof GitTemplateSeedInputSchema>;
+export type GitTemplateSeedResult = z.infer<typeof GitTemplateSeedResultSchema>;
+
 export interface GitServicePort {
   /**
    * Creates the project's repository with `defaultBranch` as its initial branch.
@@ -144,6 +171,15 @@ export interface GitServicePort {
   createRepository(input: CreateRepositoryInput): Promise<CreatedRepository>;
   /** Present on the shipping client; optional for project-create-only test doubles. */
   importRepository?(input: GitRepositoryImportInput): Promise<GitRepositoryImportResult>;
+  /** Present on the shipping client; required only for template-sourced project creation. */
+  seedTemplate?(input: GitTemplateSeedInput): Promise<GitTemplateSeedResult>;
+  /** Present on the shipping client; returns one write credential and never stores it. */
+  mintRepositoryLease?(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly requestedBy: string;
+    readonly ttlSec: number;
+  }): Promise<RepositoryCredentialLease>;
 }
 
 export interface GitImportServicePort extends GitServicePort {
@@ -198,6 +234,12 @@ export function createRecordOnlyGitService(): GitImportServicePort {
       return Promise.resolve({ internalRepoRef: internalRepoRef(input) });
     },
     importRepository() {
+      return Promise.reject(new GitServiceError('the git service is unavailable'));
+    },
+    seedTemplate() {
+      return Promise.reject(new GitServiceError('the git service is unavailable'));
+    },
+    mintRepositoryLease() {
       return Promise.reject(new GitServiceError('the git service is unavailable'));
     },
   };

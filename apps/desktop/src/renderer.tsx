@@ -1,5 +1,6 @@
 import { StrictMode, useCallback, useEffect } from "react";
 import { createRoot } from "react-dom/client";
+import { clientFeatureFlagDefaults } from "@zapp/config/flags";
 import { router } from "./router";
 import { RouterProvider } from "@tanstack/react-router";
 import { PostHogProvider } from "posthog-js/react";
@@ -40,6 +41,7 @@ import {
 } from "./state_machines/react";
 import { clearPreviewRuntimeForAppAtom } from "./atoms/previewRuntimeAtoms";
 import { clearTestRuntimeForAppAtom } from "./atoms/testRuntimeAtoms";
+import { initializeDesktopFaro } from "./lib/faro";
 
 // @ts-ignore
 console.log("Running in mode:", import.meta.env.MODE);
@@ -133,7 +135,17 @@ const posthogClient = posthog.init(
       return event;
     },
     persistence: "localStorage",
+    bootstrap: { featureFlags: clientFeatureFlagDefaults() },
   },
+);
+
+initializeDesktopFaro(
+  (
+    import.meta as ImportMeta & {
+      readonly env: Readonly<Record<string, string | undefined>>;
+    }
+  ).env,
+  isTelemetryOptedIn(),
 );
 
 function App() {

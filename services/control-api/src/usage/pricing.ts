@@ -1,6 +1,5 @@
 import { readFile } from 'node:fs/promises';
 
-import { USAGE_CATEGORIES } from '@zapp/db';
 import { z } from 'zod';
 
 const DecimalSchema = z
@@ -17,28 +16,73 @@ const ModelRateSchema = z
   })
   .strict();
 
-const UnitRateSchema = z.object({ usdPerUnit: DecimalSchema }).strict();
+const UsageRateSchema = z
+  .object({
+    unit: z.string().trim().min(1),
+    usdPerUnit: DecimalSchema,
+  })
+  .strict();
 
-const NonModelUsageCategorySchema = z.enum([
-  'sandbox_cpu_seconds',
-  'sandbox_mem_gib_seconds',
-  'storage_gib_hours',
-  'deploy_provider',
-  'artifact_storage',
-]);
+const CreditPackSchema = z
+  .object({
+    credits: z.string().regex(/^\d+(?:\.\d{1,4})?$/u),
+    amountUsd: z.string().regex(/^\d+(?:\.\d{1,6})?$/u),
+  })
+  .strict();
+
+export const CreditPackCatalogSchema = z
+  .record(z.string().regex(/^[a-z][a-z0-9_-]{1,63}$/u), CreditPackSchema)
+  .refine((packs) => Object.keys(packs).length > 0, 'at least one credit pack is required');
+export type CreditPackCatalog = z.infer<typeof CreditPackCatalogSchema>;
 
 export const PricingConfigSchema = z
   .object({
     version: z.string().trim().min(1),
     defaultRunCreditCeiling: DecimalSchema,
+    walletBalanceGraceFloor: DecimalSchema.optional(),
     creditsPerUsd: DecimalSchema,
+    // Optional so immutable OPS-1A pricing snapshots written before OPS-5
+    // remain readable. Deployment composition requires it for the top-up API.
+    creditPacks: CreditPackCatalogSchema.optional(),
     models: z.record(z.string().regex(/^[a-z0-9-]+\/[a-z0-9][a-z0-9.-]*$/u), ModelRateSchema),
-    usageRates: z.record(NonModelUsageCategorySchema, UnitRateSchema).optional(),
+    usageRates: z
+      .object({
+        sandbox_cpu_seconds: UsageRateSchema,
+        sandbox_mem_gib_seconds: UsageRateSchema,
+        storage_gib_hours: UsageRateSchema,
+        deploy_provider: UsageRateSchema,
+        artifact_storage: UsageRateSchema,
+      })
+      .partial()
+      .strict()
+      // OPS-1A persisted immutable model-only snapshots before OPS-1B added
+      // non-model estimates. They must remain readable through their run.
+      .optional(),
   })
   .strict()
-  .refine((value) => Object.keys(value.models).length > 0, {
-    message: 'models must contain at least one rate',
-    path: ['models'],
+  .superRefine((value, context) => {
+    if (Object.keys(value.models).length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'models must contain at least one rate',
+        path: ['models'],
+      });
+    }
+    for (const [packId, pack] of Object.entries(value.creditPacks ?? {})) {
+      const usdUnits = decimalUnits(pack.amountUsd, 6);
+      const creditsPerUsdUnits = decimalUnits(value.creditsPerUsd, 6);
+      const configuredCreditsUnits = decimalUnits(pack.credits, 6);
+      if (
+        (usdUnits * creditsPerUsdUnits) % 1_000_000n !== 0n ||
+        (usdUnits * creditsPerUsdUnits) / 1_000_000n !== configuredCreditsUnits
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'pack credits must equal amountUsd multiplied by creditsPerUsd',
+          path: ['creditPacks', packId],
+        });
+      }
+    }
   });
 
 export type PricingConfig = z.infer<typeof PricingConfigSchema>;
@@ -90,20 +134,38 @@ export interface PricedTokenUsage {
   readonly totalCredits: string;
 }
 
-const UsageEstimateInputSchema = z
+export const UsageEstimateInputSchema = z
   .object({
-    category: z.enum(USAGE_CATEGORIES),
+    category: z.enum([
+      'model_input_tokens',
+      'model_output_tokens',
+      'model_cached_tokens',
+      'sandbox_cpu_seconds',
+      'sandbox_mem_gib_seconds',
+      'storage_gib_hours',
+      'deploy_provider',
+      'artifact_storage',
+    ]),
     quantity: z.string().regex(/^\d+(?:\.\d{1,6})?$/u),
-    unit: z.string().trim().min(1),
-    provider: z.string().trim().min(1),
+    provider: z.string().trim().min(1).optional(),
     model: z.string().trim().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      input.category.startsWith('model_') &&
+      (input.provider === undefined || input.model === undefined)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'model usage estimates require provider and model',
+      });
+    }
+  });
 
 export type UsageEstimateInput = z.infer<typeof UsageEstimateInputSchema>;
 
 export interface UsageEstimate {
-  readonly quantity: string;
   readonly costUsd: string;
   readonly credits: string;
 }
@@ -176,46 +238,35 @@ export function worstCaseReservation(
   return fixed(credits, CREDIT_SCALE);
 }
 
+/**
+ * Produces exact local estimates for Mission Control and pre-run decisions.
+ * Flexprice remains the wallet/rating authority; this config snapshot is the
+ * local, versioned arithmetic source and intentionally never uses JS floats.
+ */
 export function estimateUsage(config: PricingConfig, rawInput: UsageEstimateInput): UsageEstimate {
   const input = UsageEstimateInputSchema.parse(rawInput);
-  const quantityUnits = signedDecimalUnits(input.quantity, 6);
-  let costMicroUsd: bigint;
-  if (
-    input.category === 'model_input_tokens' ||
-    input.category === 'model_output_tokens' ||
-    input.category === 'model_cached_tokens'
-  ) {
-    if (input.model === undefined) throw new Error(`model is required for ${input.category}`);
-    const rate = rateFor(config, input.provider, input.model);
+  if (input.category.startsWith('model_')) {
+    const provider = input.provider;
+    const model = input.model;
+    if (provider === undefined || model === undefined) throw new Error('model rate is required');
+    const rate = rateFor(config, provider, model);
     const usdPerMillion =
       input.category === 'model_input_tokens'
         ? rate.inputUsdPerMillion
         : input.category === 'model_output_tokens'
           ? rate.outputUsdPerMillion
-          : input.unit === 'cache_write_input_tokens'
-            ? rate.cacheWriteUsdPerMillion
-            : rate.cacheReadUsdPerMillion;
-    costMicroUsd = divideRounded(
-      quantityUnits * decimalUnits(usdPerMillion, USD_SCALE),
-      10n ** 12n,
-    );
-  } else {
-    const rate = config.usageRates?.[input.category];
-    if (rate === undefined) throw new Error(`pricing rate missing for ${input.category}`);
-    costMicroUsd = divideRounded(
-      quantityUnits * decimalUnits(rate.usdPerUnit, USD_SCALE),
-      10n ** 6n,
+          : rate.cacheReadUsdPerMillion;
+    return priceDecimalQuantity(
+      config,
+      input.quantity,
+      usdPerMillion,
+      PER_MILLION * 10n ** BigInt(USD_SCALE),
     );
   }
-  const creditUnits = divideRounded(
-    costMicroUsd * decimalUnits(config.creditsPerUsd, CREDIT_SCALE),
-    10n ** BigInt(USD_SCALE),
-  );
-  return {
-    quantity: input.quantity,
-    costUsd: fixed(costMicroUsd, USD_SCALE),
-    credits: fixed(creditUnits, CREDIT_SCALE),
-  };
+  const rate =
+    config.usageRates?.[input.category as keyof NonNullable<PricingConfig['usageRates']>];
+  if (rate === undefined) throw new Error(`pricing rate missing for ${input.category}`);
+  return priceDecimalQuantity(config, input.quantity, rate.usdPerUnit, 10n ** BigInt(USD_SCALE));
 }
 
 function rateFor(config: PricingConfig, provider: string, model: string) {
@@ -251,18 +302,29 @@ function priceQuantities(
   });
 }
 
+function priceDecimalQuantity(
+  config: PricingConfig,
+  quantity: string,
+  usdRate: string,
+  denominator: bigint,
+): UsageEstimate {
+  const quantityUnits = decimalUnits(quantity, USD_SCALE);
+  const rateUnits = decimalUnits(usdRate, USD_SCALE);
+  const costUsdUnits = divideRounded(quantityUnits * rateUnits, denominator);
+  const creditUnits = divideRounded(
+    costUsdUnits * decimalUnits(config.creditsPerUsd, CREDIT_SCALE),
+    10n ** BigInt(USD_SCALE),
+  );
+  return {
+    costUsd: fixed(costUsdUnits, USD_SCALE),
+    credits: fixed(creditUnits, CREDIT_SCALE),
+  };
+}
+
 function decimalUnits(value: string, scale: number): bigint {
   const [whole = '0', fraction = ''] = value.split('.');
   if (fraction.length > scale) throw new Error(`decimal has more than ${String(scale)} places`);
   return BigInt(`${whole}${fraction.padEnd(scale, '0')}`);
-}
-
-function signedDecimalUnits(value: string, scale: number): bigint {
-  const parsed = z
-    .string()
-    .regex(/^\d+(?:\.\d+)?$/u)
-    .parse(value);
-  return decimalUnits(parsed, scale);
 }
 
 function divideRounded(numerator: bigint, denominator: bigint): bigint {

@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/spec.d.ts",
       "default": "./dist/spec.js"
+    },
+    "./interview": {
+      "types": "./dist/interview.d.ts",
+      "default": "./dist/interview.js"
     }
   },
   "scripts": {

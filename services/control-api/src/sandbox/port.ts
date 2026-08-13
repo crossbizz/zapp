@@ -1,4 +1,10 @@
-import { CheckpointKindSchema, WorkspaceStatusSchema, idSchema } from '@zapp/contracts';
+import {
+  BuilderPreviewLogsQuerySchema,
+  CheckpointKindSchema,
+  ExecutionContractSchema,
+  WorkspaceStatusSchema,
+  idSchema,
+} from '@zapp/contracts';
 import { z } from 'zod';
 
 import { OperationKeySchema } from '../orchestrator/port.js';
@@ -57,6 +63,20 @@ export const CheckpointWorkspaceResultSchema = z
 export const TerminateWorkspaceInputSchema = z
   .object({ workspace: WorkspacePortSchema, operationKey: OperationKeySchema })
   .strict();
+export const SupportTerminateWorkspaceResultSchema = z
+  .object({ status: z.literal('terminated'), terminatedAt: z.date() })
+  .strict();
+export const TerminateOrganizationInputSchema = z
+  .object({
+    organizationId: idSchema('org'),
+    actorUserId: idSchema('user'),
+    reason: z.string().trim().min(10).max(500),
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+export const TerminateOrganizationResultSchema = z
+  .object({ terminated: z.number().int().nonnegative() })
+  .strict();
 
 const SandboxBranchLockedCauseSchema = z
   .object({ code: z.literal('branch_locked') })
@@ -80,9 +100,41 @@ export interface SandboxServicePort {
   terminateWorkspace(input: z.infer<typeof TerminateWorkspaceInputSchema>): Promise<unknown>;
 }
 
+/** OPS-17's service-authenticated WS-15 bridge; never exposed to ordinary tenant routes. */
+export interface SupportSandboxServicePort {
+  terminateWorkspace(
+    input: z.infer<typeof TerminateWorkspaceInputSchema>,
+  ): Promise<z.infer<typeof SupportTerminateWorkspaceResultSchema>>;
+  terminateOrganization(
+    input: z.infer<typeof TerminateOrganizationInputSchema>,
+  ): Promise<z.infer<typeof TerminateOrganizationResultSchema>>;
+}
+
+export const ReadBuilderPreviewLogsInputSchema = z
+  .object({
+    workspace: WorkspacePortSchema,
+    after: BuilderPreviewLogsQuerySchema.shape.after,
+    limit: BuilderPreviewLogsQuerySchema.shape.limit,
+  })
+  .strict();
+
+export const RestartBuilderPreviewInputSchema = z
+  .object({
+    workspace: WorkspacePortSchema,
+    contract: ExecutionContractSchema,
+    operationKey: OperationKeySchema,
+  })
+  .strict();
+
+/** Narrow bridge used only by the authenticated public builder-preview routes. */
+export interface BuilderPreviewSandboxPort {
+  readDevServerLogs(input: z.infer<typeof ReadBuilderPreviewLogsInputSchema>): Promise<unknown>;
+  restartDevServer(input: z.infer<typeof RestartBuilderPreviewInputSchema>): Promise<unknown>;
+}
+
 export class SandboxServiceError extends Error {
-  constructor() {
-    super('sandbox service unavailable');
+  constructor(options?: ErrorOptions) {
+    super('sandbox service unavailable', options);
     this.name = 'SandboxServiceError';
   }
 }
@@ -94,4 +146,14 @@ export function createUnavailableSandboxService(): SandboxServicePort {
     checkpointWorkspace: unavailable,
     terminateWorkspace: unavailable,
   };
+}
+
+export function createUnavailableSupportSandboxService(): SupportSandboxServicePort {
+  const unavailable = (): Promise<never> => Promise.reject(new SandboxServiceError());
+  return { terminateWorkspace: unavailable, terminateOrganization: unavailable };
+}
+
+export function createUnavailableBuilderPreviewSandbox(): BuilderPreviewSandboxPort {
+  const unavailable = (): Promise<never> => Promise.reject(new SandboxServiceError());
+  return { readDevServerLogs: unavailable, restartDevServer: unavailable };
 }

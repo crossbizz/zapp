@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test';
 
-const appPort = 3100;
+const appPort = Number(process.env['ZAPP_WEB_E2E_APP_PORT'] ?? 3100);
 
 export default defineConfig({
   testDir: './e2e',

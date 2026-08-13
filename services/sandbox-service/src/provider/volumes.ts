@@ -57,7 +57,7 @@ export function createProjectVolumePlan(untrustedInput: unknown): ProjectVolumeP
     .digest('hex')
     .slice(0, 32)}`;
   return ProjectVolumePlanSchema.parse({
-    volumeName: `vol-proj_${input.projectId}`,
+    volumeName: projectVolumeName(input.projectId),
     mounts: [
       { mountPath: '/cache', subPath: '/cache' },
     ],
@@ -70,4 +70,8 @@ export function createProjectVolumePlan(untrustedInput: unknown): ProjectVolumeP
       PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
     },
   });
+}
+
+export function projectVolumeName(projectId: string): string {
+  return `vol-proj_${idSchema('proj').parse(projectId)}`;
 }

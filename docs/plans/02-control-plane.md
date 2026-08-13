@@ -8,7 +8,7 @@
 
 **Tech Stack:** Fastify 5, `fastify-type-provider-zod`, Stytch Node SDK (B2B), jose (JWT), Upstash Redis client, @zapp/db, @zapp/contracts, openapi-typescript for SDK generation.
 
-**Milestone:** M0 (CP-1..8) + M1 (CP-9..16) + M5 (CP-17..18). **Depends on:** Plan 01. **Consumed by:** all plans.
+**Milestone:** M0 (CP-1..8) + M1 (CP-9..16, CP-20..21) + M2 (CP-22..25) + M3 (CP-26) + M5 (CP-17..18, CP-27). **Depends on:** Plan 01. **Consumed by:** all plans.
 
 ## Global Constraints
 
@@ -220,6 +220,29 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 - [ ] Generate SDK and verify focused route, OpenAPI, API-client, schema, lint, and typecheck suites.
 - [ ] Commit: `feat(control-api): public project dashboard summaries`
 
+### Task CP-21 [M2]: Public builder preview bridge (ADR-0028)
+
+**Files:** Create: `packages/contracts/src/builder-preview.ts`, `services/control-api/src/routes/builder-preview.ts`, `services/control-api/src/sandbox/client.ts`, `services/control-api/test/builder-preview.test.ts`; Modify: contracts exports, control-api sandbox port/app/compose/env wiring, OpenAPI, `packages/api-client` generated surface + preview SSE helper/tests
+**Interfaces produced (binding for WEB-7 and WEB-11):** the four public operations and `subscribePreviewEvents` defined by ADR-0028.
+**Effort:** L. **[expand-at-execution]**
+
+#### CP-21 execution expansion (2026-08-10)
+
+- [x] **RED — tenant-scoped logs and server-authoritative restart:** add route tests proving log cursor forwarding, cross-tenant 404, restart contract lookup/validation, stable idempotent forwarding, and typed missing-contract refusal. Run the focused suite and confirm failure because the public routes and sandbox port methods do not exist.
+- [x] **GREEN — logs/restart boundary:** add shared Zod contracts, extend `SandboxServicePort`, implement the service-authenticated HTTP client, register the two public routes, and wire the shipping client in composition. Rerun the focused suite to green.
+- [x] **RED — capture SSE and screenshot:** add tests proving an authenticated user receives the exact no-body capture records, downstream abort cancels the upstream request, cross-tenant reads never open the proxy, screenshot status/body are preserved including 501, and no provider/service credential reaches the response. Run and confirm the missing routes fail.
+- [x] **GREEN — capture proxy:** register the cancellable SSE and screenshot routes on the existing `PreviewProxyPort`; preserve upstream content type/status and strip hop-by-hop/provider headers. Rerun the focused suite to green.
+- [x] **RED/GREEN — generated SDK:** extend the API-client contract tests for all four OpenAPI operations and a real-stream `subscribePreviewEvents` helper that closes and reports malformed records. Regenerate, implement the helper, and run the client suite.
+- [x] **Verify/review/ship:** run control-api and api-client tests plus lint/typecheck/build; run at most two Critical/Important review rounds (exit: zero Critical/Important); check CP-21 in `tasks/todo.md`, append one execution-log line, commit `feat(control-api): public builder preview bridge (ADR-0028)`, push `main`, and confirm GitHub CI/Security green. No provider run is required.
+
+#### CP-21-FIX-1 — durable screenshot operation reservation
+
+**Files:** Modify: `services/control-api/src/routes/builder-preview.ts`, `services/control-api/src/plugins/audit.ts`, `services/control-api/test/builder-preview.test.ts`, `services/control-api/test/sandbox-preview-client.test.ts`, `services/control-api/test/integration/audit.test.ts`, and existing `AuditSink` test doubles
+
+- [x] **RED/evidence:** retain CP-21 round 2's finding that writing screenshot bytes only after capture leaves an ambiguous crash window. Add a route regression where the proxy request fails after it starts, then a retry with the same public idempotency key must not invoke capture again.
+- [x] **GREEN:** reserve the tenant-prefixed artifact-store operation key atomically before capture. A completed reservation replays the original PNG; a pending/ambiguous reservation fails closed without a second capture; only an explicit upstream non-success releases the reservation. Bound stored and replayed PNGs at 10 MiB, preserve structural 501/503 responses, and retry the deterministic exactly-once completion-audit row from durable replay.
+- [x] **Verify/review/ship:** run focused and package gates and at most two fresh Critical/Important review rounds (exit zero), then close CP-21 and CP-21-FIX-1 together without any provider call.
+
 ### Task CP-17 [M5]: Data retention & deletion pipeline
 
 **Files:** Create: `src/jobs/retention.ts`, `src/jobs/deletion.ts`, `test/integration/deletion.test.ts`
@@ -227,12 +250,113 @@ Routes: `GET /v1/organizations/:orgId/audit-events` (Owner only, keyset paginate
 
 Binding behavior: nightly retention job enforces PRD §31.4 TTLs (agent_events 90 d → archive to R2 then drop partition; test artifacts 30 d; diagnostics 7 d); project deletion enqueues a deletion record fanning out to Postgres rows, R2 prefixes, git-service repo delete, Modal snapshot deletes (via sandbox-service), then verifies each target reports absence before marking complete; org deletion cascades projects; audit rows retained per policy. Test: delete a seeded project → poll status → verify data gone from each store (MinIO/dev services).
 
+Execution expansion (2026-08-12; route-name assumption follows the existing project-resource vocabulary because the plan/PRD leaves polling paths unnamed):
+
+- [x] **17a RED — durable schema/classification:** add DB schema tests for an append-only-audit-preserving `project_deletions` state machine and explicit expirable-artifact classifications; generated migration must be deterministic and test evidence must be classified at write time, never inferred from names or JSON.
+- [x] **17b GREEN — nightly retention:** add `retention.test.ts` for exact-object delete → absence verification → row delete, 30-day test and 7-day diagnostic cutoffs, release/unclassified exclusion, failure retry, and composition with OPS-14's 90-day event partition archive; implement the bounded daily lifecycle and PostgreSQL/S3 adapters.
+- [x] **17c RED/GREEN — public deletion API:** add Owner-only, idempotency-keyed `DELETE /v1/projects/:projectId` → `202` and `GET /v1/projects/:projectId/deletion`; cross-tenant reads return 404, Viewer/Builder mutation is denied, exact replay is stable, and enqueue + `project.deletion_requested` audit are atomic. Regenerate OpenAPI/SDK before UI consumers.
+- [x] **17d RED/GREEN — fan-out worker:** add deterministic crash/redelivery tests for leased one-target-at-a-time progression across sandbox snapshots, Git, R2, and PostgreSQL; each remote target must report absence before its durable target becomes verified, PostgreSQL is last, audit rows survive it, and completion is only reachable when every target is verified.
+- [x] **17e RED/GREEN — downstream deletion ports:** extend the authenticated git-service and sandbox-service boundaries with idempotent delete plus explicit absence probes; add provider/fake/HTTP tests, including Modal image deletion, and preserve service-token/tenant scoping.
+- [x] **17f RED/GREEN — organization cascade:** enqueue one project deletion per current organization project under the same Owner-authorized organization operation; prove an empty organization is an idempotent success and each project remains independently resumable.
+- [x] **17g integration:** seed a real project with related PostgreSQL rows, classified objects in MinIO/R2, an internal Git repository, and snapshot records through dev-service adapters; enqueue, poll, and prove every target absent while tenant audit evidence remains. Environment-gate only genuinely unavailable providers and print exact skips.
+- [x] **17h verify/review/ship:** run schema/generator determinism, focused and full touched-package tests, lint/typecheck/build, one final real-provider gate, and at most two Critical/Important review rounds (exit zero); update tracker/log and commit `feat(control-api): retention + verified deletion pipeline`.
+
 ### Task CP-18 [M5]: Export APIs
 
-**Files:** Create: `src/routes/export.ts`
+**Files:** Create: `services/control-api/src/routes/export.ts`, `services/control-api/src/export/service.ts`, `services/control-api/test/export.test.ts`, `services/control-api/test/integration/export.test.ts`, `services/git-service/src/export.ts`, `services/git-service/test/export.test.ts`; Modify: control-api/Git-service app, composition, auth/idempotency/storage boundaries and test doubles, shared audit contract, generated OpenAPI/SDK artifacts, Git provider integration coverage.
 **Effort:** M. **[expand-at-execution]**
 
 Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact bundle: git bundle (via git-service), spec JSON, plan JSON, evidence manifests, env var **names**, audit log (Owner only); download via signed URL; secrets never included.
+
+Execution expansion (2026-08-12; the portable artifact is a deterministic uncompressed tar so binary Git history and typed JSON documents stay self-contained without a format-specific runtime dependency):
+
+- [x] **18a RED — public/API boundary:** add Owner-only route tests for required CSRF, tenant, and `Idempotency-Key`; cross-tenant and missing projects are indistinguishable 404s, Builder/Viewer calls are denied, and exact replay performs no second Git/storage write.
+- [x] **18b GREEN — safe bundle assembly:** implement `src/routes/export.ts` with strict Zod schemas, deterministic artifact identity/key, bounded tar construction, SHA-256 receipt, five-minute signed URL, atomic `project.exported` audit plus unclassified project-lifetime artifact row, and explicit exclusion of secret values/ciphertext/storage credentials.
+- [x] **18c RED/GREEN — export projection:** add a tenant-scoped PostgreSQL projection for the latest specification, durable phase/task plan, test/evidence manifests, releases/deployments, secret-metadata names only, and project-related audit rows; prove another tenant's rows and secret ciphertext cannot enter the projection.
+- [x] **18d RED/GREEN — Git bundle port:** add a service-authenticated, tenant/project-derived git-service export boundary that mints a bounded read credential, creates and verifies a Git bundle through the existing Git command adapter, returns no credential, and cleans scratch/token state on success and failure; add fake/provider/HTTP coverage.
+- [x] **18e integration/artifacts:** compose production Git and S3 ports, generate OpenAPI/SDK, and add a PostgreSQL + MinIO integration that downloads the signed tar, verifies every required entry and exact Git bytes, and proves only environment-variable names are present.
+- [x] **18f verify/review/ship:** run deterministic generation, full touched-package tests, lint/typecheck/build, one final real-provider gate, and at most two Critical/Important review rounds (exit zero); update tracker/log and commit `feat(control-api): portable project export bundles`.
+
+### Task CP-22 [M2]: Public builder controls + generic approvals
+
+**Files:** Modify contracts, run/Mission Control routes, tenant ports, OpenAPI/SDK and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [x] Binding behavior: server-computed action eligibility/reasons; keyed retry-failed-task and skip-optional-phase routes over AR-23; strict discriminated approval decisions with stored id/kind matching and rollout-compatible budget behavior.
+- [x] Verify generated SDK determinism, tenant/RBAC/idempotency behavior, and typed stale-state conflicts.
+- [x] Commit: `feat(control-api): public builder controls and typed approvals`
+
+Execution expansion (2026-08-12):
+
+- [x] **22a RED — public contract:** lock stable builder action/reason schemas, strict keyed retry/skip requests, discriminated approval kinds/decisions, and exact Temporal projections.
+- [x] **22b GREEN — Mission Control eligibility:** derive retry eligibility from terminal task/dependency state and skip eligibility from durable optional/start state; unknown, unsupported, stale, and terminal runs fail closed with stable reasons.
+- [x] **22c RED/GREEN — keyed mutations:** add tenant/RBAC/CSRF/idempotency tests and routes for failed-task retry and optional-phase skip; re-check state immediately before the AR-23 signal and return typed 409 conflicts without signalling.
+- [x] **22d RED/GREEN — typed approvals:** generalize the existing route/repository by stored approval kind while retaining the exact budget ceiling/accounting path; mismatched ids/kinds are 404 and conflicting replays are 409.
+- [x] **22e SDK/verification:** regenerate OpenAPI/SDK deterministically; run focused contracts/control/API-client tests, lint/typecheck/build, and diff/boundary checks; then record and commit once.
+
+### Task CP-23 [M2]: Public conversation-card responses + artifacts
+
+**Files:** Modify message/spec/run routes and ports, contracts, OpenAPI/SDK and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: keyed typed responses to AR-24 cards plus tenant-safe bounded specification, plan, and referenced artifact reads; no assistant-prose parsing.
+- [x] Commit: `feat(control-api): public conversation-card responses`
+
+Execution expansion (2026-08-12):
+
+- [x] **23a RED — public card response:** require session, tenant, CSRF, and `Idempotency-Key`; accept only `ConversationCardResponseSchema`, signal the exact AR-24 card id/response, and prove stable replay without assistant-prose parsing.
+- [x] **23b GREEN — typed run reads:** add run-scoped specification and implementation-plan reads that first resolve the tenant-owned run and exact referenced identity; return stable 404s for missing/foreign/mismatched rows.
+- [x] **23c RED/GREEN — bounded artifact port:** add a tenant-scoped artifact repository read plus a fail-closed object-content port capped before response serialization; never expose `storage_ref` or service credentials.
+- [x] **23d SDK/verification:** regenerate OpenAPI/SDK deterministically; run focused contracts/control/API-client tests plus touched lint/typecheck/build and diff/boundary checks; record and commit once.
+
+### Task CP-24 [M2]: Public builder artifact surfaces
+
+**Files:** Modify workspace/Mission Control routes and service clients, contracts, OpenAPI/SDK and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [x] Binding behavior: tenant/RBAC bridges to WS-16, GIT-5, and VF-17 for files, attributed edits, commit comparison, logs, test cases, evidence, downloads, and Fix-run creation; no internal credential exposure.
+- [x] Commit: `feat(control-api): public builder artifact surfaces`
+
+Execution expansion (2026-08-12):
+
+- [x] **24a RED/GREEN — workspace artifacts:** add bounded project workspace discovery and tenant/RBAC file list/read plus keyed Owner/Builder edits attributed to the authenticated user.
+- [x] **24b RED/GREEN — comparisons:** bridge exact before/after SHAs through the service-authenticated GIT-5 comparison boundary without returning internal refs or credentials.
+- [x] **24c RED/GREEN — verification:** bridge VF-17 run/case and exact-provenance signed evidence reads; keep downloads short-lived and storage refs private.
+- [x] **24d SDK/verification:** retain the existing public logs and Fix-run creation surfaces, regenerate OpenAPI/SDK, run focused contracts/control/client plus touched lint/typecheck/build and commit once.
+
+### Task CP-25 [M2]: Public template registry + Remix creation
+
+**Files:** Modify project/template routes, composition, contracts, OpenAPI/SDK and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: registry list/detail and discriminated template project source by slug; resolve approved repository refs server-side and seed through GIT-5/GIT-6 before project success; stable replay.
+- [x] Commit: `feat(control-api): public template remix contract`
+
+Execution expansion (2026-08-12):
+
+- [x] **25a RED/GREEN — public registry:** expose bounded list/detail responses containing presentation fields only; unknown slugs return a stable 404 and private repository refs/SHAs never serialize.
+- [x] **25b RED/GREEN — typed Remix source:** make template creation require `sourceType: "template"` plus an approved `templateSlug`; reject arbitrary source refs and validate the slug against the server registry.
+- [x] **25c RED/GREEN — seed and replay:** create the internal repository, seed its exact approved template through GIT-6 before returning project success, and prove one stable seed call across an idempotent replay.
+- [x] **25d SDK/verification:** bind the registry in production composition, regenerate OpenAPI/SDK, run focused route/client and touched lint/typecheck/build gates, then record and commit once.
+
+### Task CP-26 [M3]: Settings + organization directory APIs
+
+**Files:** Modify org/integration/project routes and tenant views, DB where required, OpenAPI/SDK and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [x] **26a RED/GREEN — directory:** list active members with public identity fields and unexpired pending invites; enforce tenant membership and member-management RBAC.
+- [x] **26b RED/GREEN — integration settings:** list secret-free connection status for every provider (including Vercel) and disconnect by stable idempotency key with audit.
+- [x] **26c existing lifecycle proof:** retain the landed settings, archive, deletion request, and deletion-status timeline contracts; regenerate the public SDK and verify focused control/API-client gates.
+- [x] Binding behavior: member/pending-invite directory; integration status/disconnect including Vercel; project archive/delete timeline; existing secret values stay write-only.
+- [x] Commit: `feat(control-api): settings and member directory APIs`
+
+### Task CP-27 [M5]: Public desktop notification projection
+
+**Files:** Modify notification routes/store/composition, DB where required, OpenAPI/SDK and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: authenticated per-user/device cursor replay and per-type preferences for approval, run, and deployment notifications; bounded reconnect; tenant isolation and secret-safe payloads.
+- [x] Commit: `feat(control-api): desktop notification delivery API`
 
 ---
 
@@ -250,11 +374,16 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - Session cookies: httpOnly, Secure, SameSite=Lax; CSRF: state-changing routes require `x-zapp-csrf` double-submit token for cookie auth (bearer/device tokens exempt).
 
 ## Execution log
+- 2026-08-12 CP-26 done — Added public member/pending-invite directory and secret-free integration list/disconnect including Vercel, retained existing settings/archive/deletion timeline, regenerated the SDK, and passed focused 52/52 control, 56/56 SDK, 5/5 Redis invite, lint, and typecheck gates.
 
 - (empty)
 
 ## Execution log
 - 2026-08-04: CP-1 done pending review (9bc70a8). DEFERRED INTO CP-2 SCOPE: migration revoking UPDATE/DELETE on usage_ledger + audit_events from the app role (was CP-1 note; FND-6 was mid-flight). Forward flags: fastify-type-provider-zod pinned ^4 (Zod-3 API — revisit at Zod 4 migration); no direct pino dep (fastify bundles it).
+- 2026-08-12 CP-24 done — Added tenant/RBAC workspace discovery, bounded file reads and attributed keyed edits, exact commit comparison, typed tests/evidence with short-lived downloads, production service-token clients, and regenerated SDK; 801/811 control tests passed before one stale route-absence assertion was corrected and focused green, plus 56/56 API-client tests.
+- 2026-08-12 CP-17 done — shipped classified TTL retention plus leased, absence-verified project/org deletion; required schema, generated SDK, git-service, sandbox-service, verification-service, and composition files beyond the terse task list. Two review rounds fixed durable post-delete replay, fail-closed composition/provider proof, and a row-locked organization deletion fence.
+- 2026-08-12 CP-17 integration fix — removed cascading run/approval foreign keys from append-only credit-ceiling history so deletion retains immutable attribution without firing a forbidden ledger delete; schema regression, DB 157/157, and orchestrator integration 43/43 verify the correction.
+- 2026-08-12 CP-18 done — shipped deterministic Owner-only tar exports with durable fresh-URL replay, bounded PostgreSQL/Git/S3 paths, deletion fencing/cleanup, generated SDK, and immediate Git credential revocation; expanded the terse Files list for required service/SDK composition, and corrected one provider-test-only strict-input fixture before the focused real Forgejo pass.
 - 2026-08-04: CP-1 done (9bc70a8, review Approved; 12 tests + 20 reviewer edge-probes clean). buildApp deps narrowed to growing AppDeps (sanctioned). Folded into CP-2: branch-4 + hook-throw tests, errorHandler serializer bypass (template hardening), dev script (tsx watch convention), @zapp/db first import, grants migration.
 - 2026-08-04: FND-6 note for CP-13: agent_events has NO project_id column (PRD §23.4 omits it; AgentEventSchema carries projectId) — CP-13 ingest either adds a one-line migration (preferred, enables per-project queries) or joins agent_runs. Decide at CP-13.
 - 2026-08-04: CP-13 additional binding notes from FND-6 review: (a) payload cap check must measure BYTES (Buffer.byteLength), not JSON.stringify().length — DB CHECK is pg_column_size; (b) resolve runId within the tenant BEFORE calling nextEventSequence (it takes no org — a cross-tenant bump would inject a sequence gap).
@@ -301,3 +430,9 @@ Binding behavior (PRD §36.5): `POST /v1/projects/:id/export` produces artifact 
 - 2026-08-10 M1-GATE-10 done — Accept-negotiation integration probes now await bounded SSE body cancellation before connection reuse, closing the full-gate cancellation race that intermittently returned HTTP 500.
 - 2026-08-10 M1-GATE-13 done — Accept-negotiation probes now await the matching server-side subscription close after bounded client cancellation, preventing a later probe from reusing a connection while PostgreSQL replay cleanup is still active; focused 2/2, full integration 257/257, package 489/489, lint/typecheck/build green, and review PASS.
 - 2026-08-10 CP-20 done — Added typed conversation events, idempotent continuation signalling, tenant-scoped R2 image attachments with run-scoped artifact events, a 10-image/8-MiB-per-image contract, and regenerated SDK support; no model-provider call required.
+- 2026-08-10 CP-21 done — Added the tenant-scoped public logs/restart/capture/screenshot bridge and generated SDK; capped review re-scoped ambiguous screenshot replay into CP-21-FIX-1, and no provider run was required.
+- 2026-08-10 CP-21-FIX-1 done — Fenced screenshot capture with a durable conditional artifact-store reservation, bounded replay reads, retry-safe completion audits, final round-2 PASS, and no provider call.
+- 2026-08-12 CP-22 done — Added server-derived builder eligibility, keyed retry/skip routes, typed stored-kind approvals, deterministic SDK output, and rollout-compatible budget decisions; no provider call.
+- 2026-08-12 CP-23 done — Added keyed typed card responses, run-scoped specification/plan projections, SHA-verified 64-KiB artifact reads, and deterministic SDK routes; no provider call.
+- 2026-08-12 CP-25 done — Added presentation-only template APIs and exact-slug Remix creation with server-owned seeding and idempotent replay; no provider call.
+- 2026-08-12 CP-27 done — Added bounded authenticated desktop-notification cursor replay over the existing strict projection and preference boundary, with atomic Redis cursor append, per-user/tenant isolation, reconnect guidance, and regenerated SDK; no provider call.

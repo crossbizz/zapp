@@ -1,4 +1,8 @@
 import { createZappClient, type FetchImplementation } from "@zapp/api-client";
+import {
+  ClientFeatureFlagsResponseSchema,
+  type ClientFeatureFlagsResponse,
+} from "@zapp/config/flags";
 import { z } from "zod";
 
 import type { PlatformAuthSession } from "../auth/session";
@@ -93,6 +97,7 @@ export class CloudDashboardUnavailableError extends Error {
 }
 
 export interface CloudDashboardApi {
+  getFeatureFlags(): Promise<ClientFeatureFlagsResponse>;
   listProjects(
     input: { readonly cursor?: string; readonly limit?: number },
     signal?: AbortSignal,
@@ -150,6 +155,16 @@ export function createCloudDashboardApi(options: {
   }
 
   return {
+    async getFeatureFlags() {
+      const { client, organizationId } = context();
+      return ClientFeatureFlagsResponseSchema.parse(
+        await client.request("/v1/feature-flags", {
+          method: "GET",
+          headers: headers(organizationId),
+        }),
+      );
+    },
+
     async listProjects(input, signal) {
       const { client, organizationId } = context();
       const page = CloudProjectPageSchema.parse(

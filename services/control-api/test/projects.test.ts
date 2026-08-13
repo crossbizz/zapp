@@ -184,6 +184,116 @@ async function create(
 }
 
 describe('creating a project', () => {
+  it('publishes presentation-only templates and stable detail misses', async () => {
+    const wired = await wire();
+
+    const listed = await wired.built.app.inject({ method: 'GET', url: '/v1/templates' });
+    expect(listed.statusCode, listed.body).toBe(200);
+    expect(listed.json<{ templates: Array<{ slug: string }> }>().templates).toEqual(
+      expect.arrayContaining([expect.objectContaining({ slug: 'next-starter' })]),
+    );
+    expect(listed.body).not.toContain('repoRef');
+    expect(listed.body).not.toContain('commitSha');
+    expect(listed.body).not.toContain('github.com');
+
+    const detail = await wired.built.app.inject({
+      method: 'GET',
+      url: '/v1/templates/next-starter',
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json<{ template: { slug: string } }>().template.slug).toBe('next-starter');
+
+    const missing = await wired.built.app.inject({
+      method: 'GET',
+      url: '/v1/templates/not-approved',
+    });
+    expect(missing.statusCode, missing.body).toBe(404);
+    expect(errorOf(missing)).toBe('template_not_found');
+  });
+
+  it('seeds an approved template before success and only once across replay', async () => {
+    const seedCalls: Array<{ templateSlug: string; operationKey: string }> = [];
+    const git = {
+      createRepository: (input: { organizationId: string; projectId: string }) =>
+        Promise.resolve({
+          internalRepoRef: `${input.organizationId.toLowerCase()}/${input.projectId.toLowerCase()}`,
+        }),
+      seedTemplate: (input: { templateSlug: string; operationKey: string }) => {
+        seedCalls.push(input);
+        return Promise.resolve({
+          templateSlug: input.templateSlug,
+          branch: 'main' as const,
+          headCommitSha: 'a57bb2926674275a84f651c64e5c995a42519b5e',
+        });
+      },
+    };
+    const wired = await wire({ git });
+    const headers = {
+      ...wired.as(wired.owner),
+      [IdempotencyHeader]: 'template-remix-0001',
+    };
+    const payload = {
+      name: 'Remixed Starter',
+      sourceType: 'template',
+      templateSlug: 'next-starter',
+    };
+
+    const first = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers,
+      payload,
+    });
+    const replay = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers,
+      payload,
+    });
+
+    expect(first.statusCode, first.body).toBe(201);
+    expect(replay.statusCode, replay.body).toBe(201);
+    expect(replay.headers[IDEMPOTENT_REPLAY_HEADER]).toBe('true');
+    expect(seedCalls).toHaveLength(1);
+    expect(seedCalls[0]?.templateSlug).toBe('next-starter');
+    expect(seedCalls[0]?.operationKey).toMatch(/^op_/u);
+
+    const arbitrarySource = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { ...payload, name: 'Unsafe', repoRef: 'https://github.com/example/unsafe.git' },
+    });
+    expect(arbitrarySource.statusCode, arbitrarySource.body).toBe(400);
+
+    const unknown = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { ...payload, name: 'Unknown', templateSlug: 'not-approved' },
+    });
+    expect(unknown.statusCode, unknown.body).toBe(404);
+    expect(errorOf(unknown)).toBe('template_not_found');
+    expect(seedCalls).toHaveLength(1);
+  });
+
+  it('rejects creation after organization deletion has established its durable fence', async () => {
+    const wired = await wire();
+    wired.data.organizationDeleting = true;
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { name: 'Too Late' },
+    });
+
+    expect(response.statusCode, response.body).toBe(409);
+    expect(errorOf(response)).toBe('organization_deletion_in_progress');
+    expect(wired.data.projects).toEqual([]);
+    expect(wired.data.repositories).toEqual([]);
+  });
+
   it('writes the project, its repository, its default branch and both environments', async () => {
     const wired = await wire();
 
@@ -399,7 +509,7 @@ describe('creating a project', () => {
   it('accepts only the source types plan 02 owns', async () => {
     const wired = await wire();
 
-    for (const sourceType of ['prompt', 'blank', 'template', 'github_import']) {
+    for (const sourceType of ['prompt', 'blank', 'github_import']) {
       const response = await wired.built.app.inject({
         method: 'POST',
         url: '/v1/projects',
@@ -408,6 +518,14 @@ describe('creating a project', () => {
       });
       expect(response.statusCode, response.body).toBe(201);
     }
+
+    const template = await wired.built.app.inject({
+      method: 'POST',
+      url: '/v1/projects',
+      headers: wired.as(wired.owner),
+      payload: { name: 'From template', sourceType: 'template', templateSlug: 'next-starter' },
+    });
+    expect(template.statusCode, template.body).toBe(502);
 
     // CP-4's placeholder spellings. `github_import` is what plan 06's import
     // task writes, and one column with two spellings of one thing is a column
@@ -685,6 +803,76 @@ describe('updating a project', () => {
     });
     expect(empty.statusCode, empty.body).toBe(400);
     expect(errorOf(empty)).toBe('validation_failed');
+  });
+});
+
+describe('repository credential leases', () => {
+  it('returns one bounded no-store write credential to an editor without persisting it', async () => {
+    const mintRepositoryLease = vi.fn(() =>
+      Promise.resolve({
+        token: 'one-time-repository-token',
+        username: 'zt-lease-user',
+        cloneUrl: 'https://git.example.test/acme/project.git',
+        expiresAt: '2026-08-12T12:05:00.000Z',
+      }),
+    );
+    const wired = await wire({
+      git: {
+        createRepository: (input) =>
+          Promise.resolve({
+            internalRepoRef: `${input.organizationId.toLowerCase()}/${input.projectId.toLowerCase()}`,
+          }),
+        mintRepositoryLease,
+      },
+    });
+    const created = await create(wired, { name: 'Lease Me' });
+
+    const response = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${created.project.id}/repository-lease`,
+      headers: wired.as(wired.owner),
+      payload: { ttlSec: 120 },
+    });
+
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.json()).toMatchObject({ token: 'one-time-repository-token' });
+    expect(mintRepositoryLease).toHaveBeenCalledWith({
+      organizationId: wired.organizationId,
+      projectId: created.project.id,
+      requestedBy: wired.owner.userId,
+      ttlSec: 120,
+    });
+    expect(JSON.stringify(wired.data.projects)).not.toContain('one-time-repository-token');
+    expect(JSON.stringify(wired.data.repositories)).not.toContain('one-time-repository-token');
+  });
+
+  it('rejects viewers, foreign projects, and TTLs above 300 seconds before minting', async () => {
+    const mintRepositoryLease = vi.fn(() => Promise.reject(new Error('must not mint')));
+    const wired = await wire({
+      git: { createRepository: () => Promise.resolve({ internalRepoRef: 'org/repo' }), mintRepositoryLease },
+    });
+    const created = await create(wired, { name: 'Protected Lease' });
+    const viewer = await join(wired, VIEWER, 'viewer');
+
+    const viewerResponse = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${created.project.id}/repository-lease`,
+      headers: wired.as(viewer), payload: { ttlSec: 300 },
+    });
+    expect(viewerResponse.statusCode).toBe(403);
+
+    const foreign = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${'proj_0'.padEnd(31, '0')}/repository-lease`,
+      headers: wired.as(wired.owner), payload: { ttlSec: 300 },
+    });
+    expect(foreign.statusCode).toBe(404);
+
+    const overlong = await wired.built.app.inject({
+      method: 'POST', url: `/v1/projects/${created.project.id}/repository-lease`,
+      headers: wired.as(wired.owner), payload: { ttlSec: 301 },
+    });
+    expect(overlong.statusCode).toBe(400);
+    expect(mintRepositoryLease).not.toHaveBeenCalled();
   });
 });
 

@@ -71,11 +71,11 @@ describe.skipIf(!hasDatabase)('append-only ledgers', () => {
     await database.sql`
       insert into organizations (id, name, slug) values (${organizationId}, 'Ledger', ${organizationId})
     `;
-    // `usage_ledger.id` doubles as the Flexprice ingestion event id and carries
-    // no TypeID prefix of its own (packages/db/src/schema/billing.ts).
+    // `usage_ledger.id` doubles as the Flexprice ingestion event id. Every seed
+    // invocation also supplies a distinct stable caller operation identity.
     await database.sql`
-      insert into usage_ledger (id, organization_id, category, quantity, unit, cost_usd, credits_charged, occurred_at)
-      values (${`usage-${organizationId}`}, ${organizationId}, 'model_input_tokens', 1000, 'tokens', 0.01, 1, now())
+      insert into usage_ledger (id, operation_key, organization_id, category, quantity, unit, cost_usd, credits_charged, occurred_at)
+      values (${`usage-${organizationId}`}, ${newId('evt')}, ${organizationId}, 'model_input_tokens', 1000, 'tokens', 0.01, 1, now())
     `;
     await database.sql`
       insert into audit_events (id, organization_id, actor_type, actor_id, action, target_type, metadata_json, occurred_at)

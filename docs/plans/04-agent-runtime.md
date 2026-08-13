@@ -8,7 +8,7 @@
 
 **Tech Stack:** Temporal TypeScript SDK, Vercel AI SDK (`ai` + provider packages, pinned), Zod, @zapp/{contracts,db,workspace-runtime,api-client}.
 
-**Milestone:** AR-1..8 (M1), AR-9..15 (M2), AR-16..21 (M3). **Depends on:** Plans 01, 02, 03. **Consumed by:** 05, 07, 08, 09.
+**Milestone:** AR-1..8 + AR-22 (M1), AR-9..15 + AR-23..24 (M2), AR-16..21 (M3). **Depends on:** Plans 01, 02, 03. **Consumed by:** 05, 07, 08, 09.
 
 ## Global Constraints
 
@@ -315,6 +315,15 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - [x] Integration test: seeded template app with planted bug + failing repro script → fix run produces regression test file + patch commit + green verification; unrelated-file-churn guard triggers on an oversized diff fixture.
 - [x] Commit: `feat(orchestrator): fix mode with reproduce-first + regression-test policy`
 
+#### AR-19-FIX-1 — isolate Temporal acceptance from the parallel unit DAG
+
+**Files:** Modify: `services/orchestrator-worker/package.json`, `services/orchestrator-worker/test/integration/fix.test.ts` only if an assertion defect is found
+
+- [x] **RED/evidence:** authoritative clean Linux CI on `main` and the merge checkout times out the active-patch cancellation case at 30 seconds while the focused case completes locally in under 3 seconds.
+- [x] **GREEN:** keep the assertions and deadline intact; route the new Fix and Autonomous Temporal suites through the existing serial `test:integration` lane instead of running multiple local Temporal servers in the parallel unit DAG.
+- [x] **Verify/review/ship:** run the focused cancellation case, the ordinary worker suite, and the serial integration suite; complete at most two review rounds and confirm GitHub CI green; no provider call is required.
+- [x] Commit: `fix(orchestrator): serialize Temporal acceptance suites`
+
 ### Task AR-20 [M3]: Redirect + plan change
 
 **Files:** Create: `src/workflows/redirect.ts` logic in run/autonomous workflows, `packages/planning-engine/src/diff.ts`
@@ -323,6 +332,15 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - [x] Binding behavior (PRD §13.4): redirect signal → pause affected tasks (dependency-closure computation) → planner produces plan diff (`PlanDiff = { addedTasks, removedTaskIds, modifiedTasks, supersededTaskIds, impact: { scope, costDelta, archChange, dataChange } }`) → material change (any impact flag) → approval gate; else auto-apply → superseded tasks marked (state `superseded`, never deleted) → resume from durable checkpoint; completed work re-validated by verifier only where dependency-affected.
 - [x] Failing tests: mid-phase redirect adding a feature yields diff with approval; trivial copy-change redirect auto-applies; superseded tasks retain artifacts.
 - [x] Commit: `feat(orchestrator): redirect with plan diff + supersede semantics`
+
+#### AR-20-FIX-1 — isolate redirect Temporal acceptance from the parallel unit DAG
+
+**Files:** Modify: `packages/config/test/turbo.test.ts`, `services/orchestrator-worker/package.json`, `docs/plans/04-agent-runtime.md`, `tasks/todo.md`
+
+- [x] **RED/evidence:** authoritative clean Linux CI on `dadf6f6` times out the material-approval redirect case at the unchanged 30-second deadline while the focused case completes locally in 10.26 seconds; add a failing structural manifest test that requires the redirect suite to use the serial integration lane.
+- [x] **GREEN:** keep every redirect assertion and deadline intact; exclude `redirect.test.ts` from the parallel unit DAG and add it to the existing `test:integration --no-file-parallelism` lane.
+- [x] **Verify/review/ship:** run the manifest contract, focused redirect case, ordinary worker suite, and serial integration suite; run touched-package lint/typecheck/build, complete one focused review, push, and confirm exact-SHA Security and CI green; no provider call is required.
+- [x] Commit: `fix(orchestrator): serialize redirect Temporal acceptance`
 
 ### Task AR-21 [M3]: Forking (project, branch, conversation, run checkpoint)
 
@@ -333,6 +351,33 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - [x] Commit: `feat: fork semantics for projects, branches, conversations, and runs`
 
 ---
+
+### Task AR-23 [M2]: Durable retry + optional-phase controls
+
+**Files:** Modify planning schema, Temporal run contract/workflows and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [x] **Step 1 — RED: lock the compatible plan and signal contracts.** Add schema tests proving legacy phases parse as `optional: false`, explicit optional phases round-trip, retry/skip inputs require valid task/phase IDs plus an `op_` key, unsupported modes are rejected, and projections produce the exact `retryFailedTask` / `skipOptionalPhase` signal names and payloads. Run the focused planning-engine and contracts tests and capture the expected failures caused by the missing metadata and signal variants.
+- [x] **Step 2 — GREEN: add the minimum compatible contracts.** Add `optional: z.boolean().default(false)` to `PlanPhaseSchema`; add strict keyed `retry_failed_task` and `skip_optional_phase` variants to `SignalRunInputSchema`; project them to their typed Temporal signals without changing existing histories or signal projections. Re-run the focused schema/contract tests to green.
+- [x] **Step 3 — RED: lock retry and skip eligibility as observable workflow behavior.** Add worker tests proving retry is accepted only for a terminal failed task whose dependencies remain completed, duplicate operation keys do not execute twice, skip is accepted only for an explicitly optional phase with no started task, required/unknown/started phases are rejected with stable reason codes, and accepted controls emit structured task/phase transitions. Run the focused worker tests and capture the expected missing-control failures.
+- [x] **Step 4 — GREEN: implement durable keyed controls.** Add strict workflow signal schemas/definitions and replay-compatible continuation defaults for seen control keys, failed task attempts, started phases, and skipped phases; handle a child-task failure without terminating the run, wait durably for a keyed retry, re-check dependency eligibility before dispatch, and apply/reject queued optional-phase skips at phase boundaries. Use attempt-qualified child workflow/activity identities and structured `task.updated` / `phase.completed` events so replay cannot duplicate transitions.
+- [x] **Step 5 — RED/GREEN Temporal acceptance: prove stable replay.** Add a local Temporal test that fails a task, observes the retry wait, restarts/replays the workflow worker, sends a keyed retry, and proves one accepted transition and one new attempt; in the same suite prove optional skip before task start and rejection after a phase task has started. Run the focused Temporal suite first red and then green.
+- [x] **Step 6 — Verify and record.** Run focused planning/contracts/worker unit and Temporal suites, worker lint/typecheck/build, and architecture gates; inspect the diff for out-of-scope files, secrets, placeholders, skipped tests, and replay/idempotency gaps. After controller review approval, check this task and `tasks/todo.md`, append exactly one AR-23 execution-log line, and commit `feat(orchestrator): durable retry and optional-phase controls`.
+
+### Task AR-24 [M2]: Typed interactive conversation cards
+
+**Files:** Modify AgentEvent contracts, interview/spec/plan/redirect workflows and tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [x] Binding behavior: versioned question/spec/plan/approval cards, matching keyed response waits, replay-compatible histories, and no workflow decision inferred from prose.
+- [x] Commit: `feat(orchestrator): typed interactive conversation cards`
+
+Execution expansion (2026-08-12):
+
+- [x] **24a RED/GREEN — shared cards:** add a strict versioned conversation-card and keyed response union to AgentEvent/Temporal contracts; reject wrong card ids, duplicate answers, and prose-only decisions.
+- [x] **24b RED/GREEN — interactive interview:** drive the deterministic specification-engine interview in the workflow, emit question cards, wait for the matching keyed response, and pass only the resulting durable interview state to persistence.
+- [x] **24c RED/GREEN — typed approvals:** persist specification, plan, build-plan, and redirect approvals with stable ids; emit typed specification/plan/approval cards and wait on matching approval id, kind, and artifact identity.
+- [x] **24d replay/verification:** prove duplicate response keys do not advance twice and old continuation histories default safely; run focused contracts and real Temporal tests plus worker lint/typecheck/build and architecture checks, then record and commit once.
 
 ## Testing strategy
 - Unit: policies, graph, context assembly, schema round-trips (fast, no infra).
@@ -346,6 +391,8 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - Policy evaluation is code-side (Global Constraint 15); model sees redacted, delimited tool output only; approval-gated tools enumerated in AR-4 table; all activities carry org/project context for ledger + audit attribution.
 
 ## Execution log
+
+- 2026-08-12 AR-24 done — Added opt-in v1 structured interview and approval cards with keyed durable responses, stable approval persistence, exact typed signal identities, and replay-compatible legacy branches; no provider calls.
 
 - 2026-08-04 AR-1 done — Added the authenticated provider-neutral streaming gateway and four AI SDK adapters with primary-only role selection; fallback execution remains AR-2.
 - 2026-08-04 AR-1 BLOCKED: Inherited direct model-provider calls remain in `apps/desktop`, conflicting with master Global Constraint 2; Plan 09 schedules the desktop gateway migration under MAC-6, outside AR-1's Files contract, with controller/human resolution tracked in external ADR-0005.
@@ -413,7 +460,10 @@ Binding behavior (PRD §11.5, §34 sequence): interview (AR-16) → spec approva
 - 2026-08-10 AR-17 done — Added production-routed autonomous interview/spec/plan approvals, phase-scoped AR-12 execution, bounded credits and repair, verified task transitions, lifecycle controls, durable continuation checkpoints, and scope-validated final evidence; the single capped review findings were resolved in one remediation pass, and production registration required the documented file-list joins with no interface deviation.
 - 2026-08-10 AR-18 done — Added the production-routed lightweight Build workflow with code-owned policy assessment, exact approval gating, AC-mapped per-task commits, independent VF approval, and provenance-protected continuations; production routing and existing mode/worker tests were required file-list joins, and the single capped review's two P1 findings were resolved in one remediation pass.
 - 2026-08-10 AR-19 done — Added the public API-routed reproduce-first Fix workflow with captured preview/Grafana evidence, regression-before-patch policy, immutable candidate diff guard, targeted/full verification, final symptom proof, and checkpointed control handling; the strict generated SDK and evidence-aware browser compatibility work required API, contract, generated-client, worker-routing, and web files beyond the terse create-only list, generic composers no longer expose Fix until they can supply immutable evidence, and the single capped review's P1/P2 findings were resolved in one remediation pass.
+- 2026-08-10 AR-19-FIX-1 done — moved the new Fix and Autonomous Temporal acceptance files out of the parallel unit DAG and into the existing serial integration lane without weakening their deadlines; ordinary worker tests passed 203/203 and serial integration passed 32/32 with no provider call.
 - 2026-08-10 AR-19 CI remediation — Authoritative Linux first exhausted the 30-second whole-fixture wrapper, then the widened wrapper exposed a truthful 24.16-second post-signal cancellation failure caused by Temporal throttling a 30-second activity heartbeat; Fix mutation activities now use the proven 1.5-second control heartbeat while waiting for cancellation completion, the binding post-signal assertion remains strictly below five seconds, and the provider acceptance was not repeated.
 - 2026-08-11 AR-20 done — Added strict structurally classified plan diffs, dependency-closure pause/resume, exact material approval, supersede retention, affected-work revalidation, durable checkpoints, and late-boundary routing in Build and Autonomous; the single capped review's three P1 findings were resolved in one remediation pass, and required export, worker, and mode-test joins extended the terse file list without interface deviation.
 - 2026-08-11 AR-21 done — Added the public fork API and generated SDK plus destination-scoped, step-idempotent project, branch, conversation, checkpoint, and DEP-12 release boundaries; the single capped review's three Important identity, replay, and deployment-config findings were resolved in one remediation pass, and API registration, exports, OpenAPI inventory, harness, and generated artifacts were required file-list joins without interface deviation.
 - 2026-08-11 AR-3B done — Resumed the credential-blocked final acceptance on `claude-sonnet-5` with a one-token output cap: the accepted two-completion proof wrote and read 1,153 cached input tokens and carried all 1,153 through OPS-1A's authoritative committed response. A preliminary one-call harness run truthfully settled as `output_limit_exceeded` before the cache-read assertion and was corrected without production changes. Contracts passed 137/137, model-gateway 83/83, orchestrator-worker 219/219, and real PostgreSQL/Redis accounting 11/11; a disposable branch-schema database avoided unrelated shared-database drift, and the live Stytch milestone check passed 5/5 after isolating local dual-stack DNS timeout with IPv4-first resolution.
+- 2026-08-11 AR-20-FIX-1 done — Exact-SHA clean Linux CI exposed AR-20's real-Temporal redirect suite still running in the parallel unit DAG; a structural manifest contract now keeps the unchanged seven-case suite in the existing no-file-parallelism integration lane without widening its 30-second deadlines, provider calls, blockers, or deviations.
+- 2026-08-12 AR-23 done — Added compatible optional-phase metadata, keyed durable retry/skip controls with attempt-qualified replay, structured decisions, and a worker-restart Temporal proof; the public phase schema materializes legacy `optional: false`, and all focused/package/architecture gates passed without provider calls.

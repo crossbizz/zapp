@@ -528,6 +528,10 @@ describe('organization settings', () => {
         events.push(event);
         return Promise.resolve();
       },
+      recordDetachedOnce: (_key, event) => {
+        events.push(event);
+        return Promise.resolve();
+      },
     };
     const wired = await wire({ audit });
     const before = events.length;

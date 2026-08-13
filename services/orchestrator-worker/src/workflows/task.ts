@@ -37,6 +37,7 @@ export const TaskWorkflowInputSchema = z
       .object({ maxCredits: z.number().int().positive().max(1_000_000) })
       .strict()
       .nullable(),
+    attempt: z.number().int().nonnegative().max(100).optional(),
   })
   .strict();
 export type TaskWorkflowInput = z.infer<typeof TaskWorkflowInputSchema>;
@@ -61,6 +62,13 @@ export const TaskWorkflowResultSchema = z.discriminatedUnion('status', [
       workspaceId: z.string().min(1).max(512),
       commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u),
       conflictTaskId: TaskIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      taskId: TaskIdSchema,
+      status: z.literal('failed'),
+      failureType: z.string().min(1).max(160),
     })
     .strict(),
 ]);
@@ -91,7 +99,7 @@ const taskActivities = proxyActivities<TaskWorkflowActivities>({
 });
 
 function operationKey(input: TaskWorkflowInput, step: string): string {
-  return `${input.runId}:${input.taskId}:${step}`;
+  return `${input.runId}:${input.taskId}:attempt:${String(input.attempt ?? 0)}:${step}`;
 }
 
 export async function taskWorkflow(inputValue: unknown): Promise<TaskWorkflowResult> {
@@ -143,7 +151,17 @@ export async function taskWorkflow(inputValue: unknown): Promise<TaskWorkflowRes
       }),
     ),
   );
-  if (session.status !== 'completed') throw new Error(`task_builder_session_${session.status}`);
+  if (session.status !== 'completed') {
+    const failureType = `task_builder_session_${session.status}`;
+    await taskActivities.transitionTaskState(
+      TaskWorkflowActivityInputSchemas.transitionTaskState.parse({
+        ...scope,
+        status: 'failed',
+        idempotencyKey: operationKey(input, 'status-failed'),
+      }),
+    );
+    return TaskWorkflowResultSchema.parse({ taskId: input.taskId, status: 'failed', failureType });
+  }
   const committed = TaskWorkflowActivityResultSchemas.commitAndPushTask.parse(
     await taskActivities.commitAndPushTask(
       TaskWorkflowActivityInputSchemas.commitAndPushTask.parse({
@@ -232,7 +250,7 @@ export async function runTaskBatchWorkflow(inputValue: unknown): Promise<TaskWor
     const completed = await Promise.all(
       batch.map((task) =>
         executeChild(taskWorkflow, {
-          workflowId: `task:${input.runId}:${task.taskId}`,
+          workflowId: `task:${input.runId}:${task.taskId}:attempt:${String(task.attempt ?? 0)}`,
           args: [task],
         }),
       ),

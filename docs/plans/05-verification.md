@@ -8,7 +8,7 @@
 
 **Tech Stack:** Playwright, axe-core, gitleaks (binary in image), osv-scanner, knip (unused deps), ts-morph (AST checks), @zapp/{contracts,workspace-runtime,agent-tools}.
 
-**Milestone:** VF-1..5 (M2), VF-6..16 (M3). **Depends on:** Plans 01–04. **Consumed by:** 07 (release gates), 04 (repair loop), 08 (evidence UI).
+**Milestone:** VF-1..5 + VF-17 (M2), VF-6..16 (M3). **Depends on:** Plans 01–04. **Consumed by:** 07 (release gates), 04 (repair loop), 08 (evidence UI).
 
 ## Global Constraints
 
@@ -224,6 +224,21 @@ export function runBrowserAgentSession(
 - [x] Binding behavior: dependency_scan = osv-scanner on lockfile; policy: critical vulns block Verified+ unless waived, advisory for Compatible (PRD §24.2); migration_validation = plan-06 DB adapters validate pending migrations against an isolated branch/database (Neon branch or Supabase shadow), classify destructive ops (VF uses AR-5 destructive-SQL detector), record reversibility state `reversible | compensating | unavailable` for release evidence (PRD §25.4).
 - [x] Commit: `feat(verification-engine): dependency + migration gates`
 
+### Task VF-17 [M2]: Test + evidence read contract
+
+**Files:** Modify verification evidence/test-run schemas, artifact ports and tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: typed run/case metadata and bounded signed artifact reads preserving organization/run/task/criterion provenance, accessibility descriptions, and trace/console/network kinds.
+- [x] Commit: `feat(verification): public evidence read model`
+
+Execution expansion (2026-08-12):
+
+- [x] **17a RED — typed projection:** define strict bounded test-run, case, and evidence schemas retaining org/run/task/test/criterion identities and exact evidence kinds.
+- [x] **17b GREEN — persisted read store:** implement tenant/run-scoped DB reads with deterministic ordering and fixed run/case/artifact ceilings; map forward-compatible metadata without returning storage refs.
+- [x] **17c RED/GREEN — signed artifact read:** require exact provenance, accessible description for visual evidence, content length ceiling, and a read-only R2 URL expiring within five minutes.
+- [x] **17d verification:** run verification-engine/service suites plus lint/typecheck/build and storage-boundary checks; record and commit once without a provider call.
+
 ---
 
 ## Testing strategy
@@ -257,3 +272,4 @@ export function runBrowserAgentSession(
 - 2026-08-10 VF-14 done — Added Zod-scoped anti-slop policy signals using Semgrep, knip, jscpd, and ESLint structural detectors plus thin zapp-specific checks, verifier/orchestrator wiring, and pinned sandbox tooling; the single capped review found two Important production/image wiring gaps and both were fixed; four narrow real-Modal image failures (Docker command escaping, wheel filename, pnpm shim location, runtime command discovery) were TDD-repaired before the final full smoke published dev tag `2026-08-10-847d378` with base `im-PZT5XmI22atrFqyk7AeJat` and web `im-vUdDLs1zub7vmXm8nSw5CD`; shared-DB contention required explicit `ZAPP_SKIP_VERIFY=1` on three intermediate source pushes, while final source `847d378` passed the normal pre-push gate and exact-SHA GitHub CI/Security.
 - 2026-08-10 VF-15 done — Added redacted PRD evidence manifests, Appendix D reports that enumerate the authoritative VF-9 completion inventory and all release gates, actual VF-12 accessibility evidence, VF-10-derived decisions/risks, and one atomic immutable-artifact/release-link port; the single capped review found four Important boundary gaps and all were fixed; 57/57 package tests plus root lint/typecheck passed with no provider run prescribed.
 - 2026-08-10 VF-16 done — Added offline checksum-pinned OSV lockfile scans with actor-attributed critical waivers and Compatible advisories, isolated Neon/Supabase migration-validation ports with AR-5 destructive-SQL classification and reversibility evidence, plus verifier/orchestrator wiring; the single capped review found three Important image, termination, and advisory-execution gaps and all were fixed; the first Modal smoke exposed an empty root-only npm lockfile (`osv-scanner` exit 128), which was TDD-repaired with an inert dependency before dev tag `2026-08-11-91b8ce9` passed on base `im-f2u2lycmHBlzJEcOb8mvwu` and web `im-k2qXe5kLLWMXUxv9G1wvBl`; concurrent fixed-port web tests killed the local pre-push server, so intermediate source `91b8ce9` used the disclosed `ZAPP_SKIP_VERIFY=1` emergency path and then passed exact-SHA GitHub CI/Security authoritatively; source-advertisement commits and test/image wiring extended the terse create-only file list with no interface deviation.
+- 2026-08-12 VF-17 done — Added strict tenant-scoped run/case/evidence projections, bounded accessible evidence metadata, control-plane-only reads, and five-minute R2 download signing; 71 engine, 18 service, and 9 service-integration tests passed with no provider call.

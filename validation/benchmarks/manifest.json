@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "protocol": "PRD-40.2-40.3",
+  "apps": [
+    {
+      "id": "react-vite-crud",
+      "category": "react-vite-crud",
+      "name": "Studio Contacts",
+      "mode": "template",
+      "primarySeed": "apps/desktop/e2e-tests/fixtures/import-app/minimal",
+      "sourceEvidence": ["packages/project-adapters/test/fixtures/framework-vite"],
+      "criticalFlows": ["create contact", "edit contact", "delete contact"],
+      "featureChanges": [
+        "add contact search and empty results",
+        "add tags and tag filtering",
+        "add CSV export",
+        "add optimistic inline editing",
+        "add an accessible delete confirmation"
+      ],
+      "deliberateDefect": "break case-insensitive search for mixed-case names",
+      "sharedComponentChange": "change the shared form field error treatment",
+      "schemaChange": "add a nullable company column then make it required after backfill",
+      "dependencyUpgrade": "upgrade the Vite minor line",
+      "rollback": "restore the release before optimistic editing",
+      "syntheticProductionFailure": "return 500 from the contacts list only in production"
+    },
+    {
+      "id": "next-saas",
+      "category": "next-saas",
+      "name": "Agency Workspace",
+      "mode": "template",
+      "primarySeed": "packages/project-adapters/test/fixtures/framework-next",
+      "sourceEvidence": ["packages/project-adapters/test/fixtures/framework-next/app"],
+      "criticalFlows": ["create workspace", "invite member", "change role"],
+      "featureChanges": [
+        "add workspace onboarding checklist",
+        "add member invitation expiry",
+        "add project status filters",
+        "add organization activity feed",
+        "add responsive account navigation"
+      ],
+      "deliberateDefect": "allow an expired invitation to appear usable",
+      "sharedComponentChange": "replace the shared navigation item layout",
+      "schemaChange": "add invitation expiry with a safe backfill",
+      "dependencyUpgrade": "upgrade the Next.js minor line",
+      "rollback": "restore the release before invitation expiry",
+      "syntheticProductionFailure": "fail the workspace health route after deploy"
+    },
+    {
+      "id": "existing-import",
+      "category": "existing-imported-project",
+      "name": "Imported Field Notes",
+      "mode": "import",
+      "primarySeed": "apps/desktop/e2e-tests/fixtures/import-app/minimal-with-dyad",
+      "sourceEvidence": ["apps/desktop/e2e-tests/import.spec.ts"],
+      "criticalFlows": ["import repository", "preserve source files", "reach preview"],
+      "featureChanges": [
+        "add note pinning",
+        "add markdown preview",
+        "add note sorting",
+        "add keyboard shortcuts",
+        "add archive and restore"
+      ],
+      "deliberateDefect": "drop pinned state after refresh",
+      "sharedComponentChange": "change the shared note card actions",
+      "schemaChange": "add archived_at with existing notes kept active",
+      "dependencyUpgrade": "upgrade React within the existing lockfile",
+      "rollback": "restore the release before note archive",
+      "syntheticProductionFailure": "serve a stale imported asset in production"
+    },
+    {
+      "id": "pnpm-monorepo",
+      "category": "monorepo",
+      "name": "Commerce Monorepo",
+      "mode": "import",
+      "primarySeed": "packages/project-adapters/test/fixtures/pnpm-monorepo",
+      "sourceEvidence": ["packages/project-adapters/test/generic-node.test.ts"],
+      "criticalFlows": ["build web package", "build API package", "share contract package"],
+      "featureChanges": [
+        "add shared pagination types",
+        "add API health details",
+        "add web error boundaries",
+        "add a shared formatting package",
+        "add affected-package test selection"
+      ],
+      "deliberateDefect": "publish an incompatible shared contract shape",
+      "sharedComponentChange": "change a component consumed by two workspaces",
+      "schemaChange": "add order status through the API and web packages",
+      "dependencyUpgrade": "upgrade Turbo across the workspace",
+      "rollback": "restore the release before the shared contract change",
+      "syntheticProductionFailure": "make the API package unhealthy while web remains healthy"
+    },
+    {
+      "id": "supabase-auth",
+      "category": "supabase-auth",
+      "name": "Member Portal",
+      "mode": "template",
+      "primarySeed": "packages/project-adapters/test/fixtures/scan-next-supabase",
+      "sourceEvidence": ["apps/desktop/e2e-tests/fixtures/add-supabase.md"],
+      "criticalFlows": ["sign up", "sign in", "read own profile"],
+      "featureChanges": [
+        "add password reset",
+        "add profile avatars",
+        "add organization invitations",
+        "add row-level profile preferences",
+        "add session expiry messaging"
+      ],
+      "deliberateDefect": "remove the ownership filter from the profile query",
+      "sharedComponentChange": "change the authenticated shell header",
+      "schemaChange": "add profile preferences under row-level security",
+      "dependencyUpgrade": "upgrade the Supabase client minor line",
+      "rollback": "restore the release before profile preferences",
+      "syntheticProductionFailure": "reject production auth callback redirects"
+    },
+    {
+      "id": "neon-backed",
+      "category": "neon-backed",
+      "name": "Inventory Desk",
+      "mode": "template",
+      "primarySeed": "packages/project-adapters/test/fixtures/framework-next",
+      "sourceEvidence": ["apps/desktop/e2e-tests/fixtures/add-neon.md"],
+      "criticalFlows": ["create item", "adjust stock", "view low stock"],
+      "featureChanges": [
+        "add stock adjustment reasons",
+        "add low-stock thresholds",
+        "add supplier records",
+        "add inventory audit export",
+        "add transaction pagination"
+      ],
+      "deliberateDefect": "permit stock to become negative",
+      "sharedComponentChange": "change the shared numeric input component",
+      "schemaChange": "split quantity into on_hand and reserved with backfill",
+      "dependencyUpgrade": "upgrade the Neon serverless driver",
+      "rollback": "restore the release before stock reservation",
+      "syntheticProductionFailure": "exhaust production database connections"
+    },
+    {
+      "id": "stripe-subscription",
+      "category": "stripe-subscription",
+      "name": "Subscription Studio",
+      "mode": "template",
+      "primarySeed": "packages/project-adapters/test/fixtures/framework-next",
+      "sourceEvidence": ["services/control-api/test/integration/billing.test.ts"],
+      "criticalFlows": ["start checkout", "apply webhook", "open billing portal"],
+      "featureChanges": [
+        "add annual billing selection",
+        "add seat quantity controls",
+        "add trial countdown",
+        "add invoice history",
+        "add cancellation recovery"
+      ],
+      "deliberateDefect": "apply a duplicate subscription webhook twice",
+      "sharedComponentChange": "change the shared plan comparison card",
+      "schemaChange": "add a subscription cancellation reason",
+      "dependencyUpgrade": "upgrade the Stripe SDK minor line",
+      "rollback": "restore the release before annual billing",
+      "syntheticProductionFailure": "make the production webhook endpoint return 500"
+    },
+    {
+      "id": "intentional-regressions",
+      "category": "intentional-regressions",
+      "name": "Regression Lab",
+      "mode": "import",
+      "primarySeed": "apps/desktop/e2e-tests/fixtures/import-app/minimal",
+      "sourceEvidence": ["services/verification-service/test/fixtures/two-case.spec.ts"],
+      "criticalFlows": ["render fixture", "submit fixture", "retain submitted value"],
+      "featureChanges": [
+        "add a second form step",
+        "add client validation",
+        "add server validation",
+        "add saved drafts",
+        "add mobile layout"
+      ],
+      "deliberateDefect": "plant a browser assertion failure with screenshot evidence",
+      "sharedComponentChange": "change the shared submit button states",
+      "schemaChange": "add draft version metadata",
+      "dependencyUpgrade": "upgrade Playwright within the fixture",
+      "rollback": "restore the last fully passing fixture release",
+      "syntheticProductionFailure": "hide the submit button only in production"
+    },
+    {
+      "id": "migration-risk",
+      "category": "migration-risk",
+      "name": "Booking Ledger",
+      "mode": "import",
+      "primarySeed": "packages/project-adapters/test/fixtures/scan-next-supabase",
+      "sourceEvidence": ["services/release-service/test/integration/deploy-workflow.test.ts"],
+      "criticalFlows": ["create booking", "reschedule booking", "cancel booking"],
+      "featureChanges": [
+        "add booking notes",
+        "add staff assignment",
+        "add timezone display",
+        "add cancellation reasons",
+        "add daily capacity limits"
+      ],
+      "deliberateDefect": "calculate capacity in the browser timezone",
+      "sharedComponentChange": "change the shared date-time picker",
+      "schemaChange": "make staff_id required after a staged backfill",
+      "dependencyUpgrade": "upgrade the date library major line",
+      "rollback": "restore the release before the risky staff migration",
+      "syntheticProductionFailure": "fail the post-migration production health check"
+    },
+    {
+      "id": "production-only-error",
+      "category": "production-only-error",
+      "name": "Release Monitor",
+      "mode": "template",
+      "primarySeed": "apps/desktop/e2e-tests/fixtures/import-app/minimal",
+      "sourceEvidence": ["apps/desktop/e2e-tests/fixtures/create-error.md"],
+      "criticalFlows": ["view releases", "open release detail", "acknowledge incident"],
+      "featureChanges": [
+        "add release filtering",
+        "add incident severity",
+        "add acknowledgement notes",
+        "add owner assignment",
+        "add release comparison"
+      ],
+      "deliberateDefect": "render a missing release field without a guard",
+      "sharedComponentChange": "change the shared status badge mapping",
+      "schemaChange": "add incident owner and severity",
+      "dependencyUpgrade": "upgrade the error-boundary dependency",
+      "rollback": "restore the previous healthy production release",
+      "syntheticProductionFailure": "throw only when NODE_ENV is production"
+    }
+  ]
+}

@@ -89,7 +89,7 @@ export function projectTenantForeignKey(
     name: `${table}_project_tenant_fk`,
     columns: [projectIdColumn, organizationIdColumn],
     foreignColumns: [projects.id, projects.organizationId],
-  });
+  }).onDelete('cascade');
 }
 
 export const repositories = pgTable(
@@ -99,7 +99,7 @@ export const repositories = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** `internal` (Forgejo) or `github` — plan 06 owns the provider list. */
     provider: text('provider').notNull(),
     /** Always set: internal git is the source of truth, GitHub is a mirror (PRD §19.1). */
@@ -151,7 +151,7 @@ export const branches = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     /** Null on an unborn branch — the row exists before the first commit lands. */
     headCommitSha: text('head_commit_sha'),
@@ -176,7 +176,7 @@ export const environments = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     /** `preview`, `staging`, `production` in P0 (PRD §26A.3); plan 07 owns the list. */
     type: text('type').notNull(),
@@ -199,7 +199,7 @@ export const projectContracts = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     /** Monotonic per project: detection re-runs append a version, never overwrite one (PRD §17.2). */
     version: integer('version').notNull(),
     /** Null when no adapter claimed the project and the generic Node fallback won (PRD §17.3). */
@@ -223,7 +223,7 @@ export const previewShares = pgTable(
     organizationId: organizationId(),
     projectId: text('project_id')
       .notNull()
-      .references(() => projects.id),
+      .references(() => projects.id, { onDelete: 'cascade' }),
     workspaceId: text('workspace_id').notNull(),
     operationKey: text('operation_key').notNull(),
     requestFingerprint: text('request_fingerprint').notNull(),

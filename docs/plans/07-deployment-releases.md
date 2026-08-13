@@ -8,7 +8,7 @@
 
 **Tech Stack:** Temporal, Fly Machines API, Vercel API, Docker buildkit in sandbox (image builds), @zapp/{contracts,verification-engine}.
 
-**Milestone:** M4. **Depends on:** Plans 01–06 (evidence from 05, commits from 06, sandboxes from 03). **Consumed by:** 08 (deploy UX), 10 (cost attribution, synthetic checks ops).
+**Milestone:** M4 (DEP-1..15, with DEP-13 prepared for M3 WEB-13). **Depends on:** Plans 01–06 (evidence from 05, commits from 06, sandboxes from 03). **Consumed by:** 08 (deploy UX), 10 (cost attribution, synthetic checks ops).
 
 ## Global Constraints
 
@@ -177,12 +177,57 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 
 ### Task DEP-12: Wire CP-11 + evidence + forking touchpoint
 
-**Files:** Modify: `services/control-api/src/routes/releases.ts` (replace fakes with ReleasePort client); Create: `test/integration/release-e2e.test.ts`
+**Files:** Modify: `.env.example`, `package.json`, `pnpm-lock.yaml`, `vitest.config.ts`, `tasks/todo.md`, `services/control-api/package.json`, `services/control-api/src/{app,compose,env,server}.ts`, `services/control-api/src/routes/releases.ts`, `services/control-api/test/{compose,incidents,openapi,releases,server-entrypoint}.test.ts`, `services/control-api/test/support/harness.ts`, `services/release-service/package.json`, `services/release-service/src/{index,routes}.ts`, `services/release-service/src/release/create.ts`, `services/release-service/test/release.test.ts`, `packages/api-client/openapi.json`, `packages/api-client/src/{generated,generated-operations}.ts`, `packages/api-client/test/client.test.ts`; Create: `services/control-api/src/release/client.ts`, `services/control-api/test/release-client.test.ts`, `services/release-service/src/{app,compose,env,server,lifecycle}.ts`, `services/release-service/src/internal/service-auth.ts`, `services/release-service/test/{app,compose,env,lifecycle}.test.ts`, `test/integration/{release-transport,release-e2e}.test.ts`, `docs/adr/0031-release-lifecycle-runtime.md`. Scope expansion approved by ADR-0031.
 **Effort:** M
 
-- [ ] Binding behavior: PRD §32.4 routes fully live: create → readiness → approve → deploy → evidence → rollback; evidence endpoint returns VF-15 manifest; release-into-repair-branch fork (PRD §28): `POST /v1/releases/:id/fork` creates branch `fix/rel-{id}` at release commit + optional Fix run — used by production-bug journey (§10.3 step 3).
-- [ ] E2E test (staging, nightly): template project → build run → verify → release → deploy (fly) → synthetic pass → rollback → previous content served. This is exit criteria E16/E17/E18 as one executable test.
-- [ ] Commit: `feat: end-to-end release lifecycle live behind /v1 APIs`
+**Execution split (2026-08-12):** The capped review proved that callable transport alone is not a deployable release plane. Per session-hygiene and the owner's “re-scope and move” instruction, DEP-12a lands completed transport/API/SDK work without checking DEP-12; DEP-12b owns the real DEP-2–11 adapter binding and executable acceptance journey. No transport fixture may be reported as the final E2E.
+
+- [x] **DEP-12a / TDD step 1 — internal lifecycle surface:** add failing release-service app/route tests for create → readiness → approve → deploy → evidence → rollback plus a separately keyed release-repair fork; run RED; implement validated, service-authenticated routes; run GREEN.
+- [x] **DEP-12a / TDD step 2 — production client and composition:** add failing control-api client/env/composition tests proving every operation crosses authenticated HTTP and production refuses an absent release-service URL; run RED; implement the client and binding; run GREEN.
+- [x] **DEP-12a / TDD step 3 — public repair fork and structural deploy gate:** add failing `/v1/releases/:id/fork` and generated-SDK contract tests, then a failing create→deploy rejection; implement exact repair identity plus readiness revalidation and the keyed, audited `approved → deploying` transition; run GREEN and regenerate the SDK.
+- [x] **DEP-12a commit:** `feat(release-service): authenticated lifecycle transport`
+- [x] **DEP-12b / TDD step 4 — executable lifecycle:** add the failing two-service E2E lifecycle using the real Postgres record/context stores and bound DEP-2–11 readiness, Temporal/provider, VF-15 evidence, rollback, Git, Fix-run, and synthetic implementations; run RED; add the concrete fail-closed process entrypoint and minimum missing adapters; run GREEN against an external provider fixture that serves content, prove keyed replay and synthetic success, then restore prior content.
+- [x] **DEP-12b commit:** `feat: end-to-end release lifecycle live behind /v1 APIs`
+- [x] **Final gate:** run touched-package lint/typecheck/build/tests, the root integration command, one capped review (exit: no unresolved Major structural/correctness/security finding), then exactly one env-gated Fly staging journey; update tracker/log, commit, push, and require exact-SHA GitHub CI + Security green.
+- [x] Binding behavior: PRD §32.4 routes fully live: create → readiness → approve → deploy → evidence → rollback; evidence endpoint returns VF-15 manifest; release-into-repair-branch fork (PRD §28): `POST /v1/releases/:id/fork` creates branch `fix/rel-{id}` at release commit + optional Fix run — used by production-bug journey (§10.3 step 3).
+- [x] E2E test (staging, nightly): template project → build run → verify → release → deploy (fly) → synthetic pass → rollback → previous content served. This is exit criteria E16/E17/E18 as one executable test.
+- [x] Commit: `feat: end-to-end release lifecycle live behind /v1 APIs`
+
+### Task DEP-13 [M3]: Public release history projection
+
+**Files:** Modify release/control views, DB schema/repos, OpenAPI/SDK/tests.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Binding behavior: paginated project release list, active-production marker, support badge, deploy history, healthy rollback targets, and bounded evidence artifact links.
+- [x] RED: add release-service and control-route tests for tenant-scoped cursor pagination, active production, support, deployments, rollback targets, and evidence links.
+- [x] GREEN: add the read-only Postgres projection and authenticated internal release-service route.
+- [x] GREEN: bridge the projection through `GET /v1/projects/:projectId/releases` and regenerate the public SDK.
+- [x] Verify focused release-service/control/API-client tests plus touched-package lint, typecheck, and build.
+- [x] Commit: `feat(releases): public release history projection`
+
+### Task DEP-14 [M4]: Public deployment progress + actions
+
+**Files:** Modify release DB/lifecycle/routes, control bridge, OpenAPI/SDK/tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [x] Binding behavior: classification and exact confirmation, keyed readiness actions, deployment-scoped append-only eight-stage replay/SSE, safe retry/Fix/Ask actions, terminal success, and domains.
+- [x] RED/GREEN: add a tenant-scoped deployment projection using the existing append-only audit ledger, with deterministic stage sequence and bounded replay.
+- [x] RED/GREEN: expose server-classified confirmation plus keyed readiness and deployment action ports; production composition must provide the action dispatcher.
+- [x] RED/GREEN: bridge progress replay/SSE, terminal success, and environment domains through `/v1` and regenerate the SDK.
+- [x] Verify focused release/control/API-client tests plus lint, typecheck, and build.
+- [x] Commit: `feat(releases): public deployment progress and actions`
+
+### Task DEP-15 [M4]: Production health + rollback preview
+
+**Files:** Modify release DB health/synthetic/annotation/rollback projections, control bridge, OpenAPI/SDK/tests.
+**Effort:** L. **[expand-at-execution]**
+
+- [x] Binding behavior: production/deploy history, health and synthetic result history, annotations/monitoring links, healthy targets, and pre-mutation `compatible | requires_compensation | incompatible` rollback state.
+- [x] RED/GREEN: persist append-only production-health, synthetic-result, and annotation records with tenant/project/deployment identity and bounded indexes.
+- [x] RED/GREEN: expose a tenant-scoped production dashboard projection containing deployment history, health/synthetic history, monitoring links, and healthy rollback targets.
+- [x] RED/GREEN: add a read-only rollback preview that resolves the same immutable context as the mutation and returns database compatibility without provider activity.
+- [x] GREEN: bridge both reads through `/v1`, regenerate SDK, and verify focused DB/release/control/client gates plus lint/typecheck/build.
+- [x] Commit: `feat(releases): production health and rollback preview`
 
 ---
 
@@ -220,3 +265,9 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 - 2026-08-11 DEP-10 done — Added environment-scoped custom-domain persistence, keyed Fly/Vercel provider activities, the concrete Fly ACME certificates adapter, guided CNAME/A and ownership-TXT instructions, public-suffix-aware apex/www guidance, automatic SSL state, and CAS-safe DNS/provider polling with readable wrong-record, CAA, and rate-limit failures; the single capped review closed DEP-4's Fly certificate seam and hardened replay/concurrency invariants with no interface deviation, while the public control-API adapter remains in DEP-12's binding wiring task and real provider calls remain unverified because Fly/Vercel staging credentials are absent.
 - 2026-08-11 DEP-11 done — Added Managed-only default cron checks for critical structurally read-only production flows, exact release/flow bindings in Temporal schedule inputs alongside PRD-exact health-index rows, unique keyed workflow runs, verification-service execution, 30-day results, project-health status, and keyed incident/OPS-7 notification/AR-19 Fix offers on failure; the single capped review bounded maximum identifiers and fingerprints and required immutable failure evidence with no interface deviation, while the Temporal, verification, notification, and Fix activity ports remain for DEP-12 wiring.
 - 2026-08-11 DEP-12 BLOCKED — The binding file list permits only the control-API release route and one E2E test, but the required target is not callable: `services/release-service` has no app/server runtime and its internal HTTP surface implements only create/get/approve, with no readiness/deploy/evidence/rollback endpoints or production composition for DEP-2 through DEP-11. A mock-only control client would not make PRD §32.4 “fully live.” Completing this requires an approved scope expansion for release-service runtime/routes plus control-api composition; task remains unchecked and no fake success path was added.
+- 2026-08-12 DEP-12a done — Added service-authenticated lifecycle HTTP transport, fail-closed control-api composition, public repair fork and generated SDK, atomic release audits/incident resolution, and readiness-revalidated keyed `approved → deploying`; the one capped review rejected final DEP-12 acceptance because concrete DEP-2–11 production adapters and the real synthetic/E2E journey are still absent, so the fixture was renamed as transport-only and DEP-12 remains unchecked for DEP-12b.
+- 2026-08-12 DEP-12 done — Bound the release process to real Postgres record/context stores and DEP-2–11 readiness, deployment, VF-15 evidence, Git repair, synthetic, and rollback implementations; the two-service public `/v1` journey proves keyed replay, synthetic success, repair branching, and prior-content restoration. The capped review found no unresolved Major; root integration was serialized to eliminate a proven shared-database reset race, and the single Fly gate skipped visibly because `FLY_API_TOKEN`, `FLY_ORG_SLUG`, and `ZAPP_FLY_STAGING_ENABLED=1` are absent.
+- 2026-08-12 DEP-12 CI fix — Exact-SHA CI exposed that its direct Turbo integration command bypassed the local serialization flag, allowing another package to truncate DEP-12's seeded organization; CI now serializes shared-database integration packages and a workflow regression test locks the gate.
+- 2026-08-12 DEP-13 done — Added a tenant-scoped cursor-paginated release history projection with support tier, active production, bounded deployment/rollback history and public evidence links; regenerated SDK and focused release/control/client gates passed with no provider calls.
+- 2026-08-12 DEP-14 done — Added durable keyed deployment actions, deterministic eight-stage progress replay/SSE, terminal success, server-classified confirmation, and provider-neutral managed-domain APIs; clean migration and focused DB/release/control/SDK gates passed, while live Fly/Vercel checks skipped visibly for absent staging credentials.
+- 2026-08-12 DEP-15 done — Added append-only production-health, synthetic-result, and monitoring-annotation history, a bounded tenant production dashboard with healthy rollback targets, and a read-only compatibility preview over the mutation's resolver; clean migration and focused gates passed without provider calls.

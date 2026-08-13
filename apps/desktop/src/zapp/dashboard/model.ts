@@ -41,7 +41,7 @@ export const CreateCloudProjectSchema = z
   .object({
     operationId: z.uuid(),
     prompt: z.string().trim().min(10).max(20_000),
-    mode: z.enum(["ask", "prototype", "build", "fix", "autonomous"]),
+    mode: z.enum(["ask", "prototype", "build", "autonomous"]),
   })
   .strict();
 

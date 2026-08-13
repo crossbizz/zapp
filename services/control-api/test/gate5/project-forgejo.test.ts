@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { internalRepoRef } from '@zapp/contracts';
+import { loadTemplateRegistryFile } from '@zapp/config';
 import {
   composeApp as composeGitService,
   loadForgejoEnv,
@@ -216,6 +217,9 @@ describe.skipIf(!gate.present)('GATE-5 control-api -> git-service -> Forgejo', (
       forgejo: loadForgejoEnv(process.env),
       serviceTokens,
       database: readyDatabase.db,
+      templates: await loadTemplateRegistryFile(
+        new URL('../../../../config/templates.json', import.meta.url),
+      ),
       logger: false,
     });
     const readyGitService = gitComposition.app;

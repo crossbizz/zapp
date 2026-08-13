@@ -7,8 +7,22 @@ interface LifecycleInput {
   readonly redis: unknown;
 }
 
+interface TemporalClientInput {
+  readonly connection: unknown;
+  readonly namespace: string;
+  readonly interceptors?: {
+    readonly workflow?: readonly unknown[];
+  };
+}
+
+const PLATFORM_STRIPE_SECRET = ['sk', 'test', 'platformbilling'].join('_');
+const PLATFORM_STRIPE_WEBHOOK_SECRET = ['whsec', 'platformbilling'].join('_');
+
 const production = vi.hoisted(() => {
-  const auth = { databaseUrl: 'database-url-from-auth' };
+  const auth = {
+    databaseUrl: 'database-url-from-auth',
+    config: { appBaseUrl: 'https://app.zapp.test' },
+  };
   const database = {
     db: { kind: 'production-database-client' },
     sql: { listen: vi.fn() },
@@ -38,6 +52,21 @@ const production = vi.hoisted(() => {
     delete: vi.fn(() => Promise.resolve()),
     close: vi.fn(),
   };
+  const notificationQueue = {
+    send: vi.fn(() => Promise.resolve()),
+    receive: vi.fn(() => Promise.resolve([])),
+    delete: vi.fn(() => Promise.resolve()),
+    close: vi.fn(),
+  };
+  const notificationState = { kind: 'notification-state' };
+  const notificationProducer = { enqueue: vi.fn(() => Promise.resolve()) };
+  const notificationEmail = { send: vi.fn(), close: vi.fn() };
+  const notificationFanout = { publish: vi.fn(), close: vi.fn() };
+  const notificationWorker = { processOnce: vi.fn(() => Promise.resolve(0)) };
+  const notificationLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
   const usageOutboxPublisher = { publishOnce: vi.fn(() => Promise.resolve(0)) };
   const usagePublisherLifecycle = {
     start: vi.fn(() => Promise.resolve()),
@@ -53,6 +82,42 @@ const production = vi.hoisted(() => {
     runOnce: vi.fn(() => Promise.resolve({ acquired: true, mirrored: 0 })),
   };
   const accountingReconcilerLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const creditExhaustionLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const usageReconciliationSource = {
+    scopes: { kind: 'usage-reconciliation-scopes' },
+    ledger: { kind: 'usage-reconciliation-ledger' },
+  };
+  const usageRunCounter = { kind: 'usage-run-counter' };
+  const flexpriceUsageAggregate = { kind: 'flexprice-usage-aggregate' };
+  const threeWayUsageReconciler = { kind: 'three-way-usage-reconciler' };
+  const usageReconciliationLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const usageCounter = { kind: 'usage-ledger-counter' };
+  const usageDelivery = { kind: 'usage-delivery' };
+  const usageCorrections = { kind: 'usage-corrections' };
+  const usageCoordinator = { kind: 'usage-coordinator' };
+  const coordinatedReconciler = { kind: 'coordinated-reconciler' };
+  const storageLedger = { kind: 'storage-ledger' };
+  const dailyStorageCollector = {
+    collect: vi.fn(() => Promise.resolve({ projects: 0, recorded: 0 })),
+  };
+  const dailyStorageLifecycle = {
+    start: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+  };
+  const archiveDatabase = { kind: 'archive-database' };
+  const archiveObjectStore = { kind: 'archive-object-store' };
+  const snapshotRetentionAudit = { kind: 'snapshot-retention-audit' };
+  const archiveJob = { run: vi.fn() };
+  const archiveLifecycle = {
     start: vi.fn(() => Promise.resolve()),
     close: vi.fn(() => Promise.resolve()),
   };
@@ -115,6 +180,24 @@ const production = vi.hoisted(() => {
     flexprice,
     accountingReconciler,
     accountingReconcilerLifecycle,
+    usageReconciliationSource,
+    usageRunCounter,
+    flexpriceUsageAggregate,
+    threeWayUsageReconciler,
+    usageReconciliationLifecycle,
+    usageCounter,
+    usageDelivery,
+    usageCorrections,
+    usageCoordinator,
+    coordinatedReconciler,
+    storageLedger,
+    dailyStorageCollector,
+    dailyStorageLifecycle,
+    archiveDatabase,
+    archiveObjectStore,
+    snapshotRetentionAudit,
+    archiveJob,
+    archiveLifecycle,
     preview,
     artifactStorage,
     github,
@@ -140,6 +223,13 @@ const production = vi.hoisted(() => {
     usageOutboxPublisher,
     usagePublisherLifecycle,
     usageQueue,
+    notificationQueue,
+    notificationState,
+    notificationProducer,
+    notificationEmail,
+    notificationFanout,
+    notificationWorker,
+    notificationLifecycle,
     bootstrapControlApiServer: vi
       .fn<(input: unknown) => Promise<void>>()
       .mockResolvedValue(undefined),
@@ -155,18 +245,58 @@ const production = vi.hoisted(() => {
       .fn<(url: string, options: unknown) => typeof redis>()
       .mockReturnValue(redis),
     connectTemporal: vi.fn(() => Promise.resolve(temporalConnection)),
-    TemporalClient: vi.fn(function TemporalClient() {
+    TemporalClient: vi.fn(function TemporalClient(options: TemporalClientInput) {
+      void options;
       return temporal;
     }),
     createSqsUsageQueue: vi.fn(() => usageQueue),
+    createSqsNotificationQueue: vi.fn(() => notificationQueue),
+    createSesEmailSender: vi.fn(() => notificationEmail),
+    createSnsNotificationFanout: vi.fn(() => notificationFanout),
+    createRedisNotificationState: vi.fn(() => notificationState),
+    createNotificationProducer: vi.fn(() => notificationProducer),
+    createDatabaseNotificationDirectory: vi.fn(() => ({ kind: 'notification-directory' })),
+    createRedisNotificationProjection: vi.fn(() => ({ kind: 'notification-projection' })),
+    createNotificationWorker: vi.fn(() => notificationWorker),
+    createNotificationWorkerLifecycle: vi.fn(() => notificationLifecycle),
+    usageAlertNotification: vi.fn((input: unknown) => input),
     createFlexpriceIngestClient: vi.fn(() => flexprice),
     createUsageEventConsumer: vi.fn(() => usageConsumer),
     createUsageEventConsumerLifecycle: vi.fn(() => usageConsumerLifecycle),
     createUsageOutboxPublisher: vi.fn(() => usageOutboxPublisher),
     createUsageOutboxPublisherLifecycle: vi.fn(() => usagePublisherLifecycle),
+    createRedisUsageLedgerCounter: vi.fn(() => usageCounter),
+    createDatabaseUsageOutboxDeliveryPort: vi.fn(() => usageDelivery),
     createAccountingReconciler: vi.fn(() => accountingReconciler),
     createAccountingReconcilerLifecycle: vi.fn(() => accountingReconcilerLifecycle),
     createRedisCreditMirror: vi.fn(() => ({ kind: 'credit-mirror' })),
+    createDatabaseUsageReconciliationSource: vi.fn(() => usageReconciliationSource),
+    createRedisUsageRunCounter: vi.fn(() => usageRunCounter),
+    createFlexpriceUsageAggregateClient: vi.fn(() => flexpriceUsageAggregate),
+    createThreeWayUsageReconciler: vi.fn(() => threeWayUsageReconciler),
+    createUsageReconciliationLifecycle: vi.fn(() => usageReconciliationLifecycle),
+    createCreditBalanceExhaustionProducer: vi.fn(() => ({
+      runOnce: vi.fn(() => Promise.resolve()),
+    })),
+    createCreditBalanceExhaustionLifecycle: vi.fn(() => creditExhaustionLifecycle),
+    createDatabaseCreditExhaustionStore: vi.fn(() => ({ kind: 'credit-exhaustion-store' })),
+    createDatabaseUsageCorrectionJournal: vi.fn(() => usageCorrections),
+    createDatabaseUsageReconciliationCoordinator: vi.fn(() => usageCoordinator),
+    createCoordinatedUsageReconciliationJob: vi.fn(() => coordinatedReconciler),
+    createUsageLedgerRepository: vi.fn(() => storageLedger),
+    createDailyStorageCollector: vi.fn(() => dailyStorageCollector),
+    createDailyStorageCollectorLifecycle: vi.fn(() => dailyStorageLifecycle),
+    createDatabaseDailyStorageClaim: vi.fn(() => ({ kind: 'storage-claim' })),
+    createDatabaseMeteredProjectPort: vi.fn(() => ({ kind: 'metered-projects' })),
+    createR2ArtifactStorageMeasurement: vi.fn(() => ({ kind: 'r2-measurement' })),
+    createPostgresAgentEventArchiveDatabase: vi.fn(() => archiveDatabase),
+    createS3AgentEventArchiveObjectStore: vi.fn(() => archiveObjectStore),
+    createAgentEventArchiveJob: vi.fn(() => archiveJob),
+    createAgentEventArchiveLifecycle: vi
+      .fn<(input: unknown) => typeof archiveLifecycle>()
+      .mockReturnValue(archiveLifecycle),
+    createDatabaseSnapshotRetentionAuditPort: vi.fn(() => snapshotRetentionAudit),
+    createSandboxStorageMeasurementClient: vi.fn(() => ({ kind: 'sandbox-measurement' })),
     createGitHubProvider: vi.fn(() => githubProvider),
     createDbGitHubWebhookStore: vi.fn(() => ({ kind: 'github-webhook-store' })),
     createSqsGitHubWebhookQueue: vi.fn(() => githubWebhookQueue),
@@ -189,7 +319,8 @@ const production = vi.hoisted(() => {
       NODE_ENV: 'test',
       PORT: 4_321,
     })),
-    loadGitServiceUrl: vi.fn(() => undefined),
+    loadGitServiceUrl: vi.fn(() => 'http://git-service.test:4500'),
+    loadReleaseServiceUrl: vi.fn(() => 'http://release-service.test:4300'),
     loadGitHubAppEnv: vi.fn(() => github),
     loadGitHubWebhookQueueEnv: vi.fn(() => ({
       region: 'us-east-1',
@@ -200,17 +331,33 @@ const production = vi.hoisted(() => {
       queueName: 'zapp-github-imports',
       deadLetterQueueName: 'zapp-github-imports-dlq',
     })),
+    loadPostHogEnv: vi.fn(() => undefined),
+    loadIncidentWebhookSecret: vi.fn(() => undefined),
     loadFlexpriceEnv: vi.fn(() => ({
       apiKey: 'not-a-real-flexprice-key',
       baseUrl: 'https://api.cloud.flexprice.io/v1',
     })),
+    requireFlexpriceForEnvironment: vi.fn((_environment: unknown, flexprice: unknown) => flexprice),
+    loadStripeBillingEnv: vi.fn(() => ({
+      platformSecretKey: PLATFORM_STRIPE_SECRET,
+      webhookSecret: PLATFORM_STRIPE_WEBHOOK_SECRET,
+      prices: { builder: 'price_builder123', studio: 'price_studio123' },
+      flexpriceStripeWebhookUrl:
+        'https://api.cloud.flexprice.io/v1/webhooks/stripe/tenant/environment',
+    })),
+    requireStripeBillingForEnvironment: vi.fn((_environment: unknown, billing: unknown) => billing),
     loadMasterKey: vi.fn(() => ({ kind: 'production-master-key' })),
     loadModelGatewayUrl: vi.fn(() => 'http://model-gateway.test:4100'),
+    loadVerificationServiceUrl: vi.fn(() => 'http://verification-service.test:4600'),
     loadPreviewEnv: vi.fn(() => preview),
     loadRateLimitSettings: vi.fn(() => ({ kind: 'production-rate-limits' })),
     loadRedisUrl: vi.fn(() => 'redis-url-from-env'),
     loadRunIntentHmacKey: vi.fn(() => Buffer.alloc(32, 0x33)),
     loadServiceTokenConfig: vi.fn(() => ({ kind: 'production-service-tokens' })),
+    loadSupportAdminConfig: vi.fn(() => ({
+      enabled: true,
+      staffUserIds: ['user_00000000000000000000000001'],
+    })),
     loadTemporalEnv: vi.fn(() => temporalEnv),
     loadUsageQueueEnv: vi.fn(() => ({
       region: 'us-east-1',
@@ -219,25 +366,22 @@ const production = vi.hoisted(() => {
       secretAccessKey: 'test',
       queueName: 'zapp-usage-events',
     })),
+    loadNotificationEnv: vi.fn(() => ({
+      region: 'us-east-1',
+      endpoint: 'http://localstack.test',
+      accessKeyId: 'test',
+      secretAccessKey: 'test',
+      queueName: 'zapp-notifications',
+      source: 'dev@zapp.local',
+      topicArn: 'arn:aws:sns:us-east-1:000000000000:zapp-notifications',
+    })),
     loggerOptions: vi
       .fn<(input: unknown) => { level: string }>()
       .mockReturnValue({ level: 'silent' }),
   };
 });
 
-vi.mock('@zapp/db', () => ({
-  createDb: production.createDb,
-  USAGE_CATEGORIES: [
-    'model_input_tokens',
-    'model_output_tokens',
-    'model_cached_tokens',
-    'sandbox_cpu_seconds',
-    'sandbox_mem_gib_seconds',
-    'storage_gib_hours',
-    'deploy_provider',
-    'artifact_storage',
-  ],
-}));
+vi.mock('@zapp/db', () => ({ createDb: production.createDb }));
 vi.mock('@temporalio/client', () => ({
   Client: production.TemporalClient,
   Connection: { connect: production.connectTemporal },
@@ -247,21 +391,46 @@ vi.mock('../src/compose.js', () => ({ composeApp: production.composeApp }));
 vi.mock('../src/config/rate-limits.js', () => ({
   loadRateLimitSettings: production.loadRateLimitSettings,
 }));
+vi.mock('../src/routes/admin.js', () => ({
+  loadSupportAdminConfig: production.loadSupportAdminConfig,
+}));
 vi.mock('../src/env.js', () => ({
   loadArtifactStorageEnv: production.loadArtifactStorageEnv,
   loadEnv: production.loadEnv,
   loadFlexpriceEnv: production.loadFlexpriceEnv,
+  requireFlexpriceForEnvironment: production.requireFlexpriceForEnvironment,
+  loadStripeBillingEnv: production.loadStripeBillingEnv,
+  requireStripeBillingForEnvironment: production.requireStripeBillingForEnvironment,
   loadGitHubAppEnv: production.loadGitHubAppEnv,
   loadGitHubImportQueueEnv: production.loadGitHubImportQueueEnv,
   loadGitHubWebhookQueueEnv: production.loadGitHubWebhookQueueEnv,
+  loadPostHogEnv: production.loadPostHogEnv,
+  loadIncidentWebhookSecret: production.loadIncidentWebhookSecret,
   loadMasterKey: production.loadMasterKey,
   loadModelGatewayUrl: production.loadModelGatewayUrl,
+  loadVerificationServiceUrl: production.loadVerificationServiceUrl,
   loadPreviewEnv: production.loadPreviewEnv,
+  loadReleaseServiceUrl: production.loadReleaseServiceUrl,
   loadRedisUrl: production.loadRedisUrl,
   loadRunIntentHmacKey: production.loadRunIntentHmacKey,
   loadServiceTokenConfig: production.loadServiceTokenConfig,
   loadTemporalEnv: production.loadTemporalEnv,
   loadUsageQueueEnv: production.loadUsageQueueEnv,
+  loadNotificationEnv: production.loadNotificationEnv,
+}));
+vi.mock('../src/notifications/service.js', () => ({
+  createDatabaseNotificationDirectory: production.createDatabaseNotificationDirectory,
+  createNotificationProducer: production.createNotificationProducer,
+  createNotificationWorker: production.createNotificationWorker,
+  createNotificationWorkerLifecycle: production.createNotificationWorkerLifecycle,
+  createRedisNotificationProjection: production.createRedisNotificationProjection,
+  createRedisNotificationState: production.createRedisNotificationState,
+  usageAlertNotification: production.usageAlertNotification,
+}));
+vi.mock('../src/notifications/email.js', () => ({
+  createSesEmailSender: production.createSesEmailSender,
+  createSnsNotificationFanout: production.createSnsNotificationFanout,
+  createSqsNotificationQueue: production.createSqsNotificationQueue,
 }));
 vi.mock('../src/events/lifecycle.js', () => ({
   createEventPublisherLifecycle: production.createEventPublisherLifecycle,
@@ -308,17 +477,51 @@ vi.mock('../src/server-bootstrap.js', () => ({
   bootstrapControlApiServer: production.bootstrapControlApiServer,
 }));
 vi.mock('../src/usage/outbox.js', () => ({
+  createDatabaseUsageOutboxDeliveryPort: production.createDatabaseUsageOutboxDeliveryPort,
   createFlexpriceIngestClient: production.createFlexpriceIngestClient,
   createSqsUsageQueue: production.createSqsUsageQueue,
   createUsageEventConsumer: production.createUsageEventConsumer,
   createUsageEventConsumerLifecycle: production.createUsageEventConsumerLifecycle,
   createUsageOutboxPublisher: production.createUsageOutboxPublisher,
   createUsageOutboxPublisherLifecycle: production.createUsageOutboxPublisherLifecycle,
+  createRedisUsageLedgerCounter: production.createRedisUsageLedgerCounter,
 }));
 vi.mock('../src/usage/reconciliation.js', () => ({
   createAccountingReconciler: production.createAccountingReconciler,
   createAccountingReconcilerLifecycle: production.createAccountingReconcilerLifecycle,
+  createDatabaseUsageReconciliationSource: production.createDatabaseUsageReconciliationSource,
+  createFlexpriceUsageAggregateClient: production.createFlexpriceUsageAggregateClient,
   createRedisCreditMirror: production.createRedisCreditMirror,
+  createRedisUsageRunCounter: production.createRedisUsageRunCounter,
+  createThreeWayUsageReconciler: production.createThreeWayUsageReconciler,
+  createUsageReconciliationLifecycle: production.createUsageReconciliationLifecycle,
+  createCreditBalanceExhaustionProducer: production.createCreditBalanceExhaustionProducer,
+  createCreditBalanceExhaustionLifecycle: production.createCreditBalanceExhaustionLifecycle,
+  createDatabaseCreditExhaustionStore: production.createDatabaseCreditExhaustionStore,
+  createDatabaseUsageCorrectionJournal: production.createDatabaseUsageCorrectionJournal,
+  createDatabaseUsageReconciliationCoordinator:
+    production.createDatabaseUsageReconciliationCoordinator,
+  createCoordinatedUsageReconciliationJob: production.createCoordinatedUsageReconciliationJob,
+}));
+vi.mock('../src/usage/ledger.js', () => ({
+  createUsageLedgerRepository: production.createUsageLedgerRepository,
+}));
+vi.mock('../src/usage/collectors/storage.js', () => ({
+  createDailyStorageCollector: production.createDailyStorageCollector,
+  createDailyStorageCollectorLifecycle: production.createDailyStorageCollectorLifecycle,
+  createDatabaseDailyStorageClaim: production.createDatabaseDailyStorageClaim,
+  createDatabaseMeteredProjectPort: production.createDatabaseMeteredProjectPort,
+  createR2ArtifactStorageMeasurement: production.createR2ArtifactStorageMeasurement,
+}));
+vi.mock('../src/jobs/archive.js', () => ({
+  createPostgresAgentEventArchiveDatabase: production.createPostgresAgentEventArchiveDatabase,
+  createS3AgentEventArchiveObjectStore: production.createS3AgentEventArchiveObjectStore,
+  createAgentEventArchiveJob: production.createAgentEventArchiveJob,
+  createAgentEventArchiveLifecycle: production.createAgentEventArchiveLifecycle,
+  createDatabaseSnapshotRetentionAuditPort: production.createDatabaseSnapshotRetentionAuditPort,
+}));
+vi.mock('../src/sandbox/client.js', () => ({
+  createSandboxStorageMeasurementClient: production.createSandboxStorageMeasurementClient,
 }));
 
 describe('control-api production entrypoint', () => {
@@ -350,17 +553,25 @@ describe('control-api production entrypoint', () => {
         preview: production.preview,
         previewRedis: production.redis,
         modelGatewayUrl: 'http://model-gateway.test:4100',
+        releaseServiceUrl: 'http://release-service.test:4300',
         temporal: production.temporal,
         artifactStorage: production.artifactStorage,
+        admin: {
+          enabled: true,
+          staffUserIds: ['user_00000000000000000000000001'],
+        },
       }),
     );
     expect(production.connectTemporal).toHaveBeenCalledWith({
       address: production.temporalEnv.address,
     });
-    expect(production.TemporalClient).toHaveBeenCalledWith({
+    expect(production.TemporalClient).toHaveBeenCalledOnce();
+    const temporalClientInput = production.TemporalClient.mock.calls[0]?.[0];
+    expect(temporalClientInput).toMatchObject({
       connection: production.temporalConnection,
       namespace: production.temporalEnv.namespace,
     });
+    expect(temporalClientInput?.interceptors?.workflow).toHaveLength(1);
     expect(production.app.listen).not.toHaveBeenCalled();
     expect(production.createEventPublisherLifecycle).toHaveBeenCalledOnce();
     const lifecycleInput = production.createEventPublisherLifecycle.mock.calls[0]?.[0];
@@ -377,28 +588,92 @@ describe('control-api production entrypoint', () => {
             readonly start: () => Promise<void>;
             readonly close: () => Promise<void>;
           };
+          readonly notificationLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
+          readonly archiveLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
+          readonly retentionLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
+          readonly deletionLifecycle?: {
+            readonly start: () => Promise<void>;
+            readonly close: () => Promise<void>;
+          };
         }
       | undefined;
     expect(bootstrapInput?.app).toBe(production.app);
     expect(bootstrapInput?.eventPublisherLifecycle).toBe(production.eventPublisherLifecycle);
     expect(bootstrapInput?.usageOutboxLifecycle?.start).toBeTypeOf('function');
     expect(bootstrapInput?.usageOutboxLifecycle?.close).toBeTypeOf('function');
-    expect(production.createFlexpriceIngestClient).toHaveBeenCalledOnce();
-    expect(production.createUsageEventConsumer).toHaveBeenCalledWith(production.flexprice);
+    expect(bootstrapInput?.notificationLifecycle?.start).toBeTypeOf('function');
+    expect(bootstrapInput?.notificationLifecycle?.close).toBeTypeOf('function');
+    expect(bootstrapInput?.archiveLifecycle).toBe(production.archiveLifecycle);
+    expect(bootstrapInput?.retentionLifecycle?.start).toBeTypeOf('function');
+    expect(bootstrapInput?.retentionLifecycle?.close).toBeTypeOf('function');
+    expect(bootstrapInput?.deletionLifecycle?.start).toBeTypeOf('function');
+    expect(bootstrapInput?.deletionLifecycle?.close).toBeTypeOf('function');
+    expect(production.createPostgresAgentEventArchiveDatabase).toHaveBeenCalledOnce();
+    expect(production.createS3AgentEventArchiveObjectStore).toHaveBeenCalledWith(
+      production.artifactStorage,
+    );
+    expect(production.createAgentEventArchiveJob).toHaveBeenCalledWith({
+      database: production.archiveDatabase,
+      objectStore: production.archiveObjectStore,
+      snapshots: production.snapshotRetentionAudit,
+    });
+    const archiveLifecycleInput = production.createAgentEventArchiveLifecycle.mock.calls[0]?.[0] as
+      | { readonly job: unknown; readonly onSnapshotViolations?: unknown }
+      | undefined;
+    expect(archiveLifecycleInput?.job).toBe(production.archiveJob);
+    expect(archiveLifecycleInput?.onSnapshotViolations).toBeTypeOf('function');
+    expect(production.createFlexpriceIngestClient).toHaveBeenCalledTimes(2);
+    expect(production.createUsageEventConsumer).toHaveBeenCalledWith(
+      production.flexprice,
+      production.usageDelivery,
+    );
     expect(production.createUsageEventConsumerLifecycle).toHaveBeenCalledWith(
       expect.objectContaining({
         queue: production.usageQueue,
         consumer: production.usageConsumer,
       }),
     );
+    expect(production.createDatabaseUsageReconciliationSource).toHaveBeenCalledWith(
+      production.database.db,
+    );
+    expect(production.createRedisUsageRunCounter).toHaveBeenCalledWith(production.redis);
+    expect(production.createFlexpriceUsageAggregateClient).toHaveBeenCalledOnce();
+    expect(production.createThreeWayUsageReconciler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopes: production.usageReconciliationSource.scopes,
+        ledger: production.usageReconciliationSource.ledger,
+        redis: production.usageRunCounter,
+        flexprice: production.flexpriceUsageAggregate,
+        corrections: production.usageCorrections,
+      }),
+    );
+    expect(production.createUsageReconciliationLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ reconciler: production.coordinatedReconciler }),
+    );
+    expect(production.createDailyStorageCollectorLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ collector: production.dailyStorageCollector }),
+    );
 
     await bootstrapInput?.usageOutboxLifecycle?.start();
     expect(production.accountingReconcilerLifecycle.start).toHaveBeenCalledOnce();
+    expect(production.dailyStorageLifecycle.start).toHaveBeenCalledOnce();
+    expect(production.usageReconciliationLifecycle.start).toHaveBeenCalledOnce();
     expect(production.usagePublisherLifecycle.start).toHaveBeenCalledOnce();
     expect(production.usageConsumerLifecycle.start).toHaveBeenCalledOnce();
     await bootstrapInput?.usageOutboxLifecycle?.close();
     expect(production.usageConsumerLifecycle.close).toHaveBeenCalledOnce();
     expect(production.usagePublisherLifecycle.close).toHaveBeenCalledOnce();
+    expect(production.usageReconciliationLifecycle.close).toHaveBeenCalledOnce();
+    expect(production.dailyStorageLifecycle.close).toHaveBeenCalledOnce();
     expect(production.accountingReconcilerLifecycle.close).toHaveBeenCalledOnce();
     expect(production.usageQueue.close).toHaveBeenCalledOnce();
 
@@ -407,5 +682,5 @@ describe('control-api production entrypoint', () => {
     expect(production.app.listen).toHaveBeenCalledWith({ host: '127.0.0.1', port: 4_321 });
     expect(processOnce).toHaveBeenCalledTimes(2);
     expect(processExit).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 });

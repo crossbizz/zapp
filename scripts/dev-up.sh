@@ -190,6 +190,10 @@ for queue in $EXPECTED_QUEUES; do
     die "LocalStack queue '$queue' is missing — see infra/docker/localstack/init-aws.sh"
 done
 log "8 queues present (4 queues + 4 DLQs)"
+compose exec -T localstack awslocal sns list-topics \
+  --query 'Topics[].TopicArn' --output text | tr '\t' '\n' | grep -q ':zapp-notifications$' ||
+  die "LocalStack SNS topic 'zapp-notifications' is missing — see infra/docker/localstack/init-aws.sh"
+log "notification SNS topic present"
 
 # ------------------------------------------------------------ db migrations --
 if [ -d "$REPO_ROOT/packages/db" ]; then

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { shouldShowCloudSandboxOption } from "./RuntimeModeSelector";
+import {
+  dockerModePresentation,
+  shouldShowCloudSandboxOption,
+} from "./RuntimeModeSelector";
 
 describe("shouldShowCloudSandboxOption", () => {
   it("hides cloud sandbox when the experiment is off and cloud is not active", () => {
@@ -27,5 +30,25 @@ describe("shouldShowCloudSandboxOption", () => {
         cloudSandboxExperimentEnabled: false,
       }),
     ).toBe(true);
+  });
+});
+
+describe("dockerModePresentation", () => {
+  it("hides an unavailable inactive mode and exposes diagnostics", () => {
+    expect(
+      dockerModePresentation({ available: false, selected: false }),
+    ).toEqual({
+      showOption: false,
+      showDiagnostics: true,
+    });
+  });
+
+  it("keeps an already-selected mode visible for recovery", () => {
+    expect(
+      dockerModePresentation({ available: false, selected: true }),
+    ).toEqual({
+      showOption: true,
+      showDiagnostics: true,
+    });
   });
 });
