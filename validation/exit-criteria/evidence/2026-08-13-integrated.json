@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "baseline": "103fba4bc152",
+  "capturedAt": "2026-08-13T14:46:29.000Z",
+  "environment": {
+    "platform": "darwin-arm64",
+    "node": "22.23.1",
+    "pnpm": "9.15.0",
+    "postgres": "local zapp dev stack"
+  },
+  "report": "validation/exit-criteria/evidence/2026-08-13-integrated.md",
+  "results": [
+    {
+      "criterionId": "E1",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "web projects and preview Playwright suites",
+          "exitCode": 0,
+          "summary": "21/21 passed"
+        },
+        {
+          "command": "orchestrator autonomous integration",
+          "exitCode": 0,
+          "summary": "10/10 passed"
+        },
+        {
+          "command": "release-service deployment workflow",
+          "exitCode": 0,
+          "summary": "4/4 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E2",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "control-api Mission Control suite",
+          "exitCode": 0,
+          "summary": "5/5 passed"
+        },
+        {
+          "command": "web projects and preview Playwright suites",
+          "exitCode": 0,
+          "summary": "21/21 passed"
+        }
+      ]
+    },
+    {
+      "criterionId": "E8",
+      "outcome": "passed",
+      "commands": [
+        {
+          "command": "control-api Mission Control suite",
+          "exitCode": 0,
+          "summary": "5/5 passed"
+        }
+      ]
+    }
+  ]
+}

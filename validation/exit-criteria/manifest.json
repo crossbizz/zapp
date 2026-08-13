@@ -5,7 +5,7 @@
     {
       "id": "E1",
       "criterion": "A first-time nontechnical user can move from one initial prompt through clarification, build, preview, iteration, readiness check, and deployment without leaving the unified builder or opening a terminal.",
-      "state": "candidate",
+      "state": "verified",
       "requiredTasks": ["WEB-10", "WEB-14"],
       "sourceEvidence": [
         "apps/web/e2e/projects.spec.ts",
@@ -17,12 +17,12 @@
         "pnpm --filter @zapp/orchestrator-worker test:integration -- autonomous.test.ts",
         "pnpm --filter @zapp/release-service test -- test/integration/deploy-workflow.test.ts"
       ],
-      "evidenceArtifacts": []
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-13-integrated.json"]
     },
     {
       "id": "E2",
       "criterion": "Conversation, preview, Mission Control, and deployment status remain synchronized across web and macOS.",
-      "state": "candidate",
+      "state": "verified",
       "requiredTasks": ["WEB-9", "WEB-14", "MAC-8"],
       "sourceEvidence": [
         "services/control-api/test/mission-control.test.ts",
@@ -33,7 +33,7 @@
         "pnpm --filter @zapp/control-api test -- mission-control.test.ts",
         "pnpm --filter @zapp/web exec playwright test e2e/preview-panel.spec.ts"
       ],
-      "evidenceArtifacts": []
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-13-integrated.json"]
     },
     {
       "id": "E3",
@@ -114,14 +114,14 @@
     {
       "id": "E8",
       "criterion": "Mission Control shows structured progress and allows pause, resume, redirect, and cancel.",
-      "state": "candidate",
+      "state": "verified",
       "requiredTasks": ["CP-16", "WEB-9"],
       "sourceEvidence": [
         "services/control-api/test/mission-control.test.ts",
         "services/control-api/src/routes/mission-control.ts"
       ],
       "verifyCommands": ["pnpm --filter @zapp/control-api test -- mission-control.test.ts"],
-      "evidenceArtifacts": []
+      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-13-integrated.json"]
     },
     {
       "id": "E9",
