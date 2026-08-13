@@ -251,7 +251,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-16-FIX-1 Keep the cold web test command aligned with activation coverage
 - [x] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
 - [x] WEB-15 Production health + guarded rollback UI
-- [ ] MAC-7 Docker runtime mode
+- [x] MAC-7 Docker runtime mode
 - [ ] MAC-8 Cloud builder + Mission Control parity
 - [ ] MAC-9 Commit-boundary sync + guided merge
 - [ ] MAC-10 Local→cloud promotion
