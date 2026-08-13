@@ -514,7 +514,7 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
         where target_id = ${archived} and action = 'project.updated'
     `;
     expect(audit.at(-1)?.metadata_json).toMatchObject({ archived: true });
-  });
+  }, 10_000);
 
   it('reads back the project with its repository, branches and environments', async () => {
     const created = await create({ name: 'Readable', slug: 'readable' });

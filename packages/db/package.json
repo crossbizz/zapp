@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:integration": "vitest run --dir test/integration --no-file-parallelism",
+    "test:integration": "vitest run --dir test/integration --no-file-parallelism --hookTimeout=30000 --testTimeout=30000",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

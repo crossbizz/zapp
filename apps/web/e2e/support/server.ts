@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 
 import { createFeatureFlagEvaluator } from '../../../../packages/config/src/index.js';
 
@@ -31,12 +32,17 @@ import {
   E1_ORGANIZATION_ID,
   E1_ORGANIZATION_NAME,
 } from './e1-composition.js';
-import { resetNextDevOutput } from './next-dev-output.js';
+import {
+  preserveNextGeneratedFiles,
+  resetNextDevOutput,
+} from './next-dev-output.js';
 
 const appPort = Number(process.env['ZAPP_WEB_E2E_APP_PORT'] ?? 3100);
 const apiPort = Number(process.env['ZAPP_WEB_E2E_API_PORT'] ?? 4100);
 const appBaseUrl = `http://127.0.0.1:${String(appPort)}`;
 const apiBaseUrl = `http://127.0.0.1:${String(apiPort)}`;
+const nextOutputName = `.next-e2e-${String(appPort)}`;
+const nextOutputDirectory = resolve(process.cwd(), nextOutputName);
 const betaOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const invitedOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FF';
 
@@ -369,7 +375,11 @@ built.app.get('/__stytch', async (request, reply) => {
   return await reply.redirect(callback.toString(), 302);
 });
 
-await resetNextDevOutput();
+const restoreNextGeneratedFiles = await preserveNextGeneratedFiles([
+  resolve(process.cwd(), 'next-env.d.ts'),
+  resolve(process.cwd(), 'tsconfig.json'),
+]);
+await resetNextDevOutput(nextOutputDirectory);
 await built.app.listen({ host: '127.0.0.1', port: apiPort });
 
 const next = spawn('./node_modules/.bin/next', ['dev', '--port', String(appPort)], {
@@ -377,20 +387,46 @@ const next = spawn('./node_modules/.bin/next', ['dev', '--port', String(appPort)
     ...process.env,
     NEXT_PUBLIC_APP_BASE_URL: appBaseUrl,
     NEXT_PUBLIC_CONTROL_API_URL: apiBaseUrl,
+    ZAPP_WEB_NEXT_DIST_DIR: nextOutputName,
   },
   stdio: 'inherit',
 });
 
 let stopping = false;
+let nextExited = false;
+let resolveNextExit: (() => void) | undefined;
+const nextExit = new Promise<void>((resolveExit) => {
+  resolveNextExit = resolveExit;
+});
+
 async function stop(exitCode = 0): Promise<void> {
   if (stopping) return;
   stopping = true;
-  next.kill('SIGTERM');
-  await built.app.close();
-  await e1.close();
-  process.exit(exitCode);
+  let resolvedExitCode = exitCode;
+
+  try {
+    if (!nextExited) {
+      next.kill('SIGTERM');
+      const forceKill = setTimeout(() => next.kill('SIGKILL'), 5_000);
+      forceKill.unref();
+      await nextExit;
+      clearTimeout(forceKill);
+    }
+    await built.app.close();
+    await e1.close();
+  } catch {
+    resolvedExitCode = 1;
+  } finally {
+    await resetNextDevOutput(nextOutputDirectory);
+    await restoreNextGeneratedFiles();
+    process.exit(resolvedExitCode);
+  }
 }
 
 process.on('SIGINT', () => void stop());
 process.on('SIGTERM', () => void stop());
-next.on('exit', (code) => void stop(code ?? 1));
+next.on('exit', (code) => {
+  nextExited = true;
+  resolveNextExit?.();
+  if (!stopping) void stop(code ?? 1);
+});

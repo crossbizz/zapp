@@ -10,6 +10,7 @@ export default tseslint.config(
     ignores: [
       '**/dist/**',
       '**/.next/**',
+      '**/.next-e2e-*/**',
       '**/.turbo/**',
       '**/coverage/**',
       // The OpenAPI generator owns this artifact; its source Zod schema is linted.

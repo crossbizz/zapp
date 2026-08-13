@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   defaultNextDevOutputDirectory,
+  preserveNextGeneratedFiles,
   resetNextDevOutput,
 } from '../e2e/support/next-dev-output.js';
 
@@ -40,4 +41,23 @@ void test('defaults to the absolute web app Next output directory', () => {
 
   assert.equal(isAbsolute(defaultNextDevOutputDirectory), true);
   assert.equal(defaultNextDevOutputDirectory, join(webAppDirectory, '.next'));
+});
+
+void test('restores tracked files that Next rewrites during an isolated dev run', async () => {
+  const appDirectory = await mkdtemp(join(tmpdir(), 'zapp-web-next-generated-'));
+  fixtureDirectories.push(appDirectory);
+
+  const nextEnvPath = join(appDirectory, 'next-env.d.ts');
+  const tsconfigPath = join(appDirectory, 'tsconfig.json');
+  await writeFile(nextEnvPath, 'tracked next env\n', 'utf8');
+  await writeFile(tsconfigPath, '{"include":[]}\n', 'utf8');
+
+  const restore = await preserveNextGeneratedFiles([nextEnvPath, tsconfigPath]);
+  await writeFile(nextEnvPath, 'rewritten next env\n', 'utf8');
+  await writeFile(tsconfigPath, '{"include":[".next-e2e/types"]}\n', 'utf8');
+
+  await restore();
+
+  assert.equal(await readFile(nextEnvPath, 'utf8'), 'tracked next env\n');
+  assert.equal(await readFile(tsconfigPath, 'utf8'), '{"include":[]}\n');
 });
