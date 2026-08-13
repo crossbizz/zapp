@@ -427,9 +427,22 @@ tracker.
   read-only drift detection, and require the exact dev-stack Forgejo root identity.
 - Commit: `fix(git-service): make Forgejo orphan inventory read-only`
 
+### Task 44: V-2 semantic evidence binding
+
+**Files:** `validation/benchmarks/*`, this completion plan, master-plan execution log.
+
+- RED: prove a repository-contained, hash-matching but unrelated file cannot satisfy rollback
+  evidence, a result envelope cannot be reused as another evidence kind, and a record bound to
+  the wrong app or claimed outcome is rejected.
+- GREEN: validate distinct typed code-quality, rollback, cost, verifier, and repair envelopes;
+  bind the selected record to the exact execution ID, app ID, run ID, and measured outcome.
+- Keep V-2 blocked and do not create a live result artifact.
+- Commit: `test(validation): bind repeat-change evidence contents`
+
 ## Execution log
 
 - 2026-08-12 Task 41 done — Re-enabled pull-request desktop unit and complete Playwright coverage with four bounded no-retry shards; release packaging stays signed/tag-or-manual and failure reports upload.
 - 2026-08-12 Task 40 done — Bound every repeat-change input and evidence reference to the fixed corpus, and required ten verified rollbacks; V-2 remains blocked with no live result artifact.
 - 2026-08-12 Task 42 done — Registered Forgejo fixture refs before creation, made cleanup fail closed and idempotent with absence verification, and removed 53 exact local private canonical DB-orphan candidates; the post-cleanup inventory is zero.
 - 2026-08-12 Task 43 done — Removed the one-time destructive orphan-cleanup mode and its lock/delete path; the inventory now rejects all arguments, pins the exact local Forgejo root and database identity, and reports zero candidates even when `FORGEJO_URL` is shell-overridden.
+- 2026-08-12 Task 44 done — Rejected unrelated or wrong-kind evidence and bound five typed result envelopes to each exact execution, app, run, and claimed outcome; V-2 remains blocked with no live artifact.

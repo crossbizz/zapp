@@ -46,7 +46,13 @@ execution. The result validator recomputes the checked-in manifest's byte
 SHA-256 and accepts only exact one-to-one coverage of its 10 app IDs and five
 indexed feature changes. Every execution prompt must equal its mapped manifest
 feature change. Every referenced evidence file resolves inside this repository
-to a regular file and has its raw-byte SHA-256 verified. Each passed artifact
-also needs one passed, hash-verified rollback result for every app. Unknown
-evidence fields, duplicate mappings/run IDs, partial evidence, and contradictory
-timing cannot be reported as successful.
+to a regular JSON file and has its raw-byte SHA-256 verified. Code-quality,
+rollback, cost, verifier, and repair references each use a distinct typed
+envelope. The selected record must bind the exact execution ID, app ID, and run
+ID to the claimed status, credit measurement, verifier manifest, or repair
+attempt count. Passed rollbacks additionally identify the target release, the
+restored release, and their verification run; the restored and target release
+must match. Each passed artifact needs one such rollback for every app. Unknown
+evidence fields, wrong evidence kinds, duplicate mappings/run IDs, partial
+evidence, unrelated files, and contradictory outcomes cannot be reported as
+successful.

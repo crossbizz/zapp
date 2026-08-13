@@ -141,7 +141,85 @@ function canonicalTimestamp(value, field) {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-async function evidenceReference(value, field) {
+function nonEmptyString(value, field) {
+  evidenceInvariant(typeof value === 'string' && value.length > 0, `${field} is required`);
+}
+
+function commonEvidenceRecord(record, keys, field) {
+  exactKeys(record, ['executionId', 'appId', 'runId', ...keys], field);
+  nonEmptyString(record.executionId, `${field}.executionId`);
+  nonEmptyString(record.appId, `${field}.appId`);
+  nonEmptyString(record.runId, `${field}.runId`);
+}
+
+function validateEvidenceRecord(record, kind, field) {
+  if (kind === 'repeat-change-code-quality-results') {
+    commonEvidenceRecord(record, ['status', 'checks'], field);
+    evidenceInvariant(['passed', 'failed'].includes(record.status), `${field}.status is invalid`);
+    evidenceInvariant(Array.isArray(record.checks) && record.checks.length > 0, `${field}.checks must be non-empty`);
+    for (const [index, check] of record.checks.entries()) {
+      exactKeys(check, ['name', 'status'], `${field}.checks[${String(index)}]`);
+      nonEmptyString(check.name, `${field}.checks[${String(index)}].name`);
+      evidenceInvariant(['passed', 'failed'].includes(check.status), `${field}.checks[${String(index)}].status is invalid`);
+    }
+    evidenceInvariant(
+      record.status === 'passed'
+        ? record.checks.every((check) => check.status === 'passed')
+        : record.checks.some((check) => check.status === 'failed'),
+      `${field}.status contradicts checks`,
+    );
+    return;
+  }
+  if (kind === 'repeat-change-rollback-results') {
+    commonEvidenceRecord(record, ['status', 'targetReleaseId', 'restoredReleaseId', 'verificationRunId'], field);
+    evidenceInvariant(['not_applicable', 'passed'].includes(record.status), `${field}.status is invalid`);
+    if (record.status === 'passed') {
+      nonEmptyString(record.targetReleaseId, `${field}.targetReleaseId`);
+      nonEmptyString(record.restoredReleaseId, `${field}.restoredReleaseId`);
+      nonEmptyString(record.verificationRunId, `${field}.verificationRunId`);
+      evidenceInvariant(record.restoredReleaseId === record.targetReleaseId, `${field}.restoredReleaseId must equal targetReleaseId`);
+    } else {
+      evidenceInvariant(
+        record.targetReleaseId === null && record.restoredReleaseId === null && record.verificationRunId === null,
+        `${field}.not_applicable outcome must not claim a rollback`,
+      );
+    }
+    return;
+  }
+  if (kind === 'repeat-change-cost-results') {
+    commonEvidenceRecord(record, ['credits', 'usageEventIds'], field);
+    evidenceInvariant(typeof record.credits === 'string' && /^\d+(?:\.\d{1,4})?$/u.test(record.credits), `${field}.credits is invalid`);
+    evidenceInvariant(
+      Array.isArray(record.usageEventIds)
+        && record.usageEventIds.length > 0
+        && new Set(record.usageEventIds).size === record.usageEventIds.length
+        && record.usageEventIds.every((id) => typeof id === 'string' && id.length > 0),
+      `${field}.usageEventIds is invalid`,
+    );
+    return;
+  }
+  if (kind === 'repeat-change-verifier-results') {
+    commonEvidenceRecord(record, ['status', 'decisionId', 'evidenceManifestSha256'], field);
+    evidenceInvariant(['passed', 'failed'].includes(record.status), `${field}.status is invalid`);
+    nonEmptyString(record.decisionId, `${field}.decisionId`);
+    evidenceInvariant(SHA256.test(record.evidenceManifestSha256), `${field}.evidenceManifestSha256 is invalid`);
+    return;
+  }
+  if (kind === 'repeat-change-repair-results') {
+    commonEvidenceRecord(record, ['status', 'attempts', 'taskId'], field);
+    evidenceInvariant(['not_required', 'repaired'].includes(record.status), `${field}.status is invalid`);
+    evidenceInvariant(Number.isInteger(record.attempts) && record.attempts >= 0, `${field}.attempts is invalid`);
+    evidenceInvariant(
+      (record.status === 'not_required' && record.attempts === 0 && record.taskId === null)
+        || (record.status === 'repaired' && record.attempts > 0 && typeof record.taskId === 'string' && record.taskId.length > 0),
+      `${field} outcome contradicts attempts or taskId`,
+    );
+    return;
+  }
+  throw new Error(`${field}.kind is invalid`);
+}
+
+async function evidenceReference(value, field, expected) {
   exactKeys(value, ['path', 'sha256'], field);
   evidenceInvariant(typeof value.path === 'string' && value.path.length > 0 && !path.isAbsolute(value.path) && !value.path.split(/[\\/]/u).includes('..'), `${field}.path is invalid`);
   evidenceInvariant(SHA256.test(value.sha256), `${field}.sha256 is invalid`);
@@ -164,6 +242,44 @@ async function evidenceReference(value, field) {
   evidenceInvariant(target.isFile(), `${field}.path must resolve to a regular file`);
   const bytes = await readFile(resolved);
   evidenceInvariant(createHash('sha256').update(bytes).digest('hex') === value.sha256, `${field}.sha256 does not match file bytes`);
+  let envelope;
+  try {
+    envelope = JSON.parse(bytes);
+  } catch {
+    throw new Error(`${field} must contain JSON evidence`);
+  }
+  evidenceInvariant(envelope !== null && typeof envelope === 'object' && !Array.isArray(envelope), `${field} must contain an evidence object`);
+  evidenceInvariant(envelope.kind === expected.kind, `${field}.kind is invalid`);
+  exactKeys(envelope, ['schemaVersion', 'kind', 'records'], field);
+  evidenceInvariant(envelope.schemaVersion === 1, `${field}.schemaVersion must be 1`);
+  evidenceInvariant(Array.isArray(envelope.records) && envelope.records.length > 0, `${field}.records must be non-empty`);
+  const executionIds = new Set();
+  for (const [index, record] of envelope.records.entries()) {
+    const recordField = `${field}.records[${String(index)}]`;
+    validateEvidenceRecord(record, expected.kind, recordField);
+    evidenceInvariant(!executionIds.has(record.executionId), `${field}.records must have unique executionId values`);
+    executionIds.add(record.executionId);
+  }
+  const record = envelope.records.find((candidate) => candidate.executionId === expected.executionId);
+  evidenceInvariant(record !== undefined, `${field} has no record for executionId`);
+  evidenceInvariant(record.appId === expected.appId, `${field} record does not match appId`);
+  evidenceInvariant(record.runId === expected.runId, `${field} record does not match runId`);
+  if (expected.status !== undefined) {
+    evidenceInvariant(record.status === expected.status, `${field} record does not match status`);
+  }
+  if (expected.credits !== undefined) {
+    evidenceInvariant(record.credits === expected.credits, `${field} record does not match credits`);
+  }
+  if (expected.attempts !== undefined) {
+    evidenceInvariant(record.attempts === expected.attempts, `${field} record does not match attempts`);
+  }
+  if (expected.evidenceManifestSha256 !== undefined) {
+    evidenceInvariant(
+      record.evidenceManifestSha256 === expected.evidenceManifestSha256,
+      `${field} record does not match evidenceManifestSha256`,
+    );
+  }
+  return record;
 }
 
 function checkedInManifest() {
@@ -234,21 +350,53 @@ export async function validateRepeatChangeEvidence(artifact) {
     evidenceInvariant(Number.isFinite(execution.measurements.timeToVerifiedReleaseMs) && execution.measurements.timeToVerifiedReleaseMs >= execution.timing.elapsedMs, `${prefix}.measurements.timeToVerifiedReleaseMs is invalid`);
     exactKeys(execution.measurements.codeQuality, ['status', 'result'], `${prefix}.measurements.codeQuality`);
     evidenceInvariant(execution.measurements.codeQuality.status === 'passed', `${prefix}.measurements.codeQuality.status must be passed`);
-    await evidenceReference(execution.measurements.codeQuality.result, `${prefix}.measurements.codeQuality.result`);
+    await evidenceReference(execution.measurements.codeQuality.result, `${prefix}.measurements.codeQuality.result`, {
+      kind: 'repeat-change-code-quality-results',
+      executionId: execution.id,
+      appId: execution.appId,
+      runId: execution.output.runId,
+      status: execution.measurements.codeQuality.status,
+    });
     exactKeys(execution.measurements.rollback, ['status', 'result'], `${prefix}.measurements.rollback`);
     evidenceInvariant(['not_applicable', 'passed'].includes(execution.measurements.rollback.status), `${prefix}.measurements.rollback.status is invalid`);
-    await evidenceReference(execution.measurements.rollback.result, `${prefix}.measurements.rollback.result`);
+    await evidenceReference(execution.measurements.rollback.result, `${prefix}.measurements.rollback.result`, {
+      kind: 'repeat-change-rollback-results',
+      executionId: execution.id,
+      appId: execution.appId,
+      runId: execution.output.runId,
+      status: execution.measurements.rollback.status,
+    });
     if (execution.measurements.rollback.status === 'passed') rollbackApps.add(execution.appId);
     exactKeys(execution.cost, ['credits', 'source'], `${prefix}.cost`);
     evidenceInvariant(typeof execution.cost.credits === 'string' && /^\d+(?:\.\d{1,4})?$/u.test(execution.cost.credits), `${prefix}.cost.credits is invalid`);
-    await evidenceReference(execution.cost.source, `${prefix}.cost.source`);
+    await evidenceReference(execution.cost.source, `${prefix}.cost.source`, {
+      kind: 'repeat-change-cost-results',
+      executionId: execution.id,
+      appId: execution.appId,
+      runId: execution.output.runId,
+      credits: execution.cost.credits,
+    });
     exactKeys(execution.verifier, ['status', 'result'], `${prefix}.verifier`);
     evidenceInvariant(execution.verifier.status === 'passed', `${prefix}.verifier.status must be passed`);
-    await evidenceReference(execution.verifier.result, `${prefix}.verifier.result`);
+    await evidenceReference(execution.verifier.result, `${prefix}.verifier.result`, {
+      kind: 'repeat-change-verifier-results',
+      executionId: execution.id,
+      appId: execution.appId,
+      runId: execution.output.runId,
+      status: execution.verifier.status,
+      evidenceManifestSha256: artifact.manifestSha256,
+    });
     exactKeys(execution.repair, ['status', 'attempts', 'result'], `${prefix}.repair`);
     evidenceInvariant(['not_required', 'repaired'].includes(execution.repair.status), `${prefix}.repair.status is invalid`);
     evidenceInvariant(Number.isInteger(execution.repair.attempts) && execution.repair.attempts >= 0 && ((execution.repair.status === 'not_required' && execution.repair.attempts === 0) || (execution.repair.status === 'repaired' && execution.repair.attempts > 0)), `${prefix}.repair.attempts is invalid`);
-    await evidenceReference(execution.repair.result, `${prefix}.repair.result`);
+    await evidenceReference(execution.repair.result, `${prefix}.repair.result`, {
+      kind: 'repeat-change-repair-results',
+      executionId: execution.id,
+      appId: execution.appId,
+      runId: execution.output.runId,
+      status: execution.repair.status,
+      attempts: execution.repair.attempts,
+    });
     evidenceInvariant(SHA256.test(execution.executionSha256 ?? ''), `${prefix}.executionSha256 is invalid`);
     const { executionSha256, ...immutableExecution } = execution;
     evidenceInvariant(executionSha256 === sha256(immutableExecution), `${prefix}.executionSha256 does not match immutable execution evidence`);
