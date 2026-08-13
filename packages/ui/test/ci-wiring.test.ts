@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -30,6 +31,13 @@ function readCiWorkflowLines(): string[] {
 }
 
 const scripts = readPackageScripts();
+const requireFromTest = createRequire(import.meta.url);
+
+function readStorybookJestConfig(): { readonly rootDir?: unknown } {
+  return requireFromTest(resolve(process.cwd(), '.storybook/test-runner-jest.config.cjs')) as {
+    readonly rootDir?: unknown;
+  };
+}
 
 function expandScript(name: string, ancestors: readonly string[] = []): string {
   if (ancestors.includes(name)) {
@@ -59,6 +67,10 @@ describe('@zapp/ui CI script wiring', () => {
 
   it('routes the normal test through Storybook axe', () => {
     expect(expandScript('test')).toContain('test-storybook --url http://127.0.0.1:6006');
+  });
+
+  it('scopes Storybook Jest discovery to the UI package', () => {
+    expect(readStorybookJestConfig().rootDir).toBe(resolve(process.cwd()));
   });
 
   it('installs the workspace-pinned Chromium before Turbo runs browser tests', () => {
