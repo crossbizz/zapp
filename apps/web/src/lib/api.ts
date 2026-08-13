@@ -65,6 +65,10 @@ export type DeploymentPreviewData =
   paths['/v1/releases/{releaseId}/deployment-preview']['get']['responses'][200]['content']['application/json'];
 export type DeploymentProgressData =
   paths['/v1/deployments/{deploymentId}']['get']['responses'][200]['content']['application/json'];
+export type ProductionHistoryData =
+  paths['/v1/projects/{projectId}/production']['get']['responses'][200]['content']['application/json'];
+export type RollbackPreviewData =
+  paths['/v1/releases/{releaseId}/rollback-preview']['get']['responses'][200]['content']['application/json'];
 export type StartSupportSessionInput =
   paths['/v1/admin/support-sessions']['post']['requestBody']['content']['application/json'];
 export type AdminOverviewQuery = NonNullable<
@@ -237,6 +241,12 @@ export function createControlPlaneClient(organizationId?: string) {
       client.request('/v1/deployments/{deploymentId}', { method: 'GET', path: { deploymentId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
     runDeploymentAction: (deploymentId: string, body: { readonly action: 'retry' | 'fix' | 'ask'; readonly stage?: string; readonly prompt?: string }, idempotencyKey?: string) =>
       client.request('/v1/deployments/{deploymentId}/actions', { method: 'POST', path: { deploymentId }, headers: requiredKeyHeaders(idempotencyKey), body }),
+    getProductionHistory: (projectId: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/production', { method: 'GET', path: { projectId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    getRollbackPreview: (releaseId: string, toDeploymentId?: string, signal?: AbortSignal) =>
+      client.request('/v1/releases/{releaseId}/rollback-preview', { method: 'GET', path: { releaseId }, headers: headers(), query: { ...(toDeploymentId === undefined ? {} : { toDeploymentId }) }, ...(signal === undefined ? {} : { signal }) }),
+    rollbackRelease: (releaseId: string, body: { readonly toDeploymentId?: string; readonly reason: string }, idempotencyKey?: string) =>
+      client.request('/v1/releases/{releaseId}/rollback', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body }),
     forkRelease: (releaseId: string, idempotencyKey?: string) =>
       client.request('/v1/releases/{releaseId}/fork', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body: { startFixRun: true } }),
     createProject: (body: CreateProjectInput, idempotencyKey?: string, signal?: AbortSignal) =>
