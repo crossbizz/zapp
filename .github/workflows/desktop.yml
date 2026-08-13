@@ -56,7 +56,7 @@ jobs:
       # cached instead.
       #
       # `package-manager-cache: false` is what actually turns it off, and
-      # omitting `cache:` is not. actions/setup-node@v5 added that input with a
+      # omitting `cache:` is not. actions/setup-node@v7 added that input with a
       # default of `true`, which enables the pnpm cache from the root
       # package.json's `packageManager` field whether or not `cache:` is set --
       # so this job was caching pnpm despite the comment above saying it was
@@ -68,7 +68,7 @@ jobs:
       # do(es) not exist". actions/cache downgrades that to a warning; setup-node
       # does not, so it failed the job after every functional step had passed.
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
@@ -294,7 +294,7 @@ jobs:
         run: corepack enable
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
@@ -364,7 +364,7 @@ jobs:
       # missing, so there was never anything to save. Caching whatever those
       # specs do install is a change to the specs, not a workflow setting.
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
