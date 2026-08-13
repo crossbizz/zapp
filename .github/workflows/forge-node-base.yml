@@ -30,7 +30,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build recipe contracts
-        run: pnpm --filter @zapp/sandbox-service build
+        run: pnpm turbo run build --filter=@zapp/sandbox-service...
       - name: Render provider-neutral recipe
         env:
           ZAPP_SOURCE_REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
