@@ -239,6 +239,13 @@
       "when": 1786578986317,
       "tag": "0033_supreme_dreadnoughts",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786579768594,
+      "tag": "0034_blushing_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }

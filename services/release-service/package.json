@@ -28,6 +28,10 @@
       "types": "./dist/domain-store.d.ts",
       "default": "./dist/domain-store.js"
     },
+    "./production-history": {
+      "types": "./dist/production-history.d.ts",
+      "default": "./dist/production-history.js"
+    },
     "./records": {
       "types": "./dist/release/create.d.ts",
       "default": "./dist/release/create.js"

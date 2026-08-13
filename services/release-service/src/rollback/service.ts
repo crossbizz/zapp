@@ -33,6 +33,22 @@ export const RollbackRequestSchema = z
   })
   .strict();
 export type RollbackRequest = z.infer<typeof RollbackRequestSchema>;
+export const RollbackPreviewRequestSchema = RollbackRequestSchema.pick({
+  organizationId: true,
+  projectId: true,
+  environmentId: true,
+  toDeploymentId: true,
+}).strict();
+export const RollbackPreviewSchema = z.object({
+  currentDeploymentId: idSchema('dep'),
+  targetDeploymentId: idSchema('dep'),
+  targetReleaseId: idSchema('rel'),
+  targetCommitSha: CommitShaSchema,
+  databaseState: RollbackDatabaseStateSchema,
+  allowed: z.boolean(),
+  compensationApproved: z.boolean(),
+}).strict();
+export type RollbackPreview = z.infer<typeof RollbackPreviewSchema>;
 
 const RollbackDeploymentSnapshotSchema = z
   .object({
@@ -334,7 +350,7 @@ function assertDatabaseRollbackAllowed(context: RollbackContext): RollbackDataba
 
 async function resolveContext(
   dependencies: RollbackDependencies,
-  input: RollbackRequest,
+  input: z.infer<typeof RollbackPreviewRequestSchema>,
 ): Promise<RollbackContext> {
   let value: unknown;
   try {
@@ -459,10 +475,29 @@ async function switchProvider(
 
 export function createRollbackService(dependencies: RollbackDependencies): {
   rollback(input: RollbackRequest): Promise<RollbackResult>;
+  preview(input: z.infer<typeof RollbackPreviewRequestSchema>): Promise<RollbackPreview>;
 } {
   const newDeploymentId = dependencies.newDeploymentId ?? (() => newId('dep'));
 
   return {
+    async preview(inputValue) {
+      const input = RollbackPreviewRequestSchema.parse(inputValue);
+      const context = await resolveContext(dependencies, input);
+      const state = databaseState(context);
+      const compensationApproved =
+        context.migration.compensatingPlan?.approved === true;
+      return RollbackPreviewSchema.parse({
+        currentDeploymentId: context.current.deploymentId,
+        targetDeploymentId: context.target.deploymentId,
+        targetReleaseId: context.target.releaseId,
+        targetCommitSha: context.target.commitSha,
+        databaseState: state,
+        allowed:
+          state === 'compatible' ||
+          (state === 'requires_compensation' && compensationApproved),
+        compensationApproved,
+      });
+    },
     async rollback(inputValue) {
       const input = RollbackRequestSchema.parse(inputValue);
       const fingerprint = hash(input);

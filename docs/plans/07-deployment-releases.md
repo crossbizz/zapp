@@ -222,8 +222,12 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 **Files:** Modify release DB health/synthetic/annotation/rollback projections, control bridge, OpenAPI/SDK/tests.
 **Effort:** L. **[expand-at-execution]**
 
-- [ ] Binding behavior: production/deploy history, health and synthetic result history, annotations/monitoring links, healthy targets, and pre-mutation `compatible | requires_compensation | incompatible` rollback state.
-- [ ] Commit: `feat(releases): production health and rollback preview`
+- [x] Binding behavior: production/deploy history, health and synthetic result history, annotations/monitoring links, healthy targets, and pre-mutation `compatible | requires_compensation | incompatible` rollback state.
+- [x] RED/GREEN: persist append-only production-health, synthetic-result, and annotation records with tenant/project/deployment identity and bounded indexes.
+- [x] RED/GREEN: expose a tenant-scoped production dashboard projection containing deployment history, health/synthetic history, monitoring links, and healthy rollback targets.
+- [x] RED/GREEN: add a read-only rollback preview that resolves the same immutable context as the mutation and returns database compatibility without provider activity.
+- [x] GREEN: bridge both reads through `/v1`, regenerate SDK, and verify focused DB/release/control/client gates plus lint/typecheck/build.
+- [x] Commit: `feat(releases): production health and rollback preview`
 
 ---
 
@@ -266,3 +270,4 @@ Binding behavior: implements `DeploymentProvider` (FND-4): `detectCompatibility`
 - 2026-08-12 DEP-12 CI fix — Exact-SHA CI exposed that its direct Turbo integration command bypassed the local serialization flag, allowing another package to truncate DEP-12's seeded organization; CI now serializes shared-database integration packages and a workflow regression test locks the gate.
 - 2026-08-12 DEP-13 done — Added a tenant-scoped cursor-paginated release history projection with support tier, active production, bounded deployment/rollback history and public evidence links; regenerated SDK and focused release/control/client gates passed with no provider calls.
 - 2026-08-12 DEP-14 done — Added durable keyed deployment actions, deterministic eight-stage progress replay/SSE, terminal success, server-classified confirmation, and provider-neutral managed-domain APIs; clean migration and focused DB/release/control/SDK gates passed, while live Fly/Vercel checks skipped visibly for absent staging credentials.
+- 2026-08-12 DEP-15 done — Added append-only production-health, synthetic-result, and monitoring-annotation history, a bounded tenant production dashboard with healthy rollback targets, and a read-only compatibility preview over the mutation's resolver; clean migration and focused gates passed without provider calls.

@@ -170,6 +170,15 @@ describe('generated API types', () => {
     expect(paths['/v1/projects/{projectId}/domains']?.['post']).toBeDefined();
   });
 
+  it('publishes production history and rollback compatibility preview', async () => {
+    const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
+    expect(response.statusCode).toBe(200);
+    const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
+    expect(paths['/v1/projects/{projectId}/production']?.['get']?.responses?.['200']).toBeDefined();
+    expect(paths['/v1/releases/{releaseId}/rollback-preview']?.['get']?.responses?.['200']).toBeDefined();
+  });
+
+
   it('publishes the versioned incident list/report APIs and Fix seed', async () => {
     const app = documentedHarness().app;
     apps.push(app);

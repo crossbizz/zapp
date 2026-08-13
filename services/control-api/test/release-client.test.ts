@@ -5,6 +5,7 @@ import type { ReleaseLifecycleService } from '@zapp/release-service/lifecycle';
 import type { Release, ReleaseRecordService } from '@zapp/release-service/records';
 import type { DeploymentProgressPort } from '@zapp/release-service/deployment-progress';
 import type { DomainPort } from '@zapp/release-service/domain-store';
+import type { ProductionProjectionPort } from '@zapp/release-service/production-history';
 import {
   assembleEvidenceManifest,
   buildCriteriaCompletionReport,
@@ -169,12 +170,29 @@ function harness() {
     },
     list: () => Promise.resolve([domain]),
   };
+  const productionHistory: ProductionProjectionPort = {
+    recordHealth: () => Promise.reject(new Error('not used')),
+    recordSynthetic: () => Promise.reject(new Error('not used')),
+    recordAnnotation: () => Promise.reject(new Error('not used')),
+    get: () => {
+      calls.push('production');
+      return Promise.resolve({ deployments: [], health: [], synthetics: [], annotations: [], healthyTargets: [] });
+    },
+  };
+  const rollbackPreview = {
+    preview: () => {
+      calls.push('rollback-preview');
+      return Promise.resolve({ currentDeploymentId: DEPLOYMENT_ID, targetDeploymentId: newId('dep'), targetReleaseId: RELEASE_ID, targetCommitSha: COMMIT_SHA, databaseState: 'compatible' as const, allowed: true, compensationApproved: false });
+    },
+  };
   const app = buildReleaseApp({
     logger: false,
     records,
     lifecycle,
     progress,
     domains,
+    productionHistory,
+    rollbackPreview,
     signer: createServiceTokenSigner(SERVICE_TOKENS),
   });
   const fetch = async (input: string, init: RequestInit): Promise<Response> => {
@@ -269,6 +287,8 @@ describe('release service client', () => {
         hostname: 'app.example.com',
         operationKey: OPERATION_KEY,
       });
+      await clients.release.getProductionHistory?.({ organizationId: ORGANIZATION_ID, projectId: PROJECT_ID });
+      await clients.release.getRollbackPreview?.({ organizationId: ORGANIZATION_ID, releaseId: RELEASE_ID });
       const fork = await clients.fork.forkRelease({
         organizationId: ORGANIZATION_ID,
         releaseId: RELEASE_ID,
@@ -289,6 +309,8 @@ describe('release service client', () => {
         'action:retry',
         'domain:configure',
         'domain:poll',
+        'production',
+        'get', 'rollback-preview',
         'get', 'fork',
       ]);
     } finally {

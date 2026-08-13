@@ -3,6 +3,7 @@ import { CommitShaSchema, idSchema, RunModeSchema } from '@zapp/contracts';
 import { EvidenceManifestSchema } from '@zapp/verification-engine';
 import {
   DeploymentConfirmationSummarySchema,
+  RollbackPreviewSchema,
   createDeploymentConfirmationSummary,
 } from '@zapp/release-service';
 import {
@@ -10,6 +11,7 @@ import {
   type DeploymentActionInput,
 } from '@zapp/release-service/deployment-progress';
 import { DomainResultSchema } from '@zapp/release-service/domain-store';
+import { ProductionHistorySchema } from '@zapp/release-service/production-history';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -30,6 +32,7 @@ const ReleaseParams = z.object({ releaseId: idSchema('rel') }).strict();
 const DeploymentParams = z.object({ deploymentId: idSchema('dep') }).strict();
 const DomainParams = z.object({ projectId: idSchema('proj'), hostname: z.string().min(1).max(253) }).strict();
 const PreviewQuery = z.object({ retarget: z.coerce.boolean().default(false) }).strict();
+const RollbackPreviewQuery = z.object({ toDeploymentId: idSchema('dep').optional() }).strict();
 const CommitCreatedPayloadSchema = z
   .object({
     commitSha: CommitShaSchema,
@@ -207,6 +210,8 @@ export interface ReleasePort {
   listDomains?(input: { organizationId: string; projectId: string; environmentId?: string }): Promise<z.infer<typeof DomainResultSchema>[]>;
   configureDomain?(input: { organizationId: string; projectId: string; environmentId: string; hostname: string; operationKey: string }): Promise<z.infer<typeof DomainResultSchema>>;
   pollDomain?(input: { organizationId: string; projectId: string; environmentId: string; hostname: string; operationKey: string }): Promise<z.infer<typeof DomainResultSchema>>;
+  getProductionHistory?(input: { organizationId: string; projectId: string }): Promise<z.infer<typeof ProductionHistorySchema>>;
+  getRollbackPreview?(input: { organizationId: string; releaseId: string; toDeploymentId?: string }): Promise<z.infer<typeof RollbackPreviewSchema>>;
 }
 
 export interface ReleaseForkPort {
@@ -292,6 +297,41 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
         urlEffect: deploymentType === 'first_deploy' ? 'created' : deploymentType === 'replace_deployment' ? 'changed' : 'preserved',
         activeUserEffect: 'zero_downtime',
       });
+    },
+  );
+
+  app.get(
+    '/v1/projects/:projectId/production',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: { params: ProjectParams, response: { 200: ProductionHistorySchema } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const project = await ctx.db.projects.getById(request.params.projectId);
+      if (project === undefined) throw projectNotFound();
+      authorize(ctx, 'view_project');
+      if (deps.port.getProductionHistory === undefined) throw releaseServiceFailed();
+      return ProductionHistorySchema.parse(await deps.port.getProductionHistory({ organizationId: ctx.organizationId, projectId: project.id }));
+    },
+  );
+
+  app.get(
+    '/v1/releases/:releaseId/rollback-preview',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: { params: ReleaseParams, querystring: RollbackPreviewQuery, response: { 200: RollbackPreviewSchema } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const release = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(ctx, 'view_project');
+      if (deps.port.getRollbackPreview === undefined) throw releaseServiceFailed();
+      return RollbackPreviewSchema.parse(await deps.port.getRollbackPreview({
+        organizationId: ctx.organizationId,
+        releaseId: release.id,
+        ...(request.query.toDeploymentId === undefined ? {} : { toDeploymentId: request.query.toDeploymentId }),
+      }));
     },
   );
 

@@ -125,6 +125,18 @@ const NON_PRD_TABLES = new Map([
     'environment_domains',
     'the provider-neutral DNS and managed-SSL verification state required by plan 07 DEP-10 and exposed by DEP-14',
   ],
+  [
+    'production_health_results',
+    'append-only production health evidence history required by plan 07 DEP-15',
+  ],
+  [
+    'synthetic_check_results',
+    'immutable per-run synthetic result history and retention evidence required by plan 07 DEP-11 and exposed by DEP-15',
+  ],
+  [
+    'release_annotations',
+    'durable Grafana/PostHog monitoring annotation links required by plan 07 DEP-8 and exposed by DEP-15',
+  ],
 ]);
 
 /**

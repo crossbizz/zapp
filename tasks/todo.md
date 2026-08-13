@@ -222,7 +222,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ## M4 — Integrations & deployment (Weeks 16–22)
 
 - [x] DEP-14 Public deployment progress/actions/domains contract
-- [ ] DEP-15 Production health + rollback-preview projection
+- [x] DEP-15 Production health + rollback-preview projection
 - [ ] WS-17 Immutable public forge-node-base OCI mirror
 - [ ] GIT-7 Public short-lived repository credential lease
 

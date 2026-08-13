@@ -7414,6 +7414,178 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/production": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            annotations: {
+                                deploymentId: string | null;
+                                id: string;
+                                kind: string;
+                                /** Format: uri */
+                                link: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                /** @enum {string} */
+                                provider: "grafana" | "posthog";
+                                releaseId: string;
+                            }[];
+                            deployments: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                releaseId: string;
+                                rollbackOfDeploymentId: string | null;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                                /** Format: uri */
+                                url: string | null;
+                            }[];
+                            health: {
+                                deploymentId: string;
+                                evidenceArtifactId: string;
+                                id: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                releaseId: string;
+                                result: {
+                                    automaticRollbackAttempted: boolean;
+                                    evidenceArtifactId: string;
+                                    production: {
+                                        errorRate: {
+                                            burstDetected: boolean | null;
+                                            evidenceArtifactIds: string[];
+                                            /** @enum {string} */
+                                            status: "passed" | "failed" | "not_run";
+                                            /** @enum {number} */
+                                            windowMs: 120000;
+                                        };
+                                        healthEndpoint: {
+                                            attempts: {
+                                                evidenceArtifactId?: string;
+                                                statusCode: number | null;
+                                            }[];
+                                            /** @enum {number} */
+                                            intervalMs: 10000;
+                                            path: string;
+                                            /** @enum {string} */
+                                            status: "passed" | "failed";
+                                        };
+                                        smoke: {
+                                            evidenceArtifactIds: string[];
+                                            flows: {
+                                                flowId: string;
+                                                /** @enum {string} */
+                                                status: "passed" | "failed";
+                                            }[];
+                                            /** @enum {string} */
+                                            status: "passed" | "failed" | "not_run" | "not_applicable";
+                                        };
+                                        /** @enum {string} */
+                                        status: "passed" | "failed";
+                                    };
+                                    /** @enum {string} */
+                                    status: "healthy" | "failed";
+                                };
+                                /** @enum {string} */
+                                status: "healthy" | "failed";
+                            }[];
+                            healthyTargets: {
+                                commitSha: string;
+                                /** Format: date-time */
+                                completedAt: string | null;
+                                id: string;
+                                releaseId: string;
+                                rollbackOfDeploymentId: string | null;
+                                /** Format: date-time */
+                                startedAt: string;
+                                status: string;
+                                /** Format: uri */
+                                url: string | null;
+                            }[];
+                            synthetics: {
+                                /** Format: date-time */
+                                completedAt: string;
+                                evidenceArtifactIds: string[];
+                                id: string;
+                                releaseId: string;
+                                /** @enum {string} */
+                                status: "passed" | "failed";
+                                summary: string;
+                                syntheticCheckId: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/releases": {
         parameters: {
             query?: never;
@@ -9959,6 +10131,90 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/releases/{releaseId}/rollback-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    toDeploymentId?: string;
+                };
+                header?: never;
+                path: {
+                    releaseId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            allowed: boolean;
+                            compensationApproved: boolean;
+                            currentDeploymentId: string;
+                            /** @enum {string} */
+                            databaseState: "compatible" | "requires_compensation" | "incompatible";
+                            targetCommitSha: string;
+                            targetDeploymentId: string;
+                            targetReleaseId: string;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;

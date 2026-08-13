@@ -16,6 +16,8 @@ import type { ReleaseHistoryPort } from './history.js';
 import type { DeploymentProgressPort } from './deployment-progress.js';
 import { DomainServiceError } from './domains/service.js';
 import type { DomainPort } from './domain-store.js';
+import type { ProductionProjectionPort } from './production-history.js';
+import type { RollbackPreview } from './rollback/service.js';
 import { ReleaseServiceError, type ReleaseRecordService } from './release/create.js';
 import { registerReleaseRoutes } from './routes.js';
 
@@ -27,6 +29,8 @@ export interface AppDependencies {
   readonly history?: ReleaseHistoryPort;
   readonly progress?: DeploymentProgressPort;
   readonly domains?: DomainPort;
+  readonly productionHistory?: ProductionProjectionPort;
+  readonly rollbackPreview?: { preview(input: { organizationId: string; projectId: string; environmentId: string; toDeploymentId?: string }): Promise<RollbackPreview> };
   readonly signer: ServiceTokenSigner;
   readonly now?: () => Date;
   readonly logger?: LoggerConfig;
@@ -96,6 +100,8 @@ export function buildApp(dependencies: AppDependencies) {
     ...(dependencies.history === undefined ? {} : { history: dependencies.history }),
     ...(dependencies.progress === undefined ? {} : { progress: dependencies.progress }),
     ...(dependencies.domains === undefined ? {} : { domains: dependencies.domains }),
+    ...(dependencies.productionHistory === undefined ? {} : { productionHistory: dependencies.productionHistory }),
+    ...(dependencies.rollbackPreview === undefined ? {} : { rollbackPreview: dependencies.rollbackPreview }),
     requireService: createControlApiServiceAuth({
       signer: dependencies.signer,
       ...(dependencies.now === undefined ? {} : { now: dependencies.now }),

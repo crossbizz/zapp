@@ -5,7 +5,10 @@ import {
   deploymentEvents,
   deployments,
   environmentDomains,
+  productionHealthResults,
+  releaseAnnotations,
   releases,
+  syntheticCheckResults,
   syntheticChecks,
 } from '../src/schema/releases.js';
 import { checkNames, columnNames, foreignKeys, indexNames } from './table-config.js';
@@ -118,6 +121,21 @@ describe('release state (PRD §23.5)', () => {
       'environment_domains_environment_hostname_idx',
       'environment_domains_operation_idx',
       'environment_domains_project_idx',
+    ]);
+  });
+
+  it('pins DEP-15 health, synthetic, and monitoring histories', () => {
+    expect(indexNames(productionHealthResults)).toEqual([
+      'production_health_results_deployment_evidence_idx',
+      'production_health_results_project_occurred_idx',
+    ]);
+    expect(indexNames(syntheticCheckResults)).toEqual([
+      'synthetic_check_results_check_completed_idx',
+      'synthetic_check_results_project_completed_idx',
+    ]);
+    expect(indexNames(releaseAnnotations)).toEqual([
+      'release_annotations_provider_kind_release_idx',
+      'release_annotations_project_occurred_idx',
     ]);
   });
 });

@@ -12,6 +12,8 @@ import {
   type DomainPort,
 } from './domain-store.js';
 import { DomainRequestSchema, DomainResultSchema } from './domains/service.js';
+import { ProductionHistorySchema, type ProductionProjectionPort } from './production-history.js';
+import { RollbackPreviewSchema, type RollbackPreview } from './rollback/service.js';
 
 import {
   ReleaseHistoryInputSchema,
@@ -64,6 +66,9 @@ const DomainBodySchema = DomainRequestSchema.omit({ projectId: true }).strict();
 const DomainListQuerySchema = z
   .object({ organizationId: z.string().min(1), environmentId: z.string().min(1).optional() })
   .strict();
+const RollbackPreviewQuerySchema = z
+  .object({ organizationId: z.string().min(1), toDeploymentId: z.string().min(1).optional() })
+  .strict();
 
 function idempotencyKey(value: string | string[] | undefined): string {
   if (typeof value !== 'string' || !/^op_[a-f0-9]{64}$/u.test(value)) {
@@ -94,6 +99,8 @@ export function registerReleaseRoutes(
     readonly history?: ReleaseHistoryPort;
     readonly progress?: DeploymentProgressPort;
     readonly domains?: DomainPort;
+    readonly productionHistory?: ProductionProjectionPort;
+    readonly rollbackPreview?: { preview(input: { organizationId: string; projectId: string; environmentId: string; toDeploymentId?: string }): Promise<RollbackPreview> };
     readonly requireService: preHandlerAsyncHookHandler;
   },
 ): void {
@@ -252,6 +259,44 @@ export function registerReleaseRoutes(
           hostname: params.hostname,
         });
         return await reply.send({ domain: DomainResultSchema.parse(domain) });
+      },
+    );
+  }
+
+  if (dependencies.productionHistory !== undefined) {
+    app.get(
+      '/internal/projects/:projectId/production',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = ProjectParamsSchema.parse(request.params);
+        const query = OrganizationQuerySchema.parse(request.query);
+        const history = await dependencies.productionHistory?.get({
+          organizationId: query.organizationId,
+          projectId: params.projectId,
+        });
+        return await reply.send({ history: ProductionHistorySchema.parse(history) });
+      },
+    );
+  }
+
+  if (dependencies.rollbackPreview !== undefined) {
+    app.get(
+      '/internal/releases/:releaseId/rollback-preview',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = ReleaseParamsSchema.parse(request.params);
+        const query = RollbackPreviewQuerySchema.parse(request.query);
+        const release = await requireRelease(dependencies.records, {
+          organizationId: query.organizationId,
+          releaseId: params.releaseId,
+        });
+        const preview = await dependencies.rollbackPreview?.preview({
+          organizationId: query.organizationId,
+          projectId: release.projectId,
+          environmentId: release.environmentId,
+          ...(query.toDeploymentId === undefined ? {} : { toDeploymentId: query.toDeploymentId }),
+        });
+        return await reply.send({ preview: RollbackPreviewSchema.parse(preview) });
       },
     );
   }

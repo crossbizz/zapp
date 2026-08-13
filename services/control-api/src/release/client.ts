@@ -12,6 +12,8 @@ import { ReleaseSchema as InternalReleaseSchema } from '@zapp/release-service/re
 import { ReleaseHistoryPageSchema as InternalReleaseHistoryPageSchema } from '@zapp/release-service/history';
 import { DeploymentProgressSchema, DeploymentActionInputSchema } from '@zapp/release-service/deployment-progress';
 import { DomainResultSchema } from '@zapp/release-service/domain-store';
+import { ProductionHistorySchema } from '@zapp/release-service/production-history';
+import { RollbackPreviewSchema } from '@zapp/release-service';
 import { z } from 'zod';
 
 import {
@@ -291,6 +293,15 @@ export function createReleaseServiceClient(
     async pollDomain(rawInput) {
       const input = z.object({ organizationId: z.string(), projectId: z.string(), environmentId: z.string(), hostname: z.string(), operationKey: z.string() }).strict().parse(rawInput);
       return z.object({ domain: DomainResultSchema }).strict().parse(await request(`/internal/projects/${input.projectId}/domains/${encodeURIComponent(input.hostname)}/poll`, { method: 'POST', operationKey: input.operationKey, body: JSON.stringify({ organizationId: input.organizationId, environmentId: input.environmentId, operationKey: input.operationKey }) })).domain;
+    },
+    async getProductionHistory(rawInput) {
+      const input = z.object({ organizationId: z.string().min(1), projectId: z.string().min(1) }).strict().parse(rawInput);
+      return z.object({ history: ProductionHistorySchema }).strict().parse(await request(`/internal/projects/${input.projectId}/production?organizationId=${input.organizationId}`)).history;
+    },
+    async getRollbackPreview(rawInput) {
+      const input = z.object({ organizationId: z.string().min(1), releaseId: z.string().min(1), toDeploymentId: z.string().optional() }).strict().parse(rawInput);
+      const query = new URLSearchParams({ organizationId: input.organizationId, ...(input.toDeploymentId === undefined ? {} : { toDeploymentId: input.toDeploymentId }) });
+      return z.object({ preview: RollbackPreviewSchema }).strict().parse(await request(`/internal/releases/${input.releaseId}/rollback-preview?${query.toString()}`)).preview;
     },
   };
 

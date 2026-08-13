@@ -196,6 +196,19 @@ function harness(
 }
 
 describe('DEP-9 rollback service', () => {
+  it('previews all database compatibility states without mutation', async () => {
+    for (const [reversibility, expected] of [
+      ['reversible', { databaseState: 'compatible', allowed: true }],
+      ['compensating', { databaseState: 'requires_compensation', allowed: false }],
+      ['unavailable', { databaseState: 'incompatible', allowed: false }],
+    ] as const) {
+      const fixture = harness({ reversibility });
+      const service = createRollbackService(fixture.dependencies);
+      await expect(service.preview({ organizationId: ORGANIZATION_ID, projectId: PROJECT_ID, environmentId: ENVIRONMENT_ID, toDeploymentId: TARGET_DEPLOYMENT_ID })).resolves.toMatchObject(expected);
+      expect(fixture.operations).toEqual([]);
+    }
+  });
+
   it('restores the exact prior deployment, commit, static artifact, and environment config', async () => {
     const fixture = harness();
     const service = createRollbackService(fixture.dependencies);

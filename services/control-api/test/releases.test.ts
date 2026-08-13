@@ -204,6 +204,20 @@ class RecordingReleasePort implements ReleasePort {
   listDomains() { return Promise.resolve([this.domain()]); }
   configureDomain() { return Promise.resolve(this.domain()); }
   pollDomain() { return Promise.resolve(this.domain()); }
+  getProductionHistory() {
+    return Promise.resolve({ deployments: [], health: [], synthetics: [], annotations: [], healthyTargets: [] });
+  }
+  getRollbackPreview(input: { toDeploymentId?: string }) {
+    return Promise.resolve({
+      currentDeploymentId: this.deploymentId,
+      targetDeploymentId: input.toDeploymentId ?? newId('dep'),
+      targetReleaseId: this.releaseId,
+      targetCommitSha: 'a'.repeat(40),
+      databaseState: 'incompatible' as const,
+      allowed: false,
+      compensationApproved: false,
+    });
+  }
   private domain() {
     return {
       hostname: 'app.example.com', environmentId: 'env_01J00000000000000000000000', status: 'pending_dns' as const,
@@ -387,6 +401,18 @@ describe('release route shells', () => {
     expect(configured.statusCode, configured.body).toBe(201);
     expect(configured.json()).toMatchObject({ domain: { hostname: 'app.example.com', ssl: { managed: true } } });
     expect(wired.releases.actions.map(({ action }) => action)).toEqual(['fix', 'retry']);
+  });
+
+  it('publishes production history and pre-mutation rollback compatibility', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'dep15-release'), payload: candidateBody(wired) });
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const history = await wired.built.app.inject({ method: 'GET', url: `/v1/projects/${wired.projectId}/production`, headers: wired.as(wired.owner) });
+    expect(history.statusCode, history.body).toBe(200);
+    expect(history.json()).toEqual({ deployments: [], health: [], synthetics: [], annotations: [], healthyTargets: [] });
+    const preview = await wired.built.app.inject({ method: 'GET', url: `/v1/releases/${releaseId}/rollback-preview`, headers: wired.as(wired.owner) });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json()).toMatchObject({ databaseState: 'incompatible', allowed: false, compensationApproved: false });
   });
 
   it('lists paginated project release history with public evidence links', async () => {

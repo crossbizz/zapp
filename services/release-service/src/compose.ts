@@ -13,6 +13,11 @@ import { createPostgresDeploymentProgress, type DeploymentActionDispatcher } fro
 import { createPostgresDomainPort } from './domain-store.js';
 import type { DomainDependencies } from './domains/service.js';
 import { createPostgresReleaseHistory } from './history.js';
+import {
+  AnnotationRecordSchema,
+  createPostgresProductionProjection,
+  type ProductionProjectionPort,
+} from './production-history.js';
 
 import { buildApp, type LoggerConfig } from './app.js';
 import {
@@ -33,7 +38,7 @@ import {
   type ReleaseGitPort,
 } from './release/create.js';
 import { evaluateReadiness, ReadinessReportSchema } from './release/readiness.js';
-import { selectProductionSafeFlows } from './release/health.js';
+import { ProductionHealthResultSchema, selectProductionSafeFlows } from './release/health.js';
 import { createRollbackService, type RollbackDependencies } from './rollback/service.js';
 import {
   createSyntheticRunner,
@@ -98,6 +103,10 @@ export interface ReleaseProductionBindings {
   readonly synthetics: {
     scheduler: SyntheticSchedulerDependencies;
     runner: SyntheticRunnerDependencies;
+  };
+  readonly projection: {
+    loadHealth(release: Release, deploymentId: string): Promise<unknown>;
+    loadAnnotations(release: Release, deploymentId: string): Promise<unknown>;
   };
 }
 
@@ -206,10 +215,32 @@ function assertDeploymentPlanIdentity(
 function productionLifecycle(
   records: ReturnType<typeof createReleaseRecordService>,
   production: ReleaseProductionBindings,
+  projection: ProductionProjectionPort,
+  now: () => Date,
 ): Omit<ReleaseLifecycleDependencies, 'records'> {
   const rollback = createRollbackService(production.rollback);
   const scheduler = createSyntheticScheduler(production.synthetics.scheduler);
-  const runner = createSyntheticRunner(production.synthetics.runner);
+  const runner = createSyntheticRunner({
+    ...production.synthetics.runner,
+    store: {
+      ...production.synthetics.runner.store,
+      async recordResult(input) {
+        await production.synthetics.runner.store.recordResult(input);
+        await projection.recordSynthetic({
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          environmentId: input.environmentId,
+          releaseId: input.releaseId,
+          syntheticCheckId: input.syntheticCheckId,
+          status: input.status,
+          summary: input.summary,
+          evidenceArtifactIds: input.evidenceArtifactIds,
+          completedAt: input.completedAt,
+          retainUntil: input.retainUntil,
+        });
+      },
+    },
+  });
 
   return {
     readiness: {
@@ -248,6 +279,33 @@ function productionLifecycle(
         );
         if (result.deploymentId !== plan.workflow.deploymentId) {
           throw new Error('release_deployment_identity_mismatch');
+        }
+        const health = ProductionHealthResultSchema.parse(
+          await production.projection.loadHealth(release, result.deploymentId),
+        );
+        await projection.recordHealth({
+          organizationId: release.organizationId,
+          projectId: release.projectId,
+          environmentId: release.environmentId,
+          releaseId: release.id,
+          deploymentId: result.deploymentId,
+          result: health,
+          occurredAt: now().toISOString(),
+        });
+        const annotations = z.array(AnnotationRecordSchema.omit({
+          organizationId: true,
+          projectId: true,
+          releaseId: true,
+          deploymentId: true,
+        })).max(10).parse(await production.projection.loadAnnotations(release, result.deploymentId));
+        for (const annotation of annotations) {
+          await projection.recordAnnotation({
+            organizationId: release.organizationId,
+            projectId: release.projectId,
+            releaseId: release.id,
+            deploymentId: result.deploymentId,
+            ...annotation,
+          });
         }
 
         const scheduled = await scheduler.scheduleManagedRelease(plan.synthetics);
@@ -333,10 +391,12 @@ export function composeApp(runtime: ReleaseServiceRuntime) {
     ...(runtime.now === undefined ? {} : { now: runtime.now }),
   });
   const lifecycle = createReleaseLifecycleService({ records, ...runtime.lifecycle });
+  const productionHistory = createPostgresProductionProjection(runtime.database);
   return buildApp({
     records,
     lifecycle,
     history: createPostgresReleaseHistory(runtime.database),
+    productionHistory,
     ...(runtime.deploymentActions === undefined
       ? {}
       : { progress: createPostgresDeploymentProgress(runtime.database, runtime.deploymentActions) }),
@@ -357,14 +417,18 @@ export function composeProductionApp(runtime: ProductionReleaseServiceRuntime) {
     git: runtime.git,
     ...(runtime.now === undefined ? {} : { now: runtime.now }),
   });
+  const now = runtime.now ?? (() => new Date());
+  const productionHistory = createPostgresProductionProjection(runtime.database);
   const lifecycle = createReleaseLifecycleService({
     records,
-    ...productionLifecycle(records, runtime.production),
+    ...productionLifecycle(records, runtime.production, productionHistory, now),
   });
   return buildApp({
     records,
     lifecycle,
     history: createPostgresReleaseHistory(runtime.database),
+    productionHistory,
+    rollbackPreview: createRollbackService(runtime.production.rollback),
     progress: createPostgresDeploymentProgress(runtime.database, runtime.production.actions),
     domains: createPostgresDomainPort(runtime.database, runtime.production.domains),
     signer: createServiceTokenSigner(runtime.serviceTokens),

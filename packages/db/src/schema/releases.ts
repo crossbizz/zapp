@@ -184,6 +184,77 @@ export const environmentDomains = pgTable(
   ],
 );
 
+/** Append-only production health evidence used by the public project dashboard. */
+export const productionHealthResults = pgTable(
+  'production_health_results',
+  {
+    id: text('id').primaryKey(), // vr_*
+    organizationId: organizationId(),
+    projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    environmentId: text('environment_id').notNull().references(() => environments.id, { onDelete: 'cascade' }),
+    releaseId: text('release_id').notNull().references(() => releases.id, { onDelete: 'cascade' }),
+    deploymentId: text('deployment_id').notNull().references(() => deployments.id, { onDelete: 'cascade' }),
+    status: text('status').notNull(),
+    evidenceArtifactId: text('evidence_artifact_id').notNull().references(() => artifacts.id),
+    resultJson: jsonb('result_json').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('production_health_results_deployment_evidence_idx').on(t.organizationId, t.deploymentId, t.evidenceArtifactId),
+    index('production_health_results_project_occurred_idx').on(t.organizationId, t.projectId, t.occurredAt),
+    projectTenantForeignKey('production_health_results', t.projectId, t.organizationId),
+    check('production_health_results_status_check', sql`${t.status} in ('healthy','failed')`),
+  ],
+);
+
+/** Immutable synthetic execution history; the mutable synthetic_checks row remains the latest index. */
+export const syntheticCheckResults = pgTable(
+  'synthetic_check_results',
+  {
+    id: text('id').primaryKey(), // trun_*
+    organizationId: organizationId(),
+    projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    environmentId: text('environment_id').notNull().references(() => environments.id, { onDelete: 'cascade' }),
+    releaseId: text('release_id').notNull().references(() => releases.id, { onDelete: 'cascade' }),
+    syntheticCheckId: text('synthetic_check_id')
+      .notNull()
+      .references((): AnyPgColumn => syntheticChecks.id, { onDelete: 'cascade' }),
+    status: text('status').notNull(),
+    summary: text('summary').notNull(),
+    evidenceArtifactIdsJson: jsonb('evidence_artifact_ids_json').notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull(),
+    retainUntil: timestamp('retain_until', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('synthetic_check_results_check_completed_idx').on(t.organizationId, t.syntheticCheckId, t.completedAt),
+    index('synthetic_check_results_project_completed_idx').on(t.organizationId, t.projectId, t.completedAt),
+    projectTenantForeignKey('synthetic_check_results', t.projectId, t.organizationId),
+    check('synthetic_check_results_status_check', sql`${t.status} in ('passed','failed')`),
+  ],
+);
+
+/** Durable links for Grafana/PostHog annotations emitted for a release/deployment. */
+export const releaseAnnotations = pgTable(
+  'release_annotations',
+  {
+    id: text('id').primaryKey(), // aud_*
+    organizationId: organizationId(),
+    projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    releaseId: text('release_id').notNull().references(() => releases.id, { onDelete: 'cascade' }),
+    deploymentId: text('deployment_id').references(() => deployments.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(),
+    kind: text('kind').notNull(),
+    link: text('link').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('release_annotations_provider_kind_release_idx').on(t.organizationId, t.releaseId, t.provider, t.kind),
+    index('release_annotations_project_occurred_idx').on(t.organizationId, t.projectId, t.occurredAt),
+    projectTenantForeignKey('release_annotations', t.projectId, t.organizationId),
+    check('release_annotations_provider_check', sql`${t.provider} in ('grafana','posthog')`),
+  ],
+);
+
 export const syntheticChecks = pgTable(
   'synthetic_checks',
   {
@@ -216,5 +287,8 @@ export type DeploymentEvent = typeof deploymentEvents.$inferSelect;
 export type NewDeploymentEvent = typeof deploymentEvents.$inferInsert;
 export type DeploymentActionRequest = typeof deploymentActionRequests.$inferSelect;
 export type EnvironmentDomain = typeof environmentDomains.$inferSelect;
+export type ProductionHealthResult = typeof productionHealthResults.$inferSelect;
+export type SyntheticCheckResult = typeof syntheticCheckResults.$inferSelect;
+export type ReleaseAnnotation = typeof releaseAnnotations.$inferSelect;
 export type SyntheticCheck = typeof syntheticChecks.$inferSelect;
 export type NewSyntheticCheck = typeof syntheticChecks.$inferInsert;
