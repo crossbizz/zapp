@@ -12,6 +12,7 @@ import {
   createUnavailableCapabilityScanPort,
   type CapabilityScanPort,
 } from '@zapp/project-adapters';
+import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import multipart from '@fastify/multipart';
 import Fastify, {
@@ -530,6 +531,17 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
   });
   app.setErrorHandler(errorHandler);
   app.setNotFoundHandler(notFoundHandler);
+  if (deps.auth !== undefined) {
+    const browserOrigin = new URL(deps.auth.config.appBaseUrl).origin;
+    void app.register(cors, {
+      credentials: true,
+      maxAge: 600,
+      methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      origin(requestOrigin, callback) {
+        callback(null, requestOrigin === browserOrigin);
+      },
+    });
+  }
   void app.register(requestContext);
   void app.register(websocket);
   void app.register(multipart, { limits: { files: 1, fileSize: MAX_ATTACHMENT_BYTES } });
@@ -721,8 +733,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           // Fastify treats `summaries` as a malformed project id.
           registerProjectSummaryRoutes(app, {
             releasePort: tenant.releasePort ?? createUnavailableReleasePort(),
-            artifactReader:
-              tenant.runArtifactReader ?? createUnavailableRunArtifactReader(),
+            artifactReader: tenant.runArtifactReader ?? createUnavailableRunArtifactReader(),
           });
           registerProjectDeletionRoutes(app, {
             store: tenant.projectDeletions ?? createUnavailableProjectDeletionRequestStore(),
@@ -736,12 +747,11 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
             now,
             git: tenant.git ?? createRecordOnlyGitService(),
             capabilityScan: tenant.capabilityScan ?? createUnavailableCapabilityScanPort(),
-            templates:
-              tenant.templates ?? {
-                listPublic: () => [],
-                getPublic: () => undefined,
-                getApproved: () => undefined,
-              },
+            templates: tenant.templates ?? {
+              listPublic: () => [],
+              getPublic: () => undefined,
+              getApproved: () => undefined,
+            },
             ...(deps.productAnalytics === undefined
               ? {}
               : { productAnalytics: deps.productAnalytics }),
@@ -778,8 +788,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
               ? {}
               : { modelCompletions: deps.modelCompletions }),
             ...(tenant.incidents === undefined ? {} : { incidents: tenant.incidents }),
-            artifactReader:
-              tenant.runArtifactReader ?? createUnavailableRunArtifactReader(),
+            artifactReader: tenant.runArtifactReader ?? createUnavailableRunArtifactReader(),
           });
           registerAttachmentRoutes(app, {
             now,
@@ -872,7 +881,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
                     provider: deps.github.provider,
                     stateStore: deps.github.stateStore,
                   })),
-            ...(tenant.githubControls === undefined ? {} : { githubControls: tenant.githubControls }),
+            ...(tenant.githubControls === undefined
+              ? {}
+              : { githubControls: tenant.githubControls }),
           });
           if (deps.usageLedger !== undefined && tenant.creditBalance !== undefined) {
             registerPublicUsageRoutes(app, {
