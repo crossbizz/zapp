@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { createTaskGraph, PlanSchema, type TaskGraphState } from '../src/graph.js';
+import { createTaskGraph, PlanPhaseSchema, PlanSchema, type TaskGraphState } from '../src/graph.js';
 
 const task = (
   id: string,
@@ -78,8 +78,19 @@ const state = (
 });
 
 describe('PlanSchema', () => {
-  test('parses the Appendix C phase-plan contract', () => {
-    expect(PlanSchema.parse(appendixCPlan)).toEqual(appendixCPlan);
+  test('defaults legacy phase metadata to required and preserves explicit optional phases', () => {
+    expect(PlanPhaseSchema.parse(appendixCPlan.phases[0]).optional).toBe(false);
+
+    const parsed = PlanSchema.parse({
+      ...appendixCPlan,
+      phases: [appendixCPlan.phases[0], { ...appendixCPlan.phases[1], optional: true }],
+      tasks: [
+        task('detect_project_contract', 'phase_0'),
+        task('create_application_shell', 'phase_1', ['detect_project_contract']),
+      ],
+    });
+
+    expect(parsed.phases.map(({ optional }) => optional)).toEqual([false, true]);
   });
 
   test('rejects dependency cycles at plan creation with plan_cycle', () => {

@@ -164,17 +164,25 @@ interface StreamRecord {
   readonly truncated?: boolean;
 }
 
-async function waitForFile(path: string): Promise<string> {
+async function waitForFile(
+  path: string,
+  accept: (contents: string) => boolean = () => true,
+): Promise<string> {
   const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
     try {
-      return await readFile(path, 'utf8');
+      const contents = await readFile(path, 'utf8');
+      if (accept(contents)) return contents;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // The producer may not have created the file yet.
     }
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Timed out waiting for ${path}`);
 }
+
+const waitForPopulatedFile = (path: string): Promise<string> =>
+  waitForFile(path, (contents) => contents.length > 0);
 
 async function requireNativePause(
   request: Promise<{ readonly statusCode: number }>,
@@ -2281,7 +2289,7 @@ describe('workspace-agent RPC daemon', () => {
         timeoutMs: 10_000,
       },
     );
-    const pid = Number(await waitForFile(pidFile));
+    const pid = Number(await waitForPopulatedFile(pidFile));
     expect(activeStream.started.pid).toBe(pid);
     const killHeaders = authorization(token, 'kill-replay');
     const killPayload = { executionId: activeStream.started.executionId };
@@ -2429,7 +2437,7 @@ describe('workspace-agent RPC daemon', () => {
       ].join('\r\n'),
     );
     const serverSocket = await serverSocketPromise;
-    const pid = Number(await waitForFile(pidFile));
+    const pid = Number(await waitForPopulatedFile(pidFile));
     expect(await readFile(marker, 'utf8')).toBe('x');
     const backpressureDeadline = Date.now() + 3_000;
     while (!serverSocket.writableNeedDrain) {
@@ -2593,7 +2601,7 @@ describe('workspace-agent RPC daemon', () => {
     });
 
     try {
-      await waitForFile(fixture.childPidPath);
+      await waitForPopulatedFile(fixture.childPidPath);
       expect((await response).json()).toMatchObject({ exitCode: 124 });
       await expectDetachedSetsidContainment(fixture);
     } finally {
@@ -2611,7 +2619,7 @@ describe('workspace-agent RPC daemon', () => {
     });
 
     try {
-      await waitForFile(fixture.childPidPath);
+      await waitForPopulatedFile(fixture.childPidPath);
       const parentPid = Number(await readFile(fixture.parentPidPath, 'utf8'));
       const killed = await requireApp().inject({
         method: 'POST',
@@ -2647,7 +2655,7 @@ describe('workspace-agent RPC daemon', () => {
       if (reader === undefined) {
         throw new Error('Expected a streaming response body');
       }
-      await waitForFile(fixture.childPidPath);
+      await waitForPopulatedFile(fixture.childPidPath);
       expect((await reader.read()).done).toBe(false);
       await reader.cancel();
       await expectDetachedSetsidContainment(fixture);
@@ -2671,7 +2679,7 @@ describe('workspace-agent RPC daemon', () => {
     const requestOutcome = request.catch(() => undefined);
 
     try {
-      await waitForFile(fixture.childPidPath);
+      await waitForPopulatedFile(fixture.childPidPath);
       await activeApp.close();
       app = undefined;
       await requestOutcome;
@@ -2695,7 +2703,7 @@ describe('workspace-agent RPC daemon', () => {
       ],
       timeoutMs: 10_000,
     });
-    const pid = Number(await waitForFile(pidFile));
+    const pid = Number(await waitForPopulatedFile(pidFile));
     expect(stream.started.pid).toBe(pid);
 
     const killed = await requireApp().inject({
@@ -2728,7 +2736,7 @@ describe('workspace-agent RPC daemon', () => {
         timeoutMs: 10_000,
       }),
     });
-    const pid = Number(await waitForFile(pidFile));
+    const pid = Number(await waitForPopulatedFile(pidFile));
     const reader = response.body?.getReader();
     if (reader === undefined) {
       throw new Error('Expected a streaming response body');
@@ -2789,7 +2797,7 @@ describe('workspace-agent RPC daemon', () => {
       ].join('\r\n'),
     );
     const serverSocket = await serverSocketPromise;
-    const pid = Number(await waitForFile(pidFile));
+    const pid = Number(await waitForPopulatedFile(pidFile));
     const backpressureDeadline = Date.now() + 3_000;
     while (!serverSocket.writableNeedDrain) {
       if (Date.now() >= backpressureDeadline) throw new Error('Stream never backpressured');
@@ -2827,7 +2835,7 @@ describe('workspace-agent RPC daemon', () => {
       timeoutMs: 10_000,
       pty: true,
     });
-    const pid = Number(await waitForFile(pidFile));
+    const pid = Number(await waitForPopulatedFile(pidFile));
     expect(stream.started.pid).toBe(pid);
 
     const killed = await requireApp().inject({
@@ -3522,7 +3530,7 @@ describe('workspace-agent RPC daemon', () => {
       ],
       timeoutMs: 10_000,
     });
-    const pid = Number(await waitForFile(pidFile));
+    const pid = Number(await waitForPopulatedFile(pidFile));
     expect(stream.started.pid).toBe(pid);
 
     const metrics = await requireApp().inject({
@@ -3590,8 +3598,8 @@ describe('workspace-agent RPC daemon', () => {
         timeoutMs: 10_000,
       },
     );
-    const rootPid = Number(await waitForFile(rootPidFile));
-    const childPid = Number(await waitForFile(childPidFile));
+    const rootPid = Number(await waitForPopulatedFile(rootPidFile));
+    const childPid = Number(await waitForPopulatedFile(childPidFile));
     expect(activeStream.started.pid).toBe(rootPid);
 
     const daemonMemory = process.memoryUsage();
@@ -3665,8 +3673,8 @@ describe('workspace-agent RPC daemon', () => {
     let childPid: number | undefined;
 
     try {
-      const leaderPid = Number(await waitForFile(leaderPidFile));
-      childPid = Number(await waitForFile(childPidFile));
+      const leaderPid = Number(await waitForPopulatedFile(leaderPidFile));
+      childPid = Number(await waitForPopulatedFile(childPidFile));
       await waitForProcessExit(leaderPid);
 
       const daemonMemory = process.memoryUsage();
@@ -3739,7 +3747,7 @@ describe('workspace-agent RPC daemon', () => {
         return 'rejected' as const;
       },
     );
-    const pid = Number(await waitForFile(pidFile));
+    const pid = Number(await waitForPopulatedFile(pidFile));
 
     await requireApp().close();
     app = undefined;

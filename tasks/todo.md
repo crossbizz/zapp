@@ -112,7 +112,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 ## M2 — Agentic core + Mission Control (Weeks 8–14)
 
 - [x] M2-M6-PLAN-2 Public product completion contracts + dependency graph (ADR-0032)
-- [ ] AR-23 Durable retry/skip builder-control protocol
+- [x] AR-23 Durable retry/skip builder-control protocol
 - [ ] CP-22 Public builder controls + generic approval contract
 - [ ] AR-24 Typed interactive conversation-card workflow
 - [ ] CP-23 Public card responses + artifact reads
