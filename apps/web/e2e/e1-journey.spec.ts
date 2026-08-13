@@ -114,7 +114,7 @@ test('takes one signed-in user through the real public API from prompt to deploy
     },
   ]));
   await page.goto(`/?organizationId=${organizationId}`);
-  await expect(page.getByText('Alpha Org')).toBeVisible();
+  await expect(page.getByText('Selected organization: Alpha Org', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Add attachment or controls' }).click();
   await page.getByRole('button', { name: 'Auto ▸' }).click();
@@ -153,11 +153,14 @@ test('takes one signed-in user through the real public API from prompt to deploy
     return {
       eventErrors: (raw as E1Status).eventErrors,
       iframeCount: await page.locator('iframe').count(),
+      previewLoaded: previewRequests.some(
+        ({ method, path }) => method === 'GET' && path === '/',
+      ),
     };
-  }).toEqual({ eventErrors: [], iframeCount: 1 });
+  }, { timeout: 15_000 }).toEqual({ eventErrors: [], iframeCount: 1, previewLoaded: true });
   await expect(
     page.frameLocator('iframe').getByRole('heading', { name: 'Authenticated clinic preview' }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 10_000 });
   await page.getByRole('button', { name: 'Mission Control' }).click();
   await page.getByLabel('Redirect instructions').fill(iteration);
   await page.getByRole('button', { name: 'Redirect', exact: true }).click();
@@ -223,7 +226,7 @@ test('takes one signed-in user through the real public API from prompt to deploy
     status.requests.find(({ path }) =>
       /^\/v1\/organizations\/org_[^/]+\/preview-shares\/[^/]+\/sessions$/u.test(path)),
   ).toMatchObject({ method: 'POST' });
-  expect(status.requests.find(({ path }) => path === '/v1/projects')).toMatchObject({
+  expect(status.requests.find(({ method, path }) => method === 'POST' && path === '/v1/projects')).toMatchObject({
     body: {
       name: 'Build a friendly appointment scheduler for neighborhood clinics',
       sourceType: 'prompt',

@@ -152,6 +152,7 @@ function PreviewStyles(): ReactElement {
         gap: 0.75rem;
         padding: 0.75rem;
         background: var(--zapp-surface-canvas);
+        container-type: inline-size;
       }
       .zapp-preview-toolbar {
         display: grid;
@@ -174,6 +175,9 @@ function PreviewStyles(): ReactElement {
         display: flex;
         align-items: center;
         gap: 0.375rem;
+      }
+      .zapp-preview-toolbar-actions .zapp-button {
+        white-space: nowrap;
       }
       .zapp-preview-devices button {
         min-height: 2.25rem;
@@ -261,15 +265,45 @@ function PreviewStyles(): ReactElement {
         text-align: left;
         vertical-align: top;
       }
+      @container (max-width: 52rem) {
+        .zapp-preview-toolbar {
+          grid-template-columns: auto minmax(8rem, 1fr) auto;
+        }
+        .zapp-preview-devices {
+          grid-column: 1 / -1;
+          grid-row: 2;
+          justify-content: center;
+        }
+        .zapp-preview-toolbar-actions {
+          grid-column: 3;
+          grid-row: 1;
+        }
+      }
       @media (max-width: 900px) {
         .zapp-preview-toolbar {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
         }
         .zapp-preview-share-result {
           grid-column: auto;
         }
+        .zapp-preview-path,
+        .zapp-preview-devices,
         .zapp-preview-toolbar-actions {
-          flex-wrap: wrap;
+          grid-column: 1;
+          grid-row: auto;
+          min-width: 0;
+        }
+        .zapp-preview-devices {
+          justify-content: flex-start;
+          overflow-x: auto;
+        }
+        .zapp-preview-toolbar-actions {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          align-items: stretch;
+        }
+        .zapp-preview-toolbar-actions .zapp-button {
+          width: 100%;
         }
       }
     `}</style>

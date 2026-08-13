@@ -268,15 +268,15 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 **Interfaces produced:** Optional `previewThumbnail` on `GET /v1/projects/summaries`; tenant-scoped `GET /v1/projects/:projectId/preview-thumbnail/:artifactId`; shared authenticated `AppShell`; typed shell/provider/builder navigation models; shared route/embedded `ProjectSettingsPanel`; builder `Preview | Manage` composition.
 
-- [ ] Task 1: Add the tenant-scoped project thumbnail projection, bytes route, generated SDK operation, and isolation coverage test-first.
-- [ ] Task 2: Add the responsive authenticated product shell and branded Stytch-backed login without changing identity transport.
-- [ ] Task 3: Compose the prompt dashboard with real recent projects and optional authenticated thumbnails.
-- [ ] Task 4: Restyle the full projects workspace while preserving pagination, organization races, and GitHub import identities.
-- [ ] Task 5: Extract settings into typed API-backed modules and render only GitHub, Supabase, Neon, Stripe, and Vercel.
-- [ ] Task 6: Add the builder Preview/Manage composition while preserving conversation, pane resizing, Mission Control, and deployment behavior.
-- [ ] Task 7: Apply the shell and page hierarchy to account, template, release, and health routes without changing their public contracts.
-- [ ] Task 8: Close two local review rounds, accessibility/responsive acceptance, the full local gate, one connected E1 run, and one credential-gated Stytch check.
-- [ ] Commit sequence and verification commands match the binding execution expansion; final closure commit: `feat(web): complete real API product shell`.
+- [x] Task 1: Add the tenant-scoped project thumbnail projection, bytes route, generated SDK operation, and isolation coverage test-first.
+- [x] Task 2: Add the responsive authenticated product shell and branded Stytch-backed login without changing identity transport.
+- [x] Task 3: Compose the prompt dashboard with real recent projects and optional authenticated thumbnails.
+- [x] Task 4: Restyle the full projects workspace while preserving pagination, organization races, and GitHub import identities.
+- [x] Task 5: Extract settings into typed API-backed modules and render only GitHub, Supabase, Neon, Stripe, and Vercel.
+- [x] Task 6: Add the builder Preview/Manage composition while preserving conversation, pane resizing, Mission Control, and deployment behavior.
+- [x] Task 7: Apply the shell and page hierarchy to account, template, release, and health routes without changing their public contracts.
+- [x] Task 8: Close two local review rounds, accessibility/responsive acceptance, the full local gate, one connected E1 run, and one credential-gated Stytch check.
+- [x] Commit sequence and verification commands match the binding execution expansion; final closure commit: `feat(web): complete real API product shell`.
 
 ---
 
@@ -291,6 +291,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-13 WEB-18 done - Shipped the reference-quality TypeScript product shell, real Stytch redirect login, API-backed dashboard/projects/settings/builder Manage/account/template/release/health flows, and tenant-scoped thumbnails; two visual/accessibility rounds closed, connected E1 passed, full web passed 126/126, and `pnpm verify` passed 94/94 package tasks, 24/24 integration tasks, tenant isolation 55/55, with the disposable local test database moved to tmpfs after Docker Desktop fsync timeouts; live Stytch verification skipped because `STYTCH_PROJECT_ID` and `STYTCH_SECRET` are unset, while the configured local redirect reached Google through Stytch; Forgejo gate skipped because `FORGEJO_ADMIN_TOKEN` is unset.
 - 2026-08-13 WEB-14-FIX-2 done — Replaced the scripted E1 backend with the production autonomous Temporal workflow, real signal-driven interview/approval/redirect sequencing, actual preview bootstrap/session redemption, readiness policy, public release approval, and eight-stage deployment workflow; round-2 findings were re-scoped at the cap into exact candidate→verifying→ready/warnings→approved→deploying→healthy enforcement and ready/warnings builder discovery, with E1 1/1, focused browser 22/22, full serial web 111/111, autonomous 10/10, deploy 4/4, release routes 19/19, SSE integration green, and package lint/typecheck/build green.
 - 2026-08-12 WEB-16 done — Closed the final WEB-14-dependent acceptance gap with a single keyboard-only prompt→preview→release→successful-deploy path, preserved the existing usage/billing/Owner-audit and exact activation contracts, and passed focused web E2E 6/6 plus activation 3/3, lint, and typecheck; no provider call was required.
 - 2026-08-12 WEB-15 done — Added the public production health/synthetic/monitoring annotation view, Fix creation, healthy-target selection, and non-mutating database compatibility preview that blocks incompatible and unapproved-compensation rollback; focused E2E passed 1/1 and web lint/typecheck/build passed.

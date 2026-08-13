@@ -772,9 +772,11 @@ test('warns about an invalid organization override while using the safe membersh
   await page.goto(builderUrl);
 
   await expect(page.getByRole('heading', { name: 'Project Apollo' })).toBeVisible();
-  await expect(page.getByRole('status')).toHaveText(
-    'Invalid organization selection. Showing your active organization.',
-  );
+  await expect(
+    page.getByRole('status').filter({
+      hasText: 'Invalid organization selection. Showing your active organization.',
+    }),
+  ).toHaveText('Invalid organization selection. Showing your active organization.');
   await expect(page).toHaveURL(builderUrl);
   expect(projectRequests).toHaveLength(1);
   expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');

@@ -114,6 +114,7 @@ describe('GET /v1/openapi.json', () => {
       '/v1/templates',
       '/v1/templates/{slug}',
       '/v1/projects/summaries',
+      '/v1/projects/{projectId}/preview-thumbnail/{artifactId}',
       '/v1/organizations/{orgId}/audit-events',
       '/v1/organizations/{orgId}/settings',
       '/v1/workspaces/{workspaceId}/preview/shares',
@@ -163,7 +164,7 @@ describe('GET /v1/openapi.json', () => {
       '/v1/admin/organizations/{organizationId}/terminate-all',
       '/v1/releases/{releaseId}/fork',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(115);
+    expect(Object.keys(document.paths)).toHaveLength(116);
     expect(document.paths).toHaveProperty('/v1/projects/{projectId}/deletion');
     expect(document.paths['/v1/projects/{projectId}']).toHaveProperty('delete');
     expect(document.paths['/v1/organizations/{orgId}']).toHaveProperty('delete');

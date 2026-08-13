@@ -144,6 +144,26 @@ async function mockBuilder(page: Page): Promise<void> {
   });
 }
 
+async function mockBilling(page: Page): Promise<void> {
+  await page.route(`${apiBaseUrl}/v1/billing/status`, async (route) => {
+    await response(route, {
+      billing: {
+        customerId: 'cus_a11y',
+        dunning: { state: 'current' },
+        planId: 'studio',
+        seats: 4,
+        subscriptionId: 'sub_a11y',
+        subscriptionStatus: 'active',
+      },
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/billing/topups`, async (route) => {
+    await response(route, {
+      packs: [{ amountUsd: '25.00', credits: '100.0000', id: 'starter' }],
+    });
+  });
+}
+
 async function mockCreation(page: Page): Promise<void> {
   await page.route(`${apiBaseUrl}/v1/projects`, async (route) => {
     if (route.request().method() !== 'POST') {
@@ -262,6 +282,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('keeps home, dashboard, builder, and deploy-readiness entry axe clean', async ({ page }) => {
+  await page.goto('/login');
+  await expect(page.getByRole('heading', { name: 'Sign in to zapp.build' })).toBeVisible();
+  await axeClean(page);
+
   await signIn(page);
   await expect(page.getByRole('textbox', { name: 'Describe your project' })).toBeVisible();
   await axeClean(page);
@@ -276,6 +300,58 @@ test('keeps home, dashboard, builder, and deploy-readiness entry axe clean', asy
   await mockBuilder(page);
   await page.goto(`/projects/${projectId}`);
   await expect(page.getByRole('heading', { name: 'Accessible project' })).toBeVisible();
+  await axeClean(page);
+});
+
+test('keeps Manage, Billing, and mobile builder navigation axe clean and contained', async ({
+  page,
+}) => {
+  await mockBuilder(page);
+  await mockBilling(page);
+  await signIn(page);
+
+  await page.setViewportSize({ height: 950, width: 1440 });
+  await page.goto(`/projects/${projectId}`);
+  const openPreview = page.getByRole('button', { name: 'Open in new tab' });
+  await expect(openPreview).toBeVisible();
+  await expect
+    .poll(async () => (await openPreview.boundingBox())?.height ?? Number.POSITIVE_INFINITY)
+    .toBeLessThanOrEqual(48);
+  await page.getByRole('button', { name: 'Manage' }).click();
+  await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
+  await axeClean(page);
+
+  await page.goto('/org/billing');
+  await expect(page.getByRole('heading', { name: 'Billing' })).toBeVisible();
+  await axeClean(page);
+
+  await page.setViewportSize({ height: 844, width: 390 });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByRole('button', { name: 'Open navigation' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Conversation' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+    .toBe(true);
+  await axeClean(page);
+
+  const workspacePane = page.getByRole('button', { name: 'Workspace' });
+  await workspacePane.click();
+  await page.mouse.move(0, 0);
+  await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();
+  await expect(workspacePane).toHaveCSS('background-color', 'rgb(37, 99, 235)');
+  for (const name of ['Open in new tab', 'Refresh', 'Share link']) {
+    const control = page.getByRole('button', { name });
+    const bounds = await control.boundingBox();
+    expect(bounds, `${name} should be rendered`).not.toBeNull();
+    expect(bounds?.x ?? -1, `${name} should start inside the viewport`).toBeGreaterThanOrEqual(0);
+    expect(
+      (bounds?.x ?? Number.POSITIVE_INFINITY) + (bounds?.width ?? Number.POSITIVE_INFINITY),
+      `${name} should end inside the viewport`,
+    ).toBeLessThanOrEqual(390);
+  }
   await axeClean(page);
 });
 
@@ -299,7 +375,9 @@ test('runs prompt to Preview to successful deploy using only keyboard controls',
   await page.keyboard.press('Enter');
   await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true');
 
-  const projects = page.getByRole('link', { name: 'Projects' });
+  const projects = page
+    .getByRole('navigation', { name: 'Primary' })
+    .getByRole('link', { name: 'Projects' });
   await tabTo(page, projects);
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL('/projects');
@@ -311,7 +389,8 @@ test('runs prompt to Preview to successful deploy using only keyboard controls',
 
   const releaseEntry = page.getByRole('link', { name: releaseId });
   await tabTo(page, releaseEntry);
-  await page.keyboard.press('Enter');
+  await expect(releaseEntry).toBeFocused();
+  await releaseEntry.press('Enter');
   await expect(page).toHaveURL(`/projects/${projectId}/releases/${releaseId}`);
 
   for (const name of ['Deploy', 'Continue', 'Confirm deployment']) {
