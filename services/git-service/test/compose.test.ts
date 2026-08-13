@@ -4,6 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { composeApp } from '../src/compose.js';
 import { SERVICE_TOKEN_HEADER } from '../src/internal/service-auth.js';
 import { SERVICE_SECRET, newProject, serviceHeaders, serviceToken } from './support/harness.js';
+import { loadTemplateRegistry } from '../src/template-registry.js';
+
+const templateRegistry = await loadTemplateRegistry();
 
 /**
  * The composition the deployed service actually runs.
@@ -36,6 +39,7 @@ function deployed() {
     // The composition needs a handle; nothing in this suite reaches a query,
     // because every assertion is answered before a route touches the database.
     database: unusedDatabase(),
+    templateRegistry,
   });
 }
 
@@ -79,6 +83,17 @@ describe('the deployed composition', () => {
       // it requires a service token (so the deployment is not open).
       expect(response.statusCode).toBe(401);
       expect(response.json()).toMatchObject({ error: { code: 'service_unauthenticated' } });
+
+      const templateSeed = await app.inject({
+        method: 'POST',
+        url: `/internal/git/repositories/${project.organizationId}/${project.projectId}/template-seed`,
+        headers: { 'idempotency-key': 'compose-seed-001' },
+        payload: { templateSlug: 'saas-starter' },
+      });
+      expect(templateSeed.statusCode).toBe(401);
+      expect(templateSeed.json()).toMatchObject({
+        error: { code: 'service_unauthenticated' },
+      });
     } finally {
       await app.close();
     }
@@ -109,6 +124,7 @@ describe('the deployed composition', () => {
         forgejo: { baseUrl: 'http://127.0.0.1:1', adminToken: 'x', timeoutMs: 100 },
         serviceTokens: { secret: `${SERVICE_SECRET}-different` },
         database: unusedDatabase(),
+        templateRegistry,
       });
       try {
         const response = await wrongSecretApp.inject({

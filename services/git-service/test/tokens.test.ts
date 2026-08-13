@@ -30,6 +30,8 @@ const REF = internalRepoRef({ organizationId: ORGANIZATION, projectId: PROJECT }
 const [OWNER, NAME] = REF.split('/') as [string, string];
 const NOW = new Date('2026-03-01T00:00:00.000Z');
 const TOKEN = 'forgejo-secret-token';
+const TEMPLATE_REF = 'zapp-projects/saas-starter';
+const TEMPLATE_PATH = '/repos/zapp-projects/saas-starter';
 
 function service(overrides: Record<string, Route> = {}) {
   const forgejo = createFakeForgejo({
@@ -98,6 +100,67 @@ describe('the ephemeral username', () => {
 });
 
 describe('mint', () => {
+  it('mints and revokes a read-only credential scoped to an approved template source', async () => {
+    const sourceRepository = {
+      status: 200,
+      body: { id: 702, clone_url: `https://git.test/${TEMPLATE_REF}.git` },
+    } as const;
+    const harness = service({
+      [`GET ${TEMPLATE_PATH}`]: {
+        ...sourceRepository,
+        then: { ...sourceRepository, then: sourceRepository },
+      },
+      [`PUT ${TEMPLATE_PATH}/collaborators/*`]: { status: 204 },
+    });
+
+    const minted = await harness.tokens.mintApprovedTemplateSource({
+      organizationId: ORGANIZATION,
+      projectId: PROJECT,
+      repositoryRef: TEMPLATE_REF,
+      requestingService: 'control-api',
+    });
+
+    expect(minted.cloneUrl).toBe(`https://git.test/${TEMPLATE_REF}.git`);
+    const collaborator = harness.forgejo.writes.find((call) =>
+      call.path.includes('/collaborators/'),
+    );
+    expect(collaborator?.path).toContain(`${TEMPLATE_PATH}/collaborators/`);
+    expect(collaborator?.body).toMatchObject({ permission: 'read' });
+    expect(
+      harness.forgejo.writes.find((call) => call.path.endsWith('/tokens'))?.body,
+    ).toMatchObject({ scopes: ['read:repository'] });
+    expect(harness.audit.events[0]).toMatchObject({
+      action: 'git_token.minted',
+      metadata: { internalRepoRef: TEMPLATE_REF, access: 'read' },
+    });
+
+    await harness.tokens.revokeApprovedTemplateSource({
+      organizationId: ORGANIZATION,
+      projectId: PROJECT,
+      repositoryRef: TEMPLATE_REF,
+      username: minted.username,
+      requestingService: 'control-api',
+    });
+    expect(harness.forgejo.calls.at(-1)?.path).toContain(`/admin/users/${minted.username}`);
+    expect(harness.audit.events.at(-1)).toMatchObject({
+      action: 'git_token.revoked',
+      metadata: { internalRepoRef: TEMPLATE_REF, revoked: 1 },
+    });
+  });
+
+  it('refuses a source outside the approved template namespace before creating an identity', async () => {
+    const harness = service();
+    await expect(
+      harness.tokens.mintApprovedTemplateSource({
+        organizationId: ORGANIZATION,
+        projectId: PROJECT,
+        repositoryRef: REF,
+        requestingService: 'control-api',
+      }),
+    ).rejects.toThrow();
+    expect(harness.forgejo.writes).toEqual([]);
+  });
+
   it('publishes the non-secret restore identity before creating its Forgejo user', async () => {
     const harness = service({
       [`GET /repos/${OWNER}/${NAME}`]: {

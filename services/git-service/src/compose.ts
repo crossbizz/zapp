@@ -7,14 +7,14 @@ import type { ForgejoEnv } from './env.js';
 import { createForgejoClient } from './forgejo/client.js';
 import type { LoggerConfig } from './logging.js';
 import { createForgejoGitProvider } from './provider/forgejo.js';
+import { createRepositoryFeatures } from './provider/repository-features.js';
+import { createRepositoryOperations } from './provider/repository-operations.js';
+import type { ApprovedTemplateRegistry } from './template-registry.js';
 import { parseInternalRepoRef } from '@zapp/contracts';
 import { createGitMirror } from './import/mirror.js';
 import { createTokenService, type TokenService } from './tokens.js';
 import { createGitBundleCommands } from './backup.js';
-import {
-  createGitBundleExporter,
-  createTokenServiceGitBundleCredentials,
-} from './export.js';
+import { createGitBundleExporter, createTokenServiceGitBundleCredentials } from './export.js';
 
 /**
  * The composition the deployed service runs — every port bound to its shipping
@@ -48,6 +48,8 @@ export interface ServiceRuntime {
    * Refusing to start says so once, at the right moment.
    */
   readonly database: Database;
+  /** Server-approved, exact-SHA template sources loaded from checked-in config. */
+  readonly templateRegistry: ApprovedTemplateRegistry;
   /** Omitted in production, where the app's own defaults apply. `false` in tests. */
   readonly logger?: LoggerConfig;
   /** Bounded Git subprocess deadline for an on-demand portable bundle. */
@@ -99,6 +101,12 @@ export function composeApp(runtime: ServiceRuntime): ServiceComposition {
         timeoutMs: runtime.gitBundleCommandTimeoutMs ?? 240_000,
       }),
   });
+  const repositoryFeatures = createRepositoryFeatures({
+    registry: runtime.templateRegistry,
+    tokens,
+    operations: createRepositoryOperations(),
+    headReader: provider,
+  });
 
   const app = buildApp({
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -108,6 +116,7 @@ export function composeApp(runtime: ServiceRuntime): ServiceComposition {
     // admin token out of every error it raises.
     provider: importProvider,
     tokens,
+    repositoryFeatures,
     signer: createServiceTokenSigner(runtime.serviceTokens),
     mirror: createGitMirror(),
     bundleExporter,

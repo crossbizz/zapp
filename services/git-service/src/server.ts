@@ -10,6 +10,7 @@ import {
 } from './env.js';
 import { loggerOptions } from './logging.js';
 import { scheduleTokenSweep } from './sweep.js';
+import { loadTemplateRegistry } from './template-registry.js';
 
 /**
  * The listen entrypoint, and nothing else: read the environment, hand it to
@@ -30,12 +31,14 @@ const commandDeadlines = loadGitCommandDeadlineEnv();
 // without a database would refuse every mint — which is a worse way to learn the
 // variable is missing than not starting.
 const database = createDb(loadDatabaseUrl());
+const templateRegistry = await loadTemplateRegistry();
 
 const { app, tokens } = composeApp({
   logger: loggerOptions({ level: env.LOG_LEVEL, pretty: env.NODE_ENV === 'development' }),
   forgejo,
   serviceTokens,
   database: database.db,
+  templateRegistry,
   gitBundleCommandTimeoutMs: commandDeadlines.restoreCommandDeadlineMs,
 });
 

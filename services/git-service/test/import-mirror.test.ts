@@ -8,13 +8,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import type { GitCommandInput, GitCommandRunner } from '../src/import/git.js';
-import {
-  GitMirrorConflictError,
-  createGitMirror,
-  type GitMirror,
-} from '../src/import/mirror.js';
+import { GitMirrorConflictError, createGitMirror, type GitMirror } from '../src/import/mirror.js';
 import {
   createFakeProvider,
+  createFakeRepositoryFeatures,
   createFakeTokenService,
   newProject,
   serviceHeaders,
@@ -110,8 +107,7 @@ async function seedUnrelatedTargetRef(
   seeded: Awaited<ReturnType<typeof fixture>>,
   kind: 'branch' | 'tag',
 ): Promise<string> {
-  const ref =
-    kind === 'branch' ? 'refs/heads/unrelated-target' : 'refs/tags/authoritative-tag';
+  const ref = kind === 'branch' ? 'refs/heads/unrelated-target' : 'refs/tags/authoritative-tag';
   await git(['--git-dir', seeded.target, 'update-ref', ref, seeded.sourceHead]);
   return ref;
 }
@@ -128,9 +124,9 @@ describe('GitHub branch mirror', () => {
       seeded.sourceHead,
     );
     expect(
-      (await git(['--git-dir', seeded.target, 'rev-list', '--reverse', `refs/heads/${BRANCH}`])).split(
-        '\n',
-      ),
+      (
+        await git(['--git-dir', seeded.target, 'rev-list', '--reverse', `refs/heads/${BRANCH}`])
+      ).split('\n'),
     ).toEqual(seeded.sourceHistory);
   });
 
@@ -159,9 +155,9 @@ describe('GitHub branch mirror', () => {
     await git(['push', 'origin', BRANCH], targetWork);
     const targetHead = await git(['rev-parse', 'HEAD'], targetWork);
 
-    await expect(createGitMirror().mirror(input(seeded.source, seeded.target))).rejects.toBeInstanceOf(
-      GitMirrorConflictError,
-    );
+    await expect(
+      createGitMirror().mirror(input(seeded.source, seeded.target)),
+    ).rejects.toBeInstanceOf(GitMirrorConflictError);
     expect(await git(['--git-dir', seeded.target, 'rev-parse', `refs/heads/${BRANCH}`])).toBe(
       targetHead,
     );
@@ -217,7 +213,9 @@ describe('GitHub branch mirror', () => {
     expect(targetCall?.env['ZAPP_GIT_PASSWORD']).toBe(TARGET_TOKEN);
     expect(targetCall?.args).toEqual(['ls-remote', 'target']);
     expect(sourceCall?.env['GIT_ASKPASS']).not.toBe(targetCall?.env['GIT_ASKPASS']);
-    expect(await readFile(sourceCall?.env['GIT_ASKPASS'] ?? '', 'utf8')).not.toContain(SOURCE_TOKEN);
+    expect(await readFile(sourceCall?.env['GIT_ASKPASS'] ?? '', 'utf8')).not.toContain(
+      SOURCE_TOKEN,
+    );
   });
 
   it('redacts command failures and removes its temporary directory', async () => {
@@ -264,9 +262,7 @@ describe('POST /internal/git/repositories/:organizationId/:projectId/import', ()
         getBranch(ref, branch) {
           calls.push({ method: 'getBranch', args: [ref, branch] });
           branchReads += 1;
-          return Promise.resolve(
-            branchReads === 1 ? undefined : { name: branch, headSha: SHA },
-          );
+          return Promise.resolve(branchReads === 1 ? undefined : { name: branch, headSha: SHA });
         },
       }),
       {
@@ -289,6 +285,7 @@ describe('POST /internal/git/repositories/:organizationId/:projectId/import', ()
       provider,
       tokens,
       signer,
+      repositoryFeatures: createFakeRepositoryFeatures(),
       mirror: {
         mirror(inputValue) {
           mirrorInputs.push(inputValue);
@@ -364,6 +361,7 @@ describe('POST /internal/git/repositories/:organizationId/:projectId/import', ()
       provider,
       tokens: createFakeTokenService(),
       signer,
+      repositoryFeatures: createFakeRepositoryFeatures(),
       mirror: {
         mirror() {
           mirrorCalls += 1;
@@ -412,6 +410,7 @@ describe('POST /internal/git/repositories/:organizationId/:projectId/import', ()
       provider,
       tokens,
       signer,
+      repositoryFeatures: createFakeRepositoryFeatures(),
       mirror: { mirror: () => Promise.reject(new GitMirrorConflictError()) },
     });
     try {

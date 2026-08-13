@@ -1,4 +1,5 @@
 import { SERVICE_NAMES } from '@zapp/config';
+import { ApprovedTemplateSourceSchema } from '@zapp/config/templates';
 import { AuditRecordSchema, InternalRepoRefSchema, idSchema, newId } from '@zapp/contracts';
 import { auditEvents, type Executor } from '@zapp/db';
 import { z } from 'zod';
@@ -37,9 +38,15 @@ import {
 export { GIT_AUDIT_ACTIONS, GitAuditActionSchema, type GitAuditAction } from '@zapp/contracts';
 
 /** The reviewed non-secret context for one issued repository credential. */
+const AuditedRepositoryRefSchema = z.union([
+  InternalRepoRefSchema,
+  ApprovedTemplateSourceSchema.shape.repoRef,
+]);
+
 export const GitTokenMintedAuditMetadataSchema = z
   .object({
-    internalRepoRef: InternalRepoRefSchema,
+    /** Tenant repository or platform-owned approved template repository. */
+    internalRepoRef: AuditedRepositoryRefSchema,
     access: z.enum(TOKEN_ACCESS_LEVELS),
     ttlSec: z.number().int().positive().max(MAX_TOKEN_TTL_SECONDS),
     expiresAt: z.string().datetime({ offset: true }),
@@ -53,7 +60,7 @@ export type GitTokenMintedAuditMetadata = z.infer<typeof GitTokenMintedAuditMeta
 /** The reviewed non-secret context for repository credential revocation. */
 export const GitTokenRevokedAuditMetadataSchema = z
   .object({
-    internalRepoRef: InternalRepoRefSchema,
+    internalRepoRef: AuditedRepositoryRefSchema,
     revoked: z.number().int().positive(),
   })
   .strict();

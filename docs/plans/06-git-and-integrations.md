@@ -266,8 +266,24 @@ be built:
 **Files:** Modify git-service provider/routes/ports/tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: bounded before/after patch plus idempotent repository seed from server-approved template refs; reject arbitrary sources and preserve tenant/project scope.
-- [ ] Commit: `feat(git-service): commit diff and template seeding`
+- [x] RED: add local-Git port tests for an exact before/after unified patch, oversize refusal,
+  an atomic first seed, same-key replay, different-key/divergent-target refusal, and exact source
+  SHA selection; run them and confirm they fail because the repository operations do not exist.
+- [x] GREEN: implement bounded Git command ports with credential-isolated temporary clones,
+  exact-SHA validation, and an atomic target-head plus deterministic operation-receipt ref update;
+  run the local-Git port tests and confirm they pass.
+- [x] RED: add service-authenticated route tests that derive the tenant repository from ids,
+  accept only an approved template slug plus idempotency key, reject arbitrary source refs, keep
+  source credentials out of responses, and map comparison/seed limits and conflicts; run them and
+  confirm they fail because the routes are absent.
+- [x] GREEN: wire the approved registry, project-scoped credentials, repository operations, and
+  production route composition; run the route and composition tests and confirm they pass.
+- [x] VERIFY: run git-service unit/integration, lint, typecheck, build, and architecture gates;
+  perform one capped local review round and one final Forgejo acceptance run.
+- [ ] SHIP: update the authoritative tracker and this execution log in the task commit, push,
+  and require exact-SHA branch and main GitHub Actions success before reporting completion.
+- [x] Binding behavior: bounded before/after patch plus idempotent repository seed from server-approved template refs; reject arbitrary sources and preserve tenant/project scope.
+- [x] Commit: `feat(git-service): commit diff and template seeding`
 
 ### Task INT-10 [M3]: Public GitHub sync controls
 
@@ -323,3 +339,4 @@ be built:
 - 2026-08-11 INT-8 done — Generated-app Stripe credentials now use an audited vault scope isolated from platform billing, and the installer emits typechecked Next or Express Checkout, portal, signed webhook, atomic stale-safe sync, access-control, and migration artifacts; one capped review fixed authenticated portal ownership, current Stripe item periods, stale-event fencing, migration installation, and explicit Express/Fastify handling, while the first pre-push run exposed and bounded the compiler-heavy test's default timeout; no blockers or plan deviations, and live Stripe skipped because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.
 - 2026-08-12 INT-9 done — The generated Next fixture now exercises checkout completion, signed subscription sync, real isolated Postgres state, admission, cancellation, and revocation through the discoverable integration gate; one capped review exposed and drove the provider/DB/gate remediation, and the live Stripe proof skipped visibly because `STRIPE_GENERATED_APP_RESTRICTED_KEY` and `STRIPE_GENERATED_APP_ACCOUNT_ID` are unset.
 - 2026-08-12 GIT-6 done — Strict checked-in template metadata now pins platform-owned sources to exact SHAs and the git-service loader exposes only a server-side source lookup plus a repo-ref-free public projection; one capped review replaced demo-host heuristics with an exact platform-origin allowlist, with no blockers, deviations, or provider calls.
+- 2026-08-12 GIT-5 done — Bounded exact commit patches and atomic full-request-bound template seeds now use tenant-target and approved-source scoped credentials; one capped review removed admin-token subprocess reach and tightened replay identity, while the final Forgejo gate exposed and fixed the asynchronous writer-revocation race; no plan deviations.
