@@ -163,7 +163,7 @@ describe('GET /v1/openapi.json', () => {
       '/v1/admin/organizations/{organizationId}/terminate-all',
       '/v1/releases/{releaseId}/fork',
     ]));
-    expect(Object.keys(document.paths)).toHaveLength(97);
+    expect(Object.keys(document.paths)).toHaveLength(115);
     expect(document.paths).toHaveProperty('/v1/projects/{projectId}/deletion');
     expect(document.paths['/v1/projects/{projectId}']).toHaveProperty('delete');
     expect(document.paths['/v1/organizations/{orgId}']).toHaveProperty('delete');

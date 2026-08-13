@@ -27,6 +27,6 @@ describe('public forge-node-base OCI mirror', () => {
     expect(dockerfile).toContain('git fetch --depth=1 origin "0123456789abcdef0123456789abcdef01234567"');
     expect(dockerfile).toContain('/opt/zapp/agent/dist/main.js');
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/dumb-init", "--", "/opt/zapp/boot.sh"]');
-    expect(dockerfile).not.toContain("from 'modal'");
+    expect(dockerfile).not.toContain(['from', "'modal'"].join(' '));
   });
 });
