@@ -77,6 +77,30 @@
   font-size: var(--zapp-text-18);
 }
 
+.projectThumbnail {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  background: var(--zapp-surface-subtle);
+}
+
+.projectThumbnail img {
+  object-fit: cover;
+}
+
+.projectThumbnailFallback {
+  display: grid;
+  place-items: center;
+  color: var(--zapp-text-inverse);
+  background: var(--zapp-brand-gradient);
+  font-size: var(--zapp-text-24);
+  font-weight: 780;
+  letter-spacing: -0.04em;
+}
+
 .cardActions {
   display: flex;
   align-items: center;

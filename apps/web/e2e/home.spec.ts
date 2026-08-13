@@ -220,6 +220,369 @@ test('renders the prompt-first home with default-off flags and deterministic sug
   }
 });
 
+test('renders real recent projects with thumbnail, fallback, statuses, and navigation', async ({ page }) => {
+  const items = [
+    {
+      archivedAt: null,
+      createdAt: '2026-08-13T18:00:00.000Z',
+      createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+      description: null,
+      id: 'proj-alpha',
+      name: 'Customer portal',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+      slug: 'customer-portal',
+      sourceType: 'prompt',
+      supportLevel: 'verified',
+    },
+    {
+      archivedAt: null,
+      createdAt: '2026-08-13T17:00:00.000Z',
+      createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+      description: null,
+      id: 'proj-beta',
+      name: 'Inventory planner',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+      slug: 'inventory-planner',
+      sourceType: 'prompt',
+      supportLevel: 'compatible',
+    },
+  ];
+  const summaries = [
+    {
+      deployReadiness: { findings: [], releaseId: 'rel-alpha', state: 'ready' },
+      lastActivityAt: '2026-08-13T18:04:00.000Z',
+      preview: { occurredAt: '2026-08-13T18:02:00.000Z', status: 'ready' },
+      previewThumbnail: {
+        alt: 'Preview of Customer portal',
+        artifactId: 'art-alpha',
+        capturedAt: '2026-08-13T18:03:00.000Z',
+        contentHash: 'b'.repeat(64),
+      },
+      production: {
+        occurredAt: '2026-08-13T18:03:00.000Z',
+        releaseId: 'rel-alpha',
+        status: 'healthy',
+      },
+      projectId: 'proj-alpha',
+    },
+    {
+      deployReadiness: null,
+      lastActivityAt: null,
+      preview: { occurredAt: null, status: 'not_started' },
+      previewThumbnail: null,
+      production: { occurredAt: null, releaseId: null, status: 'not_deployed' },
+      projectId: 'proj-beta',
+    },
+  ];
+
+  await page.route(`${apiBaseUrl}/v1/projects?*`, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({ items, nextCursor: null }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/summaries?*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ summaries }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/projects/proj-alpha/preview-thumbnail/art-alpha`,
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          thumbnail: {
+            content: 'iVBORw0KGgo=',
+            contentHash: 'b'.repeat(64),
+            contentType: 'image/png',
+            encoding: 'base64',
+          },
+        }),
+        contentType: 'application/json',
+        status: 200,
+      });
+    },
+  );
+
+  await signIn(page);
+
+  await expect(page.getByRole('heading', { name: 'My projects' })).toBeVisible();
+  await expect(page.getByRole('img', { name: 'Preview of Customer portal' })).toBeVisible();
+  await expect(page.getByLabel('Preview unavailable for Inventory planner')).toBeVisible();
+  await expect(page.getByText('Preview: Ready')).toBeVisible();
+  await expect(page.getByText('Production: Healthy')).toBeVisible();
+  await expect(page.getByText('Deploy readiness: Unavailable')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open Customer portal' })).toHaveAttribute(
+    'href',
+    '/projects/proj-alpha',
+  );
+  await expect(page.getByRole('link', { name: 'Browse all projects' })).toHaveAttribute(
+    'href',
+    '/projects',
+  );
+});
+
+test('retries a failed recent-project read without hiding the prompt workflow', async ({ page }) => {
+  let attempts = 0;
+  const item = {
+    archivedAt: null,
+    createdAt: '2026-08-13T18:00:00.000Z',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+    description: null,
+    id: 'proj-retry',
+    name: 'Recovered project',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    slug: 'recovered-project',
+    sourceType: 'prompt',
+    supportLevel: 'compatible',
+  };
+  await page.route(`${apiBaseUrl}/v1/projects?*`, async (route) => {
+    attempts += 1;
+    await route.fulfill({
+      body: attempts === 1
+        ? JSON.stringify({ error: { code: 'fixture_failure' } })
+        : JSON.stringify({ items: [item], nextCursor: null }),
+      contentType: 'application/json',
+      status: attempts === 1 ? 500 : 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/summaries?*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        summaries: [{
+          deployReadiness: null,
+          lastActivityAt: null,
+          preview: { occurredAt: null, status: 'not_started' },
+          previewThumbnail: null,
+          production: { occurredAt: null, releaseId: null, status: 'not_deployed' },
+          projectId: item.id,
+        }],
+      }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+
+  await signIn(page);
+  await expect(page.getByText('Projects could not load.')).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Describe your project' })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByRole('heading', { name: 'Recovered project' })).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
+test('preserves base project cards when summaries fail', async ({ page }) => {
+  const item = {
+    archivedAt: null,
+    createdAt: '2026-08-13T18:00:00.000Z',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+    description: null,
+    id: 'proj-summary-failure',
+    name: 'Base project',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    slug: 'base-project',
+    sourceType: 'prompt',
+    supportLevel: 'compatible',
+  };
+  await page.route(`${apiBaseUrl}/v1/projects?*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ items: [item], nextCursor: null }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/summaries?*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ error: { code: 'fixture_failure' } }),
+      contentType: 'application/json',
+      status: 500,
+    });
+  });
+
+  await signIn(page);
+  await expect(page.getByRole('heading', { name: 'Base project' })).toBeVisible();
+  await expect(page.getByLabel('Preview unavailable for Base project')).toBeVisible();
+  await expect(page.getByText('Project details could not load.')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open Base project' })).toBeVisible();
+});
+
+test('revokes thumbnail object URLs when a dashboard generation is refreshed', async ({ page }) => {
+  const revoked: string[] = [];
+  await page.exposeFunction('recordThumbnailRevocation', (url: string) => {
+    revoked.push(url);
+  });
+  await page.addInitScript(() => {
+    const original = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = (url: string): void => {
+      void (window as unknown as {
+        recordThumbnailRevocation: (value: string) => Promise<void>;
+      }).recordThumbnailRevocation(url);
+      original(url);
+    };
+  });
+
+  const item = {
+    archivedAt: null,
+    createdAt: '2026-08-13T18:00:00.000Z',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+    description: null,
+    id: 'proj-revocation',
+    name: 'Thumbnail project',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    slug: 'thumbnail-project',
+    sourceType: 'prompt',
+    supportLevel: 'verified',
+  };
+  const summary = {
+    deployReadiness: null,
+    lastActivityAt: null,
+    preview: { occurredAt: '2026-08-13T18:02:00.000Z', status: 'ready' },
+    previewThumbnail: {
+      alt: 'Preview of Thumbnail project',
+      artifactId: 'art-revocation',
+      capturedAt: '2026-08-13T18:03:00.000Z',
+      contentHash: 'b'.repeat(64),
+    },
+    production: { occurredAt: null, releaseId: null, status: 'not_deployed' },
+    projectId: item.id,
+  };
+  await page.route(`${apiBaseUrl}/v1/projects?*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ items: [item], nextCursor: null }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/summaries?*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ summaries: [summary] }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/projects/proj-revocation/preview-thumbnail/art-revocation`,
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          thumbnail: {
+            content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+P8LHAAAAAElFTkSuQmCC',
+            contentHash: 'b'.repeat(64),
+            contentType: 'image/png',
+            encoding: 'base64',
+          },
+        }),
+        contentType: 'application/json',
+        status: 200,
+      });
+    },
+  );
+
+  await signIn(page);
+  await expect(page.getByRole('img', { name: 'Preview of Thumbnail project' })).toBeVisible();
+  await page.getByRole('button', { name: 'Refresh projects' }).click();
+  await expect.poll(() => revoked.length).toBeGreaterThan(0);
+});
+
+test('does not render a late thumbnail after switching organizations', async ({ page }) => {
+  const alphaOrganization = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
+  const betaOrganization = 'org_01K27Q9C2W85CMN1V9S6Q3D4FE';
+  let thumbnailRequested = false;
+  let releaseThumbnail = (): void => undefined;
+  const thumbnailGate = new Promise<void>((resolve) => {
+    releaseThumbnail = resolve;
+  });
+  const projectFor = (organizationId: string) => ({
+    archivedAt: null,
+    createdAt: '2026-08-13T18:00:00.000Z',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+    description: null,
+    id: organizationId === alphaOrganization ? 'proj-late-alpha' : 'proj-current-beta',
+    name: organizationId === alphaOrganization ? 'Late Alpha project' : 'Current Beta project',
+    organizationId,
+    slug: organizationId === alphaOrganization ? 'late-alpha' : 'current-beta',
+    sourceType: 'prompt',
+    supportLevel: 'compatible',
+  });
+  await page.route(`${apiBaseUrl}/v1/projects?*`, async (route) => {
+    const organizationId = route.request().headers()['x-organization-id'] ?? alphaOrganization;
+    await route.fulfill({
+      body: JSON.stringify({ items: [projectFor(organizationId)], nextCursor: null }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/summaries?*`, async (route) => {
+    const organizationId = route.request().headers()['x-organization-id'] ?? alphaOrganization;
+    const project = projectFor(organizationId);
+    await route.fulfill({
+      body: JSON.stringify({
+        summaries: [{
+          deployReadiness: null,
+          lastActivityAt: null,
+          preview: {
+            occurredAt: organizationId === alphaOrganization
+              ? '2026-08-13T18:02:00.000Z'
+              : null,
+            status: organizationId === alphaOrganization ? 'ready' : 'not_started',
+          },
+          previewThumbnail: organizationId === alphaOrganization
+            ? {
+                alt: 'Preview of Late Alpha project',
+                artifactId: 'art-late-alpha',
+                capturedAt: '2026-08-13T18:03:00.000Z',
+                contentHash: 'b'.repeat(64),
+              }
+            : null,
+          production: { occurredAt: null, releaseId: null, status: 'not_deployed' },
+          projectId: project.id,
+        }],
+      }),
+      contentType: 'application/json',
+      status: 200,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/projects/proj-late-alpha/preview-thumbnail/art-late-alpha`,
+    async (route) => {
+      thumbnailRequested = true;
+      await thumbnailGate;
+      await route.fulfill({
+        body: JSON.stringify({
+          thumbnail: {
+            content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+P8LHAAAAAElFTkSuQmCC',
+            contentHash: 'b'.repeat(64),
+            contentType: 'image/png',
+            encoding: 'base64',
+          },
+        }),
+        contentType: 'application/json',
+        status: 200,
+      }).catch(() => undefined);
+    },
+  );
+
+  await signIn(page);
+  await expect(page.getByRole('heading', { name: 'Late Alpha project' })).toBeVisible();
+  await expect.poll(() => thumbnailRequested).toBe(true);
+  try {
+    await page.getByRole('combobox', { name: 'Organization' }).selectOption(betaOrganization);
+    await expect(page.getByText('Selected organization: Beta Org')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Current Beta project' })).toBeVisible();
+  } finally {
+    releaseThumbnail();
+  }
+  await expect(page.getByRole('img', { name: 'Preview of Late Alpha project' })).toHaveCount(0);
+  await expect(page.getByLabel('Preview unavailable for Current Beta project')).toBeVisible();
+});
+
 test('explains the disabled Mobile App option from a keyboard-accessible help control', async ({ page }) => {
   await signIn(page);
 
@@ -274,7 +637,8 @@ test('keeps short prompts disabled and fills without submitting from a suggestio
   await expect(submit).toBeEnabled();
   await expect(page).toHaveURL('/');
   expect((await fakeRequests(page)).filter((request) => {
-    return (request as { path?: string }).path === '/v1/projects';
+    const typed = request as { method?: string; path?: string };
+    return typed.method === 'POST' && typed.path === '/v1/projects';
   })).toHaveLength(0);
 
   await composer.fill(Array.from({ length: 12 }, (_, index) => `Line ${String(index + 1)}`).join('\n'));

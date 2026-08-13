@@ -6,38 +6,12 @@ import type { ReactElement } from 'react';
 
 import { createControlPlaneClient } from '../../lib/api';
 import styles from './projects.module.css';
+import { ProjectThumbnail } from './ProjectThumbnail';
+import { toProjectCardView } from './project-card-view';
 
 type Client = ReturnType<typeof createControlPlaneClient>;
 type Project = Awaited<ReturnType<Client['listProjects']>>['items'][number];
 type Summary = Awaited<ReturnType<Client['getProjectSummaries']>>['summaries'][number];
-
-const previewLabels = {
-  failed: 'Failed',
-  not_started: 'Not started',
-  ready: 'Ready',
-  starting: 'Starting',
-} as const;
-
-const productionLabels = {
-  deploying: 'Deploying',
-  failed: 'Failed',
-  healthy: 'Healthy',
-  not_deployed: 'Not deployed',
-} as const;
-
-const readinessLabels = {
-  blocked: 'Blocked',
-  ready: 'Ready',
-  warnings: 'Warnings',
-} as const;
-
-function activityLabel(value: string): string {
-  return new Intl.DateTimeFormat('en-US', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-    timeZone: 'UTC',
-  }).format(new Date(value));
-}
 
 export interface ProjectCardProps {
   readonly loadingSummary: boolean;
@@ -45,6 +19,7 @@ export interface ProjectCardProps {
   readonly project: Project;
   readonly summary: Summary | undefined;
   readonly summaryFailed: boolean;
+  readonly thumbnailUrl?: string | undefined;
 }
 
 export function ProjectCard({
@@ -53,9 +28,12 @@ export function ProjectCard({
   project,
   summary,
   summaryFailed,
+  thumbnailUrl,
 }: ProjectCardProps): ReactElement {
+  const view = toProjectCardView(project, summary);
   return (
     <Card as="article" className={styles.projectCard}>
+      <ProjectThumbnail alt={view.thumbnail?.alt} name={view.name} url={thumbnailUrl} />
       <h2>{project.name}</h2>
       <SupportLevelBadge level={project.supportLevel} />
 
@@ -73,34 +51,27 @@ export function ProjectCard({
       ) : (
         <div className={styles.summary}>
           <p className={styles.activity}>
-            {summary.lastActivityAt === null ? (
-              'No activity yet'
-            ) : (
-              <>
-                Last activity{' '}
-                <time dateTime={summary.lastActivityAt}>{activityLabel(summary.lastActivityAt)}</time>
-              </>
-            )}
+            {view.activity.dateTime === null
+              ? view.activity.label
+              : <time dateTime={view.activity.dateTime}>{view.activity.label}</time>}
           </p>
           <div className={styles.environmentStatuses}>
-            <p data-state={summary.preview.status}>
+            <p data-state={view.preview.state}>
               <span aria-hidden="true" data-status-icon="true">
                 ◇
               </span>{' '}
-              <span>{`Preview: ${previewLabels[summary.preview.status]}`}</span>
+              <span>{`Preview: ${view.preview.label}`}</span>
             </p>
-            <p data-state={summary.production.status}>
+            <p data-state={view.production.state}>
               <span aria-hidden="true" data-status-icon="true">
                 ◆
               </span>{' '}
-              <span>{`Production: ${productionLabels[summary.production.status]}`}</span>
+              <span>{`Production: ${view.production.label}`}</span>
             </p>
           </div>
           <p className={styles.readiness}>
             Deploy readiness:{' '}
-            {summary.deployReadiness === null
-              ? 'Unavailable'
-              : readinessLabels[summary.deployReadiness.state]}
+            {view.readiness.label}
           </p>
         </div>
       )}

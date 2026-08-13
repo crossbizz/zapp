@@ -11,10 +11,15 @@ import {
 } from '../lib/feature-flags';
 import { useAppSession } from '../hooks/useAppSession';
 import { Hero } from './home/Hero';
+import { useProjectDashboard } from './projects/useProjectDashboard';
 import { AppShell } from './shell/AppShell';
 
 export function SessionHome(): ReactElement {
   const session = useAppSession();
+  const projectDashboard = useProjectDashboard({
+    limit: 4,
+    organizationId: session.organizationId,
+  });
   const [featureFlags, setFeatureFlags] = useState<HomeFeatureFlags>();
   const [featureLoadFailed, setFeatureLoadFailed] = useState(false);
   const [featureAttempt, setFeatureAttempt] = useState(0);
@@ -81,6 +86,7 @@ export function SessionHome(): ReactElement {
       onSignOut={() => session.signOut(organizationId)}
       onSwitchOrganization={session.switchOrganization}
       session={readySession}
+      recentProjects={projectDashboard.projects}
     >
       {children}
     </AppShell>
@@ -109,6 +115,7 @@ export function SessionHome(): ReactElement {
       allowedModels={readySession.membership.allowedModels}
       flags={featureFlags}
       organizationId={organizationId}
+      projectDashboard={projectDashboard}
     />,
   );
 }

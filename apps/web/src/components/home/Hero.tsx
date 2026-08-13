@@ -5,7 +5,9 @@ import { useState, type KeyboardEvent, type ReactElement } from 'react';
 
 import { type CreateRunInput } from '../../lib/api';
 import type { HomeFeatureFlags } from '../../lib/feature-flags';
+import type { ProjectDashboardState } from '../projects/useProjectDashboard';
 import { PromptComposer } from './PromptComposer';
+import { RecentProjects } from './RecentProjects';
 import { SuggestionChips } from './SuggestionChips';
 import styles from './home.module.css';
 
@@ -23,12 +25,14 @@ export interface HeroProps {
   readonly allowedModels: readonly string[];
   readonly flags: HomeFeatureFlags;
   readonly organizationId: string;
+  readonly projectDashboard: ProjectDashboardState;
 }
 
 export function Hero({
   allowedModels,
   flags,
   organizationId,
+  projectDashboard,
 }: HeroProps): ReactElement {
   const [prompt, setPrompt] = useState('');
   const [appType, setAppType] = useState<AppType>('web');
@@ -104,6 +108,8 @@ export function Hero({
         </div>
         <SuggestionChips onSelect={setPrompt} />
       </div>
+
+      <RecentProjects dashboard={projectDashboard} />
 
       <aside className={styles.support} aria-label="Support">
         <button

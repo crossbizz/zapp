@@ -377,6 +377,106 @@
   background: var(--zapp-surface-subtle);
 }
 
+.recentPanel {
+  width: min(72rem, calc(100% - 2rem));
+  margin: 0 auto 5rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: 1.5rem;
+  padding: 1.5rem;
+  background: var(--zapp-surface-raised);
+  box-shadow: var(--zapp-shell-shadow);
+}
+
+.recentHeader {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.recentHeader h2,
+.recentEyebrow,
+.recentState,
+.recentFailure p {
+  margin: 0;
+}
+
+.recentHeader h2 {
+  margin-top: 0.25rem;
+  font-size: var(--zapp-text-24);
+  letter-spacing: -0.025em;
+}
+
+.recentEyebrow {
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 680;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.browseProjects {
+  border-radius: var(--zapp-radius-pill);
+  padding: 0.5rem 0.75rem;
+  color: var(--zapp-text-primary);
+  font-size: var(--zapp-text-14);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.recentActions {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.refreshProjects {
+  display: inline-grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-pill);
+  color: var(--zapp-text-secondary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  cursor: pointer;
+}
+
+.refreshProjects:hover,
+.refreshProjects:focus-visible {
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-subtle);
+}
+
+.browseProjects:hover,
+.browseProjects:focus-visible {
+  background: var(--zapp-surface-subtle);
+}
+
+.recentGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.recentState {
+  padding: 3rem 1rem;
+  color: var(--zapp-text-secondary);
+  text-align: center;
+}
+
+.recentFailure {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  border: 1px solid var(--zapp-status-danger);
+  border-radius: var(--zapp-radius-panel);
+  padding: 1rem;
+  color: var(--zapp-status-danger);
+}
+
 .homePill:focus-visible,
 .avatarButton:focus-visible,
 .menuItem:focus-visible,
@@ -421,5 +521,18 @@
     right: 0.5rem;
     left: 0.5rem;
     min-width: 0;
+  }
+
+  .recentPanel {
+    padding: 1rem;
+  }
+
+  .recentHeader {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .recentGrid {
+    grid-template-columns: 1fr;
   }
 }
