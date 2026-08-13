@@ -719,6 +719,13 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
                 : mine(orgId, data.deployments)
                     .filter((candidate) => candidate.releaseId === release.id)
                     .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())[0];
+            const thumbnail = mine(orgId, data.artifacts)
+              .filter((artifact) => artifact.projectId === project.id && artifact.type === 'screenshot')
+              .sort(
+                (left, right) =>
+                  right.createdAt.getTime() - left.createdAt.getTime() ||
+                  right.id.localeCompare(left.id),
+              )[0];
             return ProjectDashboardSummarySourceSchema.parse({
               projectId: project.id,
               lastActivityAt: visible[0]?.occurredAt ?? null,
@@ -741,8 +748,27 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
                       status: deployment.status,
                       occurredAt: deployment.completedAt ?? deployment.startedAt,
                     },
+              previewThumbnail:
+                thumbnail === undefined
+                  ? null
+                  : {
+                      artifactId: thumbnail.id,
+                      contentHash: thumbnail.contentHash,
+                      capturedAt: thumbnail.createdAt,
+                      alt: `Preview of ${project.name}`,
+                    },
             });
           }),
+        );
+      },
+      getPreviewThumbnail(projectId, artifactId) {
+        return Promise.resolve(
+          mine(orgId, data.artifacts).find(
+            (artifact) =>
+              artifact.projectId === projectId &&
+              artifact.id === artifactId &&
+              artifact.type === 'screenshot',
+          ),
         );
       },
     },

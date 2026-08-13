@@ -7421,6 +7421,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/preview-thumbnail/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    artifactId: string;
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            thumbnail: {
+                                content: string;
+                                contentHash: string;
+                                /** @enum {string} */
+                                contentType: "image/png" | "image/jpeg" | "image/webp";
+                                /** @enum {string} */
+                                encoding: "base64";
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/preview/shares": {
         parameters: {
             query?: never;
@@ -9361,6 +9444,13 @@ export interface paths {
                                     /** @enum {string} */
                                     status: "not_started" | "starting" | "ready" | "failed";
                                 };
+                                previewThumbnail: {
+                                    alt: string;
+                                    artifactId: string;
+                                    /** Format: date-time */
+                                    capturedAt: string;
+                                    contentHash: string;
+                                } | null;
                                 production: {
                                     /** Format: date-time */
                                     occurredAt: string | null;

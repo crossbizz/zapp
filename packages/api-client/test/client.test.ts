@@ -105,6 +105,42 @@ async function closesWithin(closed: Promise<void>, timeoutMs = 50): Promise<bool
 }
 
 describe('createZappClient', () => {
+  it('reads a tenant-scoped project preview thumbnail through the generated operation', async () => {
+    const sdk = await loadSdk();
+    expect(sdk?.createZappClient).toBeTypeOf('function');
+    if (sdk === undefined) return;
+    const projectId = 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NB';
+    const artifactId = 'art_01J8ME7YQZJ2V9Q0X3T5B6K7NE';
+    const fetch = vi.fn<FetchImplementation>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          thumbnail: {
+            contentType: 'image/png',
+            encoding: 'base64',
+            content: 'dGh1bWJuYWlsLXBuZw==',
+            contentHash: '735d5bf842ab1d16dd2794b8772c5ab11de1c1f9ffa20de749f59d1b0b7379b8',
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const client = sdk.createZappClient({
+      baseUrl: 'https://api.zapp.test',
+      getToken: () => 'thumbnail-token',
+      fetch,
+    });
+
+    await expect(
+      client.request('/v1/projects/{projectId}/preview-thumbnail/{artifactId}', {
+        method: 'GET',
+        path: { projectId, artifactId },
+      }),
+    ).resolves.toMatchObject({ thumbnail: { contentType: 'image/png' } });
+    expect(String(fetch.mock.calls[0]?.[0])).toBe(
+      `https://api.zapp.test/v1/projects/${projectId}/preview-thumbnail/${artifactId}`,
+    );
+  });
+
   it('calls the generated release-repair fork operation with its exact branch result', async () => {
     const sdk = await loadSdk();
     expect(sdk?.createZappClient).toBeTypeOf('function');

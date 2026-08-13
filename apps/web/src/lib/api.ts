@@ -181,6 +181,17 @@ export function createControlPlaneClient(organizationId?: string) {
         query,
         ...(signal === undefined ? {} : { signal }),
       }),
+    getProjectPreviewThumbnail: (
+      projectId: string,
+      artifactId: string,
+      signal?: AbortSignal,
+    ) =>
+      client.request('/v1/projects/{projectId}/preview-thumbnail/{artifactId}', {
+        method: 'GET',
+        path: { projectId, artifactId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
     getProject: (projectId: string, signal?: AbortSignal) =>
       client.request('/v1/projects/{projectId}', { method: 'GET', path: { projectId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
     updateProject: (projectId: string, body: { readonly archived?: boolean }, idempotencyKey?: string) =>

@@ -721,6 +721,8 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           // Fastify treats `summaries` as a malformed project id.
           registerProjectSummaryRoutes(app, {
             releasePort: tenant.releasePort ?? createUnavailableReleasePort(),
+            artifactReader:
+              tenant.runArtifactReader ?? createUnavailableRunArtifactReader(),
           });
           registerProjectDeletionRoutes(app, {
             store: tenant.projectDeletions ?? createUnavailableProjectDeletionRequestStore(),

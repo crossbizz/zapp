@@ -274,6 +274,7 @@ export interface TenantProjectRepository extends Omit<ProjectRepository, 'list'>
 /** Batch dashboard projection. `undefined` keeps a mixed tenant batch opaque. */
 export interface TenantProjectSummaryRepository {
   forProjects(projectIds: readonly string[]): Promise<ProjectDashboardSummarySource[] | undefined>;
+  getPreviewThumbnail(projectId: string, artifactId: string): Promise<Artifact | undefined>;
 }
 
 export interface TenantRepositoryRepository {
@@ -1047,6 +1048,10 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             readonly releaseCreatedAt: Date | null;
             readonly deploymentStatus: string | null;
             readonly deploymentOccurredAt: Date | null;
+            readonly thumbnailArtifactId: string | null;
+            readonly thumbnailContentHash: string | null;
+            readonly thumbnailCapturedAt: string | null;
+            readonly thumbnailAlt: string | null;
           }>(sql`
             with requested(project_id, ordinal) as (
               select * from unnest(array[${requested}]::text[]) with ordinality
@@ -1062,7 +1067,14 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               release.status as "releaseStatus",
               release.created_at as "releaseCreatedAt",
               deployment.status as "deploymentStatus",
-              coalesce(deployment.completed_at, deployment.started_at) as "deploymentOccurredAt"
+              coalesce(deployment.completed_at, deployment.started_at) as "deploymentOccurredAt",
+              thumbnail.id as "thumbnailArtifactId",
+              thumbnail.content_hash as "thumbnailContentHash",
+              thumbnail.created_at as "thumbnailCapturedAt",
+              case
+                when thumbnail.id is null then null
+                else 'Preview of ' || projects.name
+              end as "thumbnailAlt"
             from requested
             left join projects
               on projects.organization_id = ${orgId}
@@ -1141,6 +1153,15 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               order by deployments.started_at desc
               limit 1
             ) deployment on true
+            left join lateral (
+              select artifacts.id, artifacts.content_hash, artifacts.created_at
+              from artifacts
+              where artifacts.organization_id = ${orgId}
+                and artifacts.project_id = projects.id
+                and artifacts.type = 'screenshot'
+              order by artifacts.created_at desc, artifacts.id desc
+              limit 1
+            ) thumbnail on true
             order by requested.ordinal
           `);
           if (rows.some((row) => !row.found)) return undefined;
@@ -1163,7 +1184,34 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               row.deploymentStatus === null || row.deploymentOccurredAt === null
                 ? null
                 : { status: row.deploymentStatus, occurredAt: row.deploymentOccurredAt },
+            previewThumbnail:
+              row.thumbnailArtifactId === null ||
+              row.thumbnailContentHash === null ||
+              row.thumbnailCapturedAt === null ||
+              row.thumbnailAlt === null
+                ? null
+                : {
+                    artifactId: row.thumbnailArtifactId,
+                    contentHash: row.thumbnailContentHash,
+                    capturedAt: new Date(row.thumbnailCapturedAt),
+                    alt: row.thumbnailAlt,
+                  },
           }));
+        },
+        async getPreviewThumbnail(projectId, artifactId) {
+          const [row] = await db
+            .select()
+            .from(artifacts)
+            .where(
+              scoped(
+                artifacts.organizationId,
+                eq(artifacts.projectId, projectId),
+                eq(artifacts.id, artifactId),
+                eq(artifacts.type, 'screenshot'),
+              ),
+            )
+            .limit(1);
+          return row;
         },
       },
 

@@ -104,12 +104,20 @@ export const ProjectDashboardDeployReadinessSchema = z.object({
   findings: z.array(ReadinessFindingSchema),
 }).strict();
 
+export const ProjectPreviewThumbnailSchema = z.object({
+  artifactId: idSchema('art'),
+  contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
+  capturedAt: z.string().datetime(),
+  alt: z.string().min(1).max(160),
+}).strict();
+
 export const ProjectDashboardSummarySchema = z.object({
   projectId: idSchema('proj'),
   lastActivityAt: z.string().datetime().nullable(),
   preview: ProjectDashboardPreviewSchema,
   production: ProjectDashboardProductionSchema,
   deployReadiness: ProjectDashboardDeployReadinessSchema.nullable(),
+  previewThumbnail: ProjectPreviewThumbnailSchema.nullable(),
 }).strict();
 
 export const ProjectDashboardSummariesResponseSchema = z.object({
@@ -133,6 +141,12 @@ export const ProjectDashboardSummarySourceSchema = z.object({
   deployment: z.object({
     status: z.string(),
     occurredAt: z.date(),
+  }).strict().nullable(),
+  previewThumbnail: z.object({
+    artifactId: idSchema('art'),
+    contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
+    capturedAt: z.date(),
+    alt: z.string().min(1).max(160),
   }).strict().nullable(),
 }).strict();
 
@@ -170,6 +184,13 @@ export function toProjectDashboardSummary(
       releaseId: release?.id ?? null,
     },
     deployReadiness,
+    previewThumbnail:
+      source.previewThumbnail === null
+        ? null
+        : {
+            ...source.previewThumbnail,
+            capturedAt: source.previewThumbnail.capturedAt.toISOString(),
+          },
   });
 }
 

@@ -22,6 +22,7 @@ import { createDbOrganizationStore, type OrganizationStore } from '../../src/org
 import { createDbAuditSink } from '../../src/plugins/audit.js';
 import { IDEMPOTENT_REPLAY_HEADER } from '../../src/plugins/idempotency.js';
 import { ORGANIZATION_HEADER } from '../../src/plugins/tenant.js';
+import type { RunArtifactReaderPort } from '../../src/routes/run-artifacts.js';
 import { createTenantDbFactory } from '../../src/tenant/db.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
 import {
@@ -147,6 +148,7 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
   /** A second tenant, for the half of slug uniqueness that must *not* collide. */
   let neighbour: Member;
   let neighbourOrganizationId: string;
+  const artifactObjects = new Map<string, { readonly body: Buffer; readonly contentType: string }>();
 
   const noAudit = (): Promise<void> => Promise.resolve();
 
@@ -219,6 +221,14 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
         tenantDb: createTenantDbFactory(database.db),
         git,
         capabilityScan: fixtureCapabilityScan,
+        runArtifactReader: {
+          read(input) {
+            const object = artifactObjects.get(input.key);
+            if (object === undefined) return Promise.resolve(undefined);
+            if (object.body.length > input.maxBytes) return Promise.resolve('too_large');
+            return Promise.resolve(object);
+          },
+        } satisfies RunArtifactReaderPort,
       },
       limits: { config: TEST_RATE_LIMITS },
     });
@@ -251,6 +261,7 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
 
   beforeEach(() => {
     git.fail = false;
+    artifactObjects.clear();
   });
 
   afterAll(async () => {
@@ -522,6 +533,75 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
       'preview',
       'production',
     ]);
+  });
+
+  it('orders tenant-owned preview thumbnails with summaries and rejects foreign bytes', async () => {
+    const first = await create({ name: 'Thumbnail First', slug: 'thumbnail-first' });
+    const second = await create({ name: 'Thumbnail Second', slug: 'thumbnail-second' });
+    const foreign = await create(
+      { name: 'Foreign Thumbnail', slug: 'foreign-thumbnail' },
+      neighbour,
+      neighbourOrganizationId,
+    );
+    const olderId = newId('art');
+    const latestId = newId('art');
+    const secondId = newId('art');
+    const foreignId = newId('art');
+    const body = Buffer.from('thumbnail-png');
+    const contentHash = createHash('sha256').update(body).digest('hex');
+
+    await database.sql`
+      insert into artifacts (
+        id, organization_id, project_id, type, storage_ref, content_hash, metadata_json, created_at
+      ) values
+        (${olderId}, ${organizationId}, ${first.project.id}, 'screenshot',
+          ${`${organizationId}/${first.project.id}/older.png`}, ${contentHash}, '{}'::jsonb,
+          '2026-08-13T18:01:00.000Z'),
+        (${latestId}, ${organizationId}, ${first.project.id}, 'screenshot',
+          ${`${organizationId}/${first.project.id}/latest.png`}, ${contentHash}, '{}'::jsonb,
+          '2026-08-13T18:02:00.000Z'),
+        (${secondId}, ${organizationId}, ${second.project.id}, 'screenshot',
+          ${`${organizationId}/${second.project.id}/preview.png`}, ${contentHash}, '{}'::jsonb,
+          '2026-08-13T18:03:00.000Z'),
+        (${foreignId}, ${neighbourOrganizationId}, ${foreign.project.id}, 'screenshot',
+          ${`${neighbourOrganizationId}/${foreign.project.id}/preview.png`}, ${contentHash}, '{}'::jsonb,
+          '2026-08-13T18:04:00.000Z')
+    `;
+    artifactObjects.set(`${organizationId}/${first.project.id}/latest.png`, {
+      body,
+      contentType: 'image/png',
+    });
+
+    const summaries = await app.inject({
+      method: 'GET',
+      url: `/v1/projects/summaries?projectId=${second.project.id}&projectId=${first.project.id}`,
+      headers: as(owner, organizationId),
+    });
+
+    expect(summaries.statusCode, summaries.body).toBe(200);
+    expect(
+      summaries.json<{
+        summaries: { projectId: string; previewThumbnail: { artifactId: string } | null }[];
+      }>().summaries,
+    ).toMatchObject([
+      { projectId: second.project.id, previewThumbnail: { artifactId: secondId } },
+      { projectId: first.project.id, previewThumbnail: { artifactId: latestId } },
+    ]);
+
+    const localBytes = await app.inject({
+      method: 'GET',
+      url: `/v1/projects/${first.project.id}/preview-thumbnail/${latestId}`,
+      headers: as(owner, organizationId),
+    });
+    expect(localBytes.statusCode, localBytes.body).toBe(200);
+
+    const foreignBytes = await app.inject({
+      method: 'GET',
+      url: `/v1/projects/${foreign.project.id}/preview-thumbnail/${foreignId}`,
+      headers: as(owner, organizationId),
+    });
+    expect(foreignBytes.statusCode).toBe(404);
+    expect(ApiErrorSchema.parse(foreignBytes.json()).error.code).toBe('project_not_found');
   });
 
   it('answers the contract route with the newest version, and 404 until there is one', async () => {

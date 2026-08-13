@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { newId, PreviewLifecycleEventSchema, type AgentEvent } from '@zapp/contracts';
-import type { AgentEventRow, Deployment, Release } from '@zapp/db';
+import type { AgentEventRow, Artifact, Deployment, Release } from '@zapp/db';
 
 import type { AuthIdentity } from '../src/auth/port.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
+import {
+  MAX_PUBLIC_RUN_ARTIFACT_BYTES,
+  type RunArtifactReaderPort,
+} from '../src/routes/run-artifacts.js';
 import type { ReleasePort } from '../src/routes/releases.js';
 import { ProjectDashboardSummarySchema } from '../src/tenant/view.js';
 import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
@@ -29,9 +33,16 @@ interface Wired {
   readonly organizationId: string;
 }
 
-async function wire(releasePort?: ReleasePort): Promise<Wired> {
+async function wire(
+  releasePort?: ReleasePort,
+  artifactReader?: RunArtifactReaderPort,
+): Promise<Wired> {
   const data = new InMemoryTenantData();
-  const built = buildHarness({ tenantDb: data.factory, ...(releasePort === undefined ? {} : { releasePort }) });
+  const built = buildHarness({
+    tenantDb: data.factory,
+    ...(releasePort === undefined ? {} : { releasePort }),
+    ...(artifactReader === undefined ? {} : { artifactReader }),
+  });
   harnesses.push(built);
   const owner = await signIn(built, OWNER);
   const organization = await built.app.inject({
@@ -47,6 +58,28 @@ async function wire(releasePort?: ReleasePort): Promise<Wired> {
     owner,
     organizationId: organization.json<{ organization: { id: string } }>().organization.id,
   };
+}
+
+function addScreenshot(
+  wired: Wired,
+  projectId: string,
+  overrides: Partial<Artifact> = {},
+): Artifact {
+  const artifact: Artifact = {
+    id: newId('art'),
+    organizationId: wired.organizationId,
+    projectId,
+    runId: null,
+    taskId: null,
+    type: 'screenshot',
+    storageRef: `${wired.organizationId}/${projectId}/preview.png`,
+    contentHash: '735d5bf842ab1d16dd2794b8772c5ab11de1c1f9ffa20de749f59d1b0b7379b8',
+    metadataJson: {},
+    createdAt: new Date('2026-08-13T18:04:00.000Z'),
+    ...overrides,
+  };
+  wired.data.artifacts.push(artifact);
+  return artifact;
 }
 
 function addEvent(
@@ -171,6 +204,7 @@ describe('GET /v1/projects/summaries', () => {
           preview: { status: 'not_started', occurredAt: null },
           production: { status: 'not_deployed', occurredAt: null, releaseId: null },
           deployReadiness: null,
+          previewThumbnail: null,
         },
         {
           projectId: second.id,
@@ -178,6 +212,7 @@ describe('GET /v1/projects/summaries', () => {
           preview: { status: 'not_started', occurredAt: null },
           production: { status: 'not_deployed', occurredAt: null, releaseId: null },
           deployReadiness: null,
+          previewThumbnail: null,
         },
       ],
     });
@@ -221,6 +256,43 @@ describe('GET /v1/projects/summaries', () => {
             releaseId: release.id,
           },
           deployReadiness: { releaseId: release.id, state: 'ready', findings: [] },
+          previewThumbnail: null,
+        },
+      ],
+    });
+  });
+
+  it('projects the latest tenant-owned screenshot as an optional thumbnail', async () => {
+    const wired = await wire();
+    const project = await createProject(wired, 'Alpha Project');
+    addScreenshot(wired, project.id, {
+      id: newId('art'),
+      createdAt: new Date('2026-08-13T18:03:00.000Z'),
+    });
+    const latest = addScreenshot(wired, project.id);
+    addScreenshot(wired, project.id, {
+      id: newId('art'),
+      organizationId: newId('org'),
+      createdAt: new Date('2026-08-13T18:05:00.000Z'),
+    });
+
+    const response = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/summaries?projectId=${project.id}`,
+      headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: wired.organizationId },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      summaries: [
+        {
+          projectId: project.id,
+          previewThumbnail: {
+            artifactId: latest.id,
+            contentHash: latest.contentHash,
+            capturedAt: '2026-08-13T18:04:00.000Z',
+            alt: 'Preview of Alpha Project',
+          },
         },
       ],
     });
@@ -374,6 +446,7 @@ describe('GET /v1/projects/summaries', () => {
       preview: { status: 'not_started' as const, occurredAt: null },
       production: { status: 'healthy' as const, occurredAt: null, releaseId: newId('rel') },
       deployReadiness: null,
+      previewThumbnail: null,
     };
 
     expect(ProjectDashboardSummarySchema.safeParse(valid).success).toBe(true);
@@ -444,5 +517,120 @@ describe('GET /v1/projects/summaries', () => {
         },
       ],
     });
+  });
+});
+
+describe('GET /v1/projects/:projectId/preview-thumbnail/:artifactId', () => {
+  it('returns bounded image bytes for the exact tenant project screenshot', async () => {
+    const reader: RunArtifactReaderPort = {
+      read: vi.fn(() => Promise.resolve({
+        body: Buffer.from('thumbnail-png'),
+        contentType: 'image/png',
+      })),
+    };
+    const wired = await wire(undefined, reader);
+    const project = await createProject(wired, 'Thumbnail Project');
+    const screenshot = addScreenshot(wired, project.id);
+
+    const response = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/${project.id}/preview-thumbnail/${screenshot.id}`,
+      headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: wired.organizationId },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      thumbnail: {
+        contentType: 'image/png',
+        encoding: 'base64',
+        content: 'dGh1bWJuYWlsLXBuZw==',
+        contentHash: '735d5bf842ab1d16dd2794b8772c5ab11de1c1f9ffa20de749f59d1b0b7379b8',
+      },
+    });
+  });
+
+  it.each([
+    ['foreign organization', { organizationId: newId('org') }],
+    ['another project', { projectId: newId('proj') }],
+    ['non-screenshot type', { type: 'trace' }],
+  ] as const)('returns an opaque 404 for a %s artifact', async (_label, overrides) => {
+    const wired = await wire(undefined, {
+      read: vi.fn(() => Promise.resolve({ body: Buffer.from('thumbnail-png'), contentType: 'image/png' })),
+    });
+    const project = await createProject(wired, 'Opaque Thumbnail Project');
+    const artifact = addScreenshot(wired, project.id, overrides);
+
+    const response = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/${project.id}/preview-thumbnail/${artifact.id}`,
+      headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: wired.organizationId },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: { code: 'project_not_found' } });
+  });
+
+  it.each([
+    ['missing storage', undefined, 'project_not_found', 404],
+    ['oversized storage', 'too_large', 'run_artifact_too_large', 413],
+    [
+      'unsupported media type',
+      { body: Buffer.from('thumbnail-png'), contentType: 'text/html' },
+      'preview_thumbnail_content_invalid',
+      409,
+    ],
+  ] as const)('rejects %s', async (_label, result, code, statusCode) => {
+    const wired = await wire(undefined, { read: vi.fn(() => Promise.resolve(result)) });
+    const project = await createProject(wired, 'Invalid Thumbnail Project');
+    const screenshot = addScreenshot(wired, project.id);
+
+    const response = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/${project.id}/preview-thumbnail/${screenshot.id}`,
+      headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: wired.organizationId },
+    });
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.json()).toMatchObject({ error: { code } });
+  });
+
+  it('rejects a body whose SHA-256 does not match the screenshot row', async () => {
+    const wired = await wire(undefined, {
+      read: vi.fn(() => Promise.resolve({ body: Buffer.from('changed'), contentType: 'image/webp' })),
+    });
+    const project = await createProject(wired, 'Hash Thumbnail Project');
+    const screenshot = addScreenshot(wired, project.id);
+
+    const response = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/${project.id}/preview-thumbnail/${screenshot.id}`,
+      headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: wired.organizationId },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: 'preview_thumbnail_content_invalid' },
+    });
+  });
+
+  it('passes the public artifact byte ceiling to storage', async () => {
+    let requestedMaxBytes: number | undefined;
+    const wired = await wire(undefined, {
+      read: vi.fn((input: Parameters<RunArtifactReaderPort['read']>[0]) => {
+        requestedMaxBytes = input.maxBytes;
+        return Promise.resolve({ body: Buffer.from('thumbnail-png'), contentType: 'image/jpeg' });
+      }),
+    });
+    const project = await createProject(wired, 'Bounded Thumbnail Project');
+    const screenshot = addScreenshot(wired, project.id);
+
+    const response = await wired.built.app.inject({
+      method: 'GET',
+      url: `/v1/projects/${project.id}/preview-thumbnail/${screenshot.id}`,
+      headers: { ...wired.owner.headers, [ORGANIZATION_HEADER]: wired.organizationId },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(requestedMaxBytes).toBe(MAX_PUBLIC_RUN_ARTIFACT_BYTES);
   });
 });
