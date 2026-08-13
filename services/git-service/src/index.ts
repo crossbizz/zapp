@@ -69,6 +69,28 @@ export {
 export { GIT_SERVICE_AUDIENCE, SERVICE_TOKEN_HEADER } from './internal/service-auth.js';
 export { GIT_CALLERS } from './routes.js';
 export {
+  ApprovedTemplateNotFoundError,
+  createRepositoryFeatures,
+  type CompareRepositoryCommitsInput,
+  type RepositoryFeatures,
+  type RepositoryFeaturesOptions,
+  type SeedApprovedTemplateInput,
+} from './provider/repository-features.js';
+export {
+  CommitComparisonNotFoundError,
+  CommitComparisonTooLargeError,
+  MAX_COMMIT_PATCH_BYTES,
+  RepositoryOperationError,
+  RepositorySeedConflictError,
+  createRepositoryOperations,
+  type CommitComparison,
+  type CompareCommitsInput,
+  type RepositoryCredential,
+  type RepositoryOperations,
+  type RepositorySeedResult,
+  type SeedRepositoryInput,
+} from './provider/repository-operations.js';
+export {
   createTemplateRegistry,
   loadTemplateRegistry,
   type ApprovedTemplateRegistry,

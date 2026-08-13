@@ -1,6 +1,7 @@
 import type { ServiceName } from '@zapp/config';
 import {
   BranchRefSchema,
+  CommitShaSchema,
   CommitDetailSchema,
   CommitSummarySchema,
   CreatedRepositorySchema,
@@ -14,10 +15,7 @@ import type { AppInstance } from './app.js';
 import { ApiError } from './errors.js';
 import { ForgejoError, redactToken } from './forgejo/client.js';
 import { GitProviderConflictError, type GitProvider } from './provider/types.js';
-import {
-  GitMirrorConflictError,
-  type GitMirror,
-} from './import/mirror.js';
+import { GitMirrorConflictError, type GitMirror } from './import/mirror.js';
 import {
   DEFAULT_TOKEN_TTL_SECONDS,
   MAX_TOKEN_TTL_SECONDS,
@@ -26,6 +24,16 @@ import {
 } from './tokens.js';
 import { serviceOf } from './internal/service-auth.js';
 import type { GitBundleExporter } from './export.js';
+import {
+  ApprovedTemplateNotFoundError,
+  type RepositoryFeatures,
+} from './provider/repository-features.js';
+import {
+  CommitComparisonNotFoundError,
+  CommitComparisonTooLargeError,
+  MAX_COMMIT_PATCH_BYTES,
+  RepositorySeedConflictError,
+} from './provider/repository-operations.js';
 
 /**
  * `/internal/git/*` — the whole surface of this service (plan 06 GIT-2).
@@ -115,6 +123,49 @@ const ShaParams = ProjectParams.extend({
   sha: z.string().regex(/^[0-9a-f]{40}$/, 'Invalid commit sha'),
 });
 
+const CompareCommitsQuery = z
+  .object({
+    beforeSha: CommitShaSchema,
+    afterSha: CommitShaSchema,
+  })
+  .strict();
+
+const CommitComparisonResponse = z
+  .object({
+    beforeSha: CommitShaSchema,
+    afterSha: CommitShaSchema,
+    patch: z.string().max(MAX_COMMIT_PATCH_BYTES),
+  })
+  .strict();
+
+const TemplateSeedBody = z
+  .object({
+    templateSlug: z
+      .string()
+      .min(1)
+      .max(63)
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
+  })
+  .strict();
+
+const TemplateSeedResponse = z
+  .object({
+    templateSlug: z.string(),
+    headCommitSha: CommitShaSchema,
+    replayed: z.boolean(),
+  })
+  .strict();
+
+const IdempotencyKeyHeaders = z
+  .object({
+    'idempotency-key': z
+      .string()
+      .min(8)
+      .max(255)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+  })
+  .passthrough();
+
 /**
  * The wire form of a commit. Dates cross HTTP as ISO strings, so the schemas
  * from `@zapp/contracts` — which describe the *provider* contract, where a date
@@ -202,6 +253,7 @@ export interface GitRoutesDeps {
    * envelope without an ephemeral user being created anywhere.
    */
   readonly tokens: TokenService;
+  readonly repositoryFeatures: RepositoryFeatures;
   /** Overridable so a test can prove a caller outside the allowlist is refused. */
   readonly callers?: readonly ServiceName[];
   readonly mirror?: GitMirror;
@@ -210,7 +262,7 @@ export interface GitRoutesDeps {
 }
 
 export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
-  const { provider, tokens } = deps;
+  const { provider, tokens, repositoryFeatures } = deps;
   const callers = deps.callers ?? GIT_CALLERS;
   const guard = (): ReturnType<AppInstance['requireService']> => app.requireService({ callers });
   const importProvider = provider as Partial<ImportGitProvider>;
@@ -225,15 +277,7 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
       preHandler: [app.requireService({ callers: ['control-api'] })],
       schema: {
         params: ProjectParams,
-        headers: z
-          .object({
-            'idempotency-key': z
-              .string()
-              .min(8)
-              .max(255)
-              .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
-          })
-          .passthrough(),
+        headers: IdempotencyKeyHeaders,
       },
     },
     async (request, reply) => {
@@ -282,6 +326,101 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
       'The git provider could not complete that operation.',
     );
   }
+
+  function refuseRepositoryFeature(
+    request: { log: AppInstance['log'] },
+    error: unknown,
+    operation: 'compareCommits' | 'seedApprovedTemplate',
+  ): never {
+    if (error instanceof CommitComparisonTooLargeError) {
+      throw new ApiError(
+        'git_comparison_too_large',
+        413,
+        'That commit comparison exceeds the response limit.',
+      );
+    }
+    if (error instanceof CommitComparisonNotFoundError) {
+      throw new ApiError('git_commit_not_found', 404, 'One or both commits do not exist.');
+    }
+    if (error instanceof ApprovedTemplateNotFoundError) {
+      throw new ApiError(
+        'approved_template_not_found',
+        404,
+        'That approved template does not exist.',
+      );
+    }
+    if (error instanceof RepositorySeedConflictError) {
+      throw new ApiError(
+        'git_seed_conflict',
+        409,
+        'The repository already contains different history or a different template seed.',
+      );
+    }
+    request.log.error(
+      {
+        errorCode: 'git_repository_operation_failed',
+        operation,
+        errorName: error instanceof Error ? error.name : 'unknown',
+      },
+      'the repository operation failed',
+    );
+    throw new ApiError(
+      'git_repository_operation_failed',
+      502,
+      'The git provider could not complete that repository operation.',
+    );
+  }
+
+  app.get(
+    '/internal/git/repositories/:organizationId/:projectId/compare',
+    {
+      preHandler: [app.requireService({ callers: ['control-api'] })],
+      schema: {
+        params: ProjectParams,
+        querystring: CompareCommitsQuery,
+        response: { 200: CommitComparisonResponse },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const comparison = await repositoryFeatures.compare({
+          ...request.params,
+          ...request.query,
+        });
+        return await reply.header('cache-control', 'no-store').send(comparison);
+      } catch (error) {
+        return refuseRepositoryFeature(request, error, 'compareCommits');
+      }
+    },
+  );
+
+  app.post(
+    '/internal/git/repositories/:organizationId/:projectId/template-seed',
+    {
+      preHandler: [app.requireService({ callers: ['control-api'] })],
+      schema: {
+        params: ProjectParams,
+        headers: IdempotencyKeyHeaders,
+        body: TemplateSeedBody,
+        response: { 200: TemplateSeedResponse },
+      },
+    },
+    async (request, reply) => {
+      try {
+        const result = await repositoryFeatures.seedApprovedTemplate({
+          ...request.params,
+          templateSlug: request.body.templateSlug,
+          operationKey: request.headers['idempotency-key'],
+        });
+        return await reply.header('cache-control', 'no-store').send({
+          templateSlug: request.body.templateSlug,
+          ...result,
+        });
+      } catch (error) {
+        return refuseRepositoryFeature(request, error, 'seedApprovedTemplate');
+      }
+    },
+  );
 
   app.post(
     '/internal/git/repositories',
@@ -373,7 +512,10 @@ export function registerGitRoutes(app: AppInstance, deps: GitRoutesDeps): void {
             headCommitSha: result.headCommitSha,
           });
         } catch (error) {
-          if (error instanceof GitMirrorConflictError || error instanceof GitProviderConflictError) {
+          if (
+            error instanceof GitMirrorConflictError ||
+            error instanceof GitProviderConflictError
+          ) {
             throw new ApiError(
               'git_import_conflict',
               409,

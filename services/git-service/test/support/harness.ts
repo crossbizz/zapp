@@ -15,6 +15,11 @@ import type {
 } from '../../src/provider/types.js';
 import type { MintedToken, TokenService } from '../../src/tokens.js';
 import type { GitBundleExporter } from '../../src/export.js';
+import type { RepositoryFeatures } from '../../src/provider/repository-features.js';
+import type {
+  CommitComparison,
+  RepositorySeedResult,
+} from '../../src/provider/repository-operations.js';
 
 /** Long enough to clear the HS256 floor `loadServiceTokenConfig` enforces. */
 export const SERVICE_SECRET = 'test-service-secret-that-is-long-enough-32';
@@ -204,11 +209,49 @@ export function createFakeTokenService(): FakeTokenService {
   return fake;
 }
 
+export interface FakeRepositoryFeatures extends RepositoryFeatures {
+  readonly calls: readonly RecordedProviderCall[];
+  comparison: CommitComparison;
+  seedResult: RepositorySeedResult;
+  failNext(method: string, error: Error): void;
+}
+
+export function createFakeRepositoryFeatures(): FakeRepositoryFeatures {
+  const calls: RecordedProviderCall[] = [];
+  const failures = new Map<string, Error>();
+  function record(method: string, input: unknown): void {
+    calls.push({ method, args: [input] });
+    const failure = failures.get(method);
+    if (failure !== undefined) {
+      failures.delete(method);
+      throw failure;
+    }
+  }
+  const fake: FakeRepositoryFeatures = {
+    calls,
+    comparison: { beforeSha: 'a'.repeat(40), afterSha: 'b'.repeat(40), patch: 'patch' },
+    seedResult: { headCommitSha: 'c'.repeat(40), replayed: false },
+    failNext(method, error) {
+      failures.set(method, error);
+    },
+    compare(input) {
+      record('compare', input);
+      return Promise.resolve(fake.comparison);
+    },
+    seedApprovedTemplate(input) {
+      record('seedApprovedTemplate', input);
+      return Promise.resolve(fake.seedResult);
+    },
+  };
+  return fake;
+}
+
 export interface Harness {
   readonly app: AppInstance;
   readonly provider: FakeGitProvider;
   readonly tokens: FakeTokenService;
   readonly audit: RecordingGitAuditSink;
+  readonly features: FakeRepositoryFeatures;
 }
 
 /** The app as it ships, with the provider and the token service substituted. */
@@ -222,16 +265,16 @@ export function harness(
   const provider = createFakeProvider();
   const tokens = createFakeTokenService();
   const audit = createRecordingGitAuditSink();
+  const features = createFakeRepositoryFeatures();
   const app = buildApp({
     logger: false,
     provider,
     tokens,
     signer,
+    repositoryFeatures: features,
     ...(options.callers === undefined ? {} : { callers: options.callers }),
     ...(options.now === undefined ? {} : { now: options.now }),
-    ...(options.bundleExporter === undefined
-      ? {}
-      : { bundleExporter: options.bundleExporter }),
+    ...(options.bundleExporter === undefined ? {} : { bundleExporter: options.bundleExporter }),
   });
-  return { app, provider, tokens, audit };
+  return { app, provider, tokens, audit, features };
 }

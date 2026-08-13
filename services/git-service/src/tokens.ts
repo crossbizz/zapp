@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import type { ServiceName } from '@zapp/config';
+import { ApprovedTemplateSourceSchema } from '@zapp/config/templates';
 import { internalRepoRef, parseInternalRepoRef } from '@zapp/contracts';
 
 import type { GitAuditSink } from './audit.js';
@@ -160,6 +161,15 @@ export interface MintRepositoryTokenInput extends MintTokenInput {
   }) => Promise<void>;
 }
 
+export interface MintApprovedTemplateSourceInput {
+  readonly organizationId: string;
+  readonly projectId: string;
+  /** Validated platform-owned source; never accepted from an HTTP request. */
+  readonly repositoryRef: string;
+  readonly ttlSec?: number;
+  readonly requestingService: ServiceName;
+}
+
 export interface TokenService {
   /** @throws Error for a TTL over the ceiling; {@link ForgejoError} if the Git host refuses. */
   mint(input: MintTokenInput): Promise<MintedToken>;
@@ -190,6 +200,18 @@ export interface TokenService {
   sweepExpired(now?: Date): Promise<number>;
 }
 
+/** The additional source-only capability held by the deployed composition. */
+export interface ApprovedTemplateTokenService extends TokenService {
+  mintApprovedTemplateSource(input: MintApprovedTemplateSourceInput): Promise<MintedToken>;
+  revokeApprovedTemplateSource(input: {
+    readonly organizationId: string;
+    readonly projectId: string;
+    readonly repositoryRef: string;
+    readonly username: string;
+    readonly requestingService: ServiceName;
+  }): Promise<void>;
+}
+
 interface UserResponse {
   readonly login?: string;
 }
@@ -216,12 +238,15 @@ export interface TokenServiceOptions {
   readonly now?: () => Date;
 }
 
-export function createTokenService(options: TokenServiceOptions): TokenService {
+export function createTokenService(options: TokenServiceOptions): ApprovedTemplateTokenService {
   const { client, audit } = options;
   const now = options.now ?? ((): Date => new Date());
 
   function repoPath(ref: string): string {
-    const { owner, name } = parseInternalRepoRef(ref);
+    const [owner, name, ...extra] = ref.split('/');
+    if (owner === undefined || name === undefined || extra.length !== 0) {
+      throw new Error('Invalid repository ref');
+    }
     return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
   }
 
@@ -234,6 +259,29 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
       // could take with it.
       path: `/admin/users/${encodeURIComponent(username)}?purge=true`,
       allow: [404],
+    });
+  }
+
+  async function revokeOperationCredential(
+    input: {
+      readonly organizationId: string;
+      readonly projectId: string;
+      readonly username: string;
+      readonly requestingService: ServiceName;
+    },
+    repositoryRef: string,
+  ): Promise<void> {
+    if (expiryOf(input.username) === undefined) {
+      throw new Error('Refusing to revoke a non-ephemeral Git identity');
+    }
+    await deleteUser(input.username);
+    await audit.record({
+      organizationId: input.organizationId,
+      action: 'git_token.revoked',
+      projectId: input.projectId,
+      requestingService: input.requestingService,
+      occurredAt: now(),
+      metadata: { internalRepoRef: repositoryRef, revoked: 1 },
     });
   }
 
@@ -367,6 +415,31 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
       );
     },
 
+    async mintApprovedTemplateSource(input): Promise<MintedToken> {
+      const repositoryRef = ApprovedTemplateSourceSchema.shape.repoRef.parse(input.repositoryRef);
+      const path = repoPath(repositoryRef);
+      const repository = await client.send<RepositoryResponse>({ method: 'GET', path });
+      const expectedRepositoryId = repository.body?.id;
+      if (
+        expectedRepositoryId === undefined ||
+        !Number.isInteger(expectedRepositoryId) ||
+        expectedRepositoryId <= 0
+      ) {
+        throw new ForgejoError('GET', path, 0, 'repository response carried no valid id');
+      }
+      return await mintRepositoryToken(
+        {
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          access: 'read',
+          ...(input.ttlSec === undefined ? {} : { ttlSec: input.ttlSec }),
+          requestingService: input.requestingService,
+        },
+        repositoryRef,
+        expectedRepositoryId,
+      );
+    },
+
     async revokeForProject(input): Promise<number> {
       const ref = internalRepoRef(input);
       const ephemeral: string[] = [];
@@ -431,19 +504,13 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
     },
 
     async revokeEphemeral(input): Promise<void> {
-      if (expiryOf(input.username) === undefined) {
-        throw new Error('Refusing to revoke a non-ephemeral Git identity');
-      }
       const ref = internalRepoRef(input);
-      await deleteUser(input.username);
-      await audit.record({
-        organizationId: input.organizationId,
-        action: 'git_token.revoked',
-        projectId: input.projectId,
-        requestingService: input.requestingService,
-        occurredAt: now(),
-        metadata: { internalRepoRef: ref, revoked: 1 },
-      });
+      await revokeOperationCredential(input, ref);
+    },
+
+    async revokeApprovedTemplateSource(input): Promise<void> {
+      const repositoryRef = ApprovedTemplateSourceSchema.shape.repoRef.parse(input.repositoryRef);
+      await revokeOperationCredential(input, repositoryRef);
     },
 
     async sweepExpired(at?: Date): Promise<number> {

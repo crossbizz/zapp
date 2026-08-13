@@ -21,6 +21,7 @@ import type { GitMirror } from './import/mirror.js';
 import type { GitBundleExporter } from './export.js';
 import { registerGitRoutes, type ImportBranchPoll } from './routes.js';
 import type { TokenService } from './tokens.js';
+import type { RepositoryFeatures } from './provider/repository-features.js';
 
 const httpServerTelemetry = createHttpServerTelemetry();
 
@@ -49,6 +50,7 @@ export interface AppDeps {
    * assertions need a Git host.
    */
   readonly tokens: TokenService;
+  readonly repositoryFeatures: RepositoryFeatures;
   /**
    * Verifies the service tokens every route requires. Not optional: this service
    * has no user-facing surface at all, so a deployment that cannot verify a
@@ -131,6 +133,7 @@ export function buildApp(deps: AppDeps): AppInstance {
     registerGitRoutes(app, {
       provider: deps.provider,
       tokens: deps.tokens,
+      repositoryFeatures: deps.repositoryFeatures,
       ...(deps.callers === undefined ? {} : { callers: deps.callers }),
       ...(deps.mirror === undefined ? {} : { mirror: deps.mirror }),
       ...(deps.importPoll === undefined ? {} : { importPoll: deps.importPoll }),
