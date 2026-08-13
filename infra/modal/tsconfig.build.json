@@ -4,5 +4,5 @@
     "noEmit": false,
     "outDir": "dist"
   },
-  "include": ["images", "publish.ts"]
+  "include": ["images", "publish.ts", "render-oci.ts"]
 }

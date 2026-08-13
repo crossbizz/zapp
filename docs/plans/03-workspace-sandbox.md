@@ -477,8 +477,14 @@ Execution expansion (2026-08-12):
 **Files:** Modify provider-neutral image recipe, GHCR workflow, image lock/config and tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: publish the existing recipe to public GHCR and record an immutable `tag@sha256:digest`; structural tests reject absent or mutable Docker references; run one final registry pull acceptance.
-- [ ] Commit: `build(images): publish immutable forge node mirror`
+- [x] Binding behavior: publish the existing recipe to public GHCR and record an immutable `tag@sha256:digest`; structural tests reject absent or mutable Docker references; run one final registry pull acceptance.
+- [x] Commit: `build(images): publish immutable forge node mirror`
+
+Execution expansion (2026-08-12):
+
+- [x] **17a RED — immutable lock:** reject an absent mirror, a mutable tag, a digest-only reference, and any registry/repository other than the public zapp GHCR image.
+- [x] **17b GREEN — provider-neutral build:** render the existing validated `forge-node-base` recipe as a Dockerfile without importing a provider SDK, and publish the exact source revision from a least-privilege GHCR workflow.
+- [x] **17c acceptance:** observe the registry digest, record `tag@sha256:digest`, pull that exact public reference once, then run image tests plus lint/typecheck/build.
 
 ## Testing strategy
 - Unit vs fakes for state machines/policies; env-gated integration against real Modal dev env (WS-4, WS-5, WS-7, WS-12); nightly E2E (WS-14).
@@ -493,6 +499,7 @@ Execution expansion (2026-08-12):
 
 ## Execution log
 
+- 2026-08-12 WS-17 done — Published the existing provider-neutral forge-node-base recipe to public GHCR from a package-write-only workflow, recorded the observed tag@sha256 digest, and anonymously pulled that exact manifest; the first two cold attempts exposed missing build-order dependencies before the successful run.
 - 2026-08-12 WS-16 done — Added service-authenticated bounded editor reads/listing and keyed attributed compare-token edits with exact manual commit and rollback; no provider call.
 
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.

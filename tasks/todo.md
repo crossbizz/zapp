@@ -223,7 +223,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 - [x] DEP-14 Public deployment progress/actions/domains contract
 - [x] DEP-15 Production health + rollback-preview projection
-- [ ] WS-17 Immutable public forge-node-base OCI mirror
+- [x] WS-17 Immutable public forge-node-base OCI mirror
 - [x] GIT-7 Public short-lived repository credential lease
 
 - [x] INT-3 Sync engine (stale-base, conflicts)

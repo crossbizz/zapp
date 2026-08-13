@@ -855,6 +855,12 @@ type WorkspaceEnvironmentName = z.infer<typeof WorkspaceEnvironmentNameSchema>;
 const ModalImageLockSchema = z
   .object({
     version: z.literal(1),
+    publicMirrors: z
+      .object({
+        'forge-node-base': z.string().regex(/^ghcr\.io\/crossbizz\/zapp-forge-node-base:[^@]+@sha256:[a-f0-9]{64}$/u),
+      })
+      .strict()
+      .optional(),
     environments: z.record(
       WorkspaceEnvironmentNameSchema,
       z
