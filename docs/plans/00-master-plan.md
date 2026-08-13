@@ -379,6 +379,7 @@ North star (PRD §37.1): **verified production releases per active org per month
 - 2026-08-13 GATE-8 done — Added the ejected Storybook Jest configuration that scopes discovery to `packages/ui`, preventing sibling worktree package-name collisions and unrelated Next build output from entering the a11y runner; the structural regression, UI unit suite, and real Storybook axe run are green.
 - 2026-08-13 OPS-12-FIX-1 done — Provider-enforced network-policy evidence now follows a successful provider update, model-bound session input is redacted at the boundary, and the credential-gated Modal abuse proof requires descendant termination plus kernel cgroup OOM evidence; the real Modal check skipped visibly without credentials.
 - 2026-08-13 OPS-12-FIX-2 done — Re-scoped at Task 45's two-round cap, versioned legacy completion replay now retains the immutable accounting fingerprint and completion ID while redacting provider-bound bytes; recovery metadata is authenticated for orchestrator-worker only and removed before provider routing.
+- 2026-08-13 WEB-14-FIX-1 done — Added one fixture-mode Playwright journey that preserves a signed-in user, prompt-created project, and run through structured clarification, approval, build progress, authenticated preview, one conversation iteration, readiness, and deployment success without navigating away from the unified builder; V-3 evidence remains deferred until the v2 evidence-validator change is committed.
 
 ## M0 gate sign-off — 2026-08-04
 
