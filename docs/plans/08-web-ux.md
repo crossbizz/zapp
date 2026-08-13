@@ -216,9 +216,9 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Files:** Create: `src/components/deploy/{ReadinessSheet,ConfirmDialog,StageTimeline,SuccessCard}.tsx`
 **Effort:** L
 
-- [ ] Binding behavior (PRD §26A): Deploy click → ReadinessSheet: three-state header (**Ready to deploy** green / **Warnings found** amber / **Deployment blocked** red) + findings list with per-finding action buttons (Fix and recheck → Fix run; Review; Waive where allowed w/ reason) — copy exactly from DEP-2 payloads; continue → ConfirmDialog: deployment type headline (First deploy / Redeploy / Replace deployment) + DEP-3 confirmation payload verbatim (data/secrets/URL/user impact bullets; Replace requires explicit data-disposition radio before enabling confirm); deploying → StageTimeline (8 DEP-6 stages, live status/elapsed/summary, failure = inline evidence + actions Retry stage-safe / Fix automatically / Ask agent, previous release banner "Production unaffected"); success → SuccessCard per §26A.5 (URL copy, Add custom domain, release id/commit, evidence link, health status, monitoring links, Rollback to rel_… secondary, "future changes stay in preview until you redeploy" note).
-- [ ] e2e: blocked state disables continue; replace w/o disposition disabled; timeline renders failure without success state; success card fields from fixture payload.
-- [ ] Commit: `feat(web): readiness → confirm → staged deploy → success flow`
+- [x] Binding behavior (PRD §26A): Deploy click → ReadinessSheet: three-state header (**Ready to deploy** green / **Warnings found** amber / **Deployment blocked** red) + findings list with per-finding action buttons (Fix and recheck → Fix run; Review; Waive where allowed w/ reason) — copy exactly from DEP-2 payloads; continue → ConfirmDialog: deployment type headline (First deploy / Redeploy / Replace deployment) + DEP-3 confirmation payload verbatim (data/secrets/URL/user impact bullets; Replace requires explicit data-disposition radio before enabling confirm); deploying → StageTimeline (8 DEP-6 stages, live status/elapsed/summary, failure = inline evidence + actions Retry stage-safe / Fix automatically / Ask agent, previous release banner "Production unaffected"); success → SuccessCard per §26A.5 (URL copy, Add custom domain, release id/commit, evidence link, health status, monitoring links, Rollback to rel_… secondary, "future changes stay in preview until you redeploy" note).
+- [x] e2e: blocked state disables continue; replace w/o disposition disabled; timeline renders failure without success state; success card fields from fixture payload.
+- [x] Commit: `feat(web): readiness → confirm → staged deploy → success flow`
 
 ### Task WEB-15 [M4]: Observability + health + rollback UI
 
@@ -258,6 +258,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-12 WEB-14 done — Connected readiness/actions, server-classified confirmation, keyed deployment, live progress polling, safe failure actions, terminal success, custom-domain and rollback links through the generated public SDK; focused E2E passed 4/4 and web lint/typecheck/build passed.
 - 2026-08-12 WEB-16-FIX-1 done — The DEP-12a pre-push cold gate exposed WEB-16's manifest/test contract drift: the new activation test restored a broad glob while the gate still required the enumerated non-rebuilding command. Enumerated activation alongside the existing Node tests so it runs without weakening the cold task-graph assertion.
 
 - 2026-08-11 WEB-COLD-FIX-2 done — Updated the stale cross-package manifest assertion exposed by the uncached OPS-4 pre-push gate; the config suite now covers the shipped cleanup-unit-plus-Playwright command without changing build scheduling, and no provider call was required.

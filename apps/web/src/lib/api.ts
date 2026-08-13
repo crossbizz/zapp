@@ -59,6 +59,12 @@ export type NotificationPreferenceChannels =
   paths['/v1/notification-preferences/{type}']['put']['requestBody']['content']['application/json'];
 export type AuditEventsQuery =
   paths['/v1/organizations/{orgId}/audit-events']['get']['parameters']['query'];
+export type ReleaseReadinessData =
+  paths['/v1/releases/{releaseId}']['get']['responses'][200]['content']['application/json']['readiness'];
+export type DeploymentPreviewData =
+  paths['/v1/releases/{releaseId}/deployment-preview']['get']['responses'][200]['content']['application/json'];
+export type DeploymentProgressData =
+  paths['/v1/deployments/{deploymentId}']['get']['responses'][200]['content']['application/json'];
 export type StartSupportSessionInput =
   paths['/v1/admin/support-sessions']['post']['requestBody']['content']['application/json'];
 export type AdminOverviewQuery = NonNullable<
@@ -219,10 +225,18 @@ export function createControlPlaneClient(organizationId?: string) {
       client.request('/v1/releases/{releaseId}', { method: 'GET', path: { releaseId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
     getReleaseEvidence: (releaseId: string, signal?: AbortSignal) =>
       client.request('/v1/releases/{releaseId}/evidence', { method: 'GET', path: { releaseId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    getDeploymentPreview: (releaseId: string, retarget = false, signal?: AbortSignal) =>
+      client.request('/v1/releases/{releaseId}/deployment-preview', { method: 'GET', path: { releaseId }, headers: headers(), query: { retarget }, ...(signal === undefined ? {} : { signal }) }),
+    runReadinessAction: (releaseId: string, body: { readonly findingId: string; readonly action: 'fix' | 'review' | 'waive'; readonly reason?: string }, idempotencyKey?: string) =>
+      client.request('/v1/releases/{releaseId}/readiness-actions', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body }),
     approveRelease: (releaseId: string, idempotencyKey?: string) =>
       client.request('/v1/releases/{releaseId}/approve', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey) }),
-    deployRelease: (releaseId: string, idempotencyKey?: string) =>
-      client.request('/v1/releases/{releaseId}/deploy', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body: { deploymentType: 'redeploy' } }),
+    deployRelease: (releaseId: string, body: { readonly deploymentType: 'first_deploy' | 'redeploy' | 'replace_deployment'; readonly dataDisposition?: 'preserve' | 'transfer' | 'reset' }, idempotencyKey?: string) =>
+      client.request('/v1/releases/{releaseId}/deploy', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body }),
+    getDeployment: (deploymentId: string, signal?: AbortSignal) =>
+      client.request('/v1/deployments/{deploymentId}', { method: 'GET', path: { deploymentId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+    runDeploymentAction: (deploymentId: string, body: { readonly action: 'retry' | 'fix' | 'ask'; readonly stage?: string; readonly prompt?: string }, idempotencyKey?: string) =>
+      client.request('/v1/deployments/{deploymentId}/actions', { method: 'POST', path: { deploymentId }, headers: requiredKeyHeaders(idempotencyKey), body }),
     forkRelease: (releaseId: string, idempotencyKey?: string) =>
       client.request('/v1/releases/{releaseId}/fork', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body: { startFixRun: true } }),
     createProject: (body: CreateProjectInput, idempotencyKey?: string, signal?: AbortSignal) =>

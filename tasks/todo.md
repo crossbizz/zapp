@@ -249,7 +249,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] DEP-12b Production adapter composition + real synthetic/E2E journey
 - [x] DEP-12 E2E release lifecycle + fork-to-repair (umbrella completion)
 - [x] WEB-16-FIX-1 Keep the cold web test command aligned with activation coverage
-- [ ] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
+- [x] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
 - [ ] WEB-15 Production health + guarded rollback UI
 - [ ] MAC-7 Docker runtime mode
 - [ ] MAC-8 Cloud builder + Mission Control parity
