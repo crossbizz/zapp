@@ -73,14 +73,20 @@ test('takes one signed-in user from an initial prompt to deployed app in one uni
   ].join('');
 
   await page.route(`${apiBaseUrl}/v1/projects`, async (route) => {
-    if (route.request().method() !== 'POST') return await route.fallback();
+    if (route.request().method() !== 'POST') {
+      await route.fallback();
+      return;
+    }
     requests.push({ body: route.request().postDataJSON(), path: '/v1/projects', projectId: undefined });
     await respond(route, { project, branches: [{ id: 'branch_main', name: 'main' }], repository: { defaultBranch: 'main' } }, 201);
   });
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
-    if (route.request().method() === 'GET') return await respond(route, { items: [run], nextCursor: null });
+    if (route.request().method() === 'GET') {
+      await respond(route, { items: [run], nextCursor: null });
+      return;
+    }
     requests.push({ body: route.request().postDataJSON(), path: '/runs', projectId });
-    return await respond(route, { run }, 201);
+    await respond(route, { run }, 201);
   });
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}`, (route) =>
     respond(route, { project, branches: [{ id: 'branch_main', name: 'main', organizationId, projectId, status: 'active', baseBranchId: null, headCommitSha: null }], environments: [], repository: { defaultBranch: 'main' } }),
