@@ -500,7 +500,6 @@ Execution expansion (2026-08-12):
 ## Execution log
 
 - 2026-08-12 WS-17 done — Published the existing provider-neutral forge-node-base recipe to public GHCR from a package-write-only workflow, recorded the observed tag@sha256 digest, and anonymously pulled that exact manifest; the first two cold attempts exposed missing build-order dependencies before the successful run.
-- 2026-08-12 WS-16 done — Added service-authenticated bounded editor reads/listing and keyed attributed compare-token edits with exact manual commit and rollback; no provider call.
 
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.
 - 2026-08-06 WS-1 interface extension approved — product-owner delegated controller decision added typed, allowlisted `merge` and `revert` Git operations required by AR-4; ADR-0010 records the deviation.
