@@ -1,7 +1,7 @@
 import type { LocalAgentFixture } from "../../../../testing/fake-llm-server/localAgentTypes";
 
 export const fixture: LocalAgentFixture = {
-  description: "Read a file, then edit it with search_replace",
+  description: "Read a file, then edit it with apply_patch",
   turns: [
     {
       text: "Let me first read the current file contents to understand what we're working with.",
@@ -18,11 +18,10 @@ export const fixture: LocalAgentFixture = {
       text: "Now I'll update the welcome message to say UPDATED imported app instead.",
       toolCalls: [
         {
-          name: "search_replace",
+          name: "apply_patch",
           args: {
-            file_path: "src/App.tsx",
-            old_string: "const App = () => <div>Minimal imported app</div>;",
-            new_string: "const App = () => <div>UPDATED imported app</div>;",
+            patch:
+              "--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1,3 +1,3 @@\n-const App = () => <div>Minimal imported app</div>;\n+const App = () => <div>UPDATED imported app</div>;\n \n export default App;\n",
           },
         },
       ],

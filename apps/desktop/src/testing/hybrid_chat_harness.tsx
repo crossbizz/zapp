@@ -210,19 +210,6 @@ function fixtureNameFor(request: CompleteRequest): string {
   return match[1];
 }
 
-function localAgentTurnIndex(request: CompleteRequest): number {
-  let lastUserMessage = -1;
-  for (let index = request.messages.length - 1; index >= 0; index -= 1) {
-    if (request.messages[index]?.role === "user") {
-      lastUserMessage = index;
-      break;
-    }
-  }
-  return request.messages
-    .slice(lastUserMessage + 1)
-    .filter((message) => message.role === "tool").length;
-}
-
 /**
  * The production desktop main process creates this composition after restoring
  * platform auth. Hybrid tests cannot use a real user token or control API, so
@@ -230,20 +217,24 @@ function localAgentTurnIndex(request: CompleteRequest): number {
  * closed instead of falling through to a network request.
  */
 function createHybridLocalAgentPlatform(): DesktopLocalAgentPlatform {
+  const turnIndexes = new Map<string, number>();
+
   return {
     async ensureSession({ chatId }) {
       return testLocalAgentSession(chatId);
     },
-    gateway() {
+    gateway(session) {
       return {
         async *stream(
           request: CompleteRequest,
         ): AsyncIterable<GatewayStreamEvent> {
-          const fixture = await loadLocalAgentFixtureForTesting(
-            fixtureNameFor(request),
-          );
+          const fixtureName = fixtureNameFor(request);
+          const fixture = await loadLocalAgentFixtureForTesting(fixtureName);
           const turns = fixture.turns ?? fixture.passes?.[0]?.turns;
-          const turn = turns?.[localAgentTurnIndex(request)];
+          const turnKey = `${session.sessionId}:${fixtureName}`;
+          const turnIndex = turnIndexes.get(turnKey) ?? 0;
+          const turn = turns?.[turnIndex];
+          turnIndexes.set(turnKey, turnIndex + 1);
           if (turn === undefined) {
             yield {
               type: "error",

@@ -11,50 +11,18 @@
   "report": "validation/exit-criteria/evidence/2026-08-13-integrated.md",
   "results": [
     {
-      "criterionId": "E1",
-      "outcome": "passed",
-      "commands": [
-        {
-          "command": "web projects and preview Playwright suites",
-          "exitCode": 0,
-          "summary": "21/21 passed"
-        },
-        {
-          "command": "orchestrator autonomous integration",
-          "exitCode": 0,
-          "summary": "10/10 passed"
-        },
-        {
-          "command": "release-service deployment workflow",
-          "exitCode": 0,
-          "summary": "4/4 passed"
-        }
-      ]
-    },
-    {
-      "criterionId": "E2",
-      "outcome": "passed",
-      "commands": [
-        {
-          "command": "control-api Mission Control suite",
-          "exitCode": 0,
-          "summary": "5/5 passed"
-        },
-        {
-          "command": "web projects and preview Playwright suites",
-          "exitCode": 0,
-          "summary": "21/21 passed"
-        }
-      ]
-    },
-    {
       "criterionId": "E8",
       "outcome": "passed",
       "commands": [
         {
-          "command": "control-api Mission Control suite",
+          "command": "control-api run action contract suite",
           "exitCode": 0,
-          "summary": "5/5 passed"
+          "summary": "46/46 passed, including pause/resume/redirect/cancel"
+        },
+        {
+          "command": "web Mission Control and cancellation browser paths",
+          "exitCode": 0,
+          "summary": "2/2 passed"
         }
       ]
     }
