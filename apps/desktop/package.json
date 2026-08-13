@@ -115,6 +115,7 @@
     "@zapp/contracts": "workspace:*",
     "@zapp/model-gateway": "workspace:*",
     "@zapp/orchestrator-worker": "workspace:*",
+    "@zapp/ui": "workspace:*",
     "@zapp/workspace-runtime": "workspace:*",
     "ai": "^6.0.68",
     "better-sqlite3": "^12.6.2",

@@ -53,3 +53,9 @@ export {
   type TooltipProps,
 } from './components/overlays';
 export { Markdown, type MarkdownProps } from './components/markdown';
+export {
+  mergeBuilderEvent,
+  reduceBuilderEvents,
+  type BuilderEvent,
+  type BuilderSnapshot,
+} from './builder-state';

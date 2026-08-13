@@ -188,6 +188,9 @@ importers:
       '@zapp/orchestrator-worker':
         specifier: workspace:*
         version: link:../../services/orchestrator-worker
+      '@zapp/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@zapp/workspace-runtime':
         specifier: workspace:*
         version: link:../../packages/workspace-runtime
