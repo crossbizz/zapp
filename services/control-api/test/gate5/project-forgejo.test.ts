@@ -8,6 +8,7 @@ import { internalRepoRef } from '@zapp/contracts';
 import {
   composeApp as composeGitService,
   loadForgejoEnv,
+  loadTemplateRegistry,
   type AppInstance as GitServiceApp,
 } from '@zapp/git-service';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -211,11 +212,13 @@ describe.skipIf(!gate.present)('GATE-5 control-api -> git-service -> Forgejo', (
     database = readyDatabase;
     await readyDatabase.truncateIdentity();
     const serviceTokens = loadServiceTokenConfig(process.env);
+    const templateRegistry = await loadTemplateRegistry();
 
     const gitComposition = composeGitService({
       forgejo: loadForgejoEnv(process.env),
       serviceTokens,
       database: readyDatabase.db,
+      templateRegistry,
       logger: false,
     });
     const readyGitService = gitComposition.app;
