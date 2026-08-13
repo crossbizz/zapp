@@ -371,6 +371,7 @@ North star (PRD §37.1): **verified production releases per active org per month
 - 2026-08-07: M1-GATE-4 done — removed the redundant Playwright `/v1/me` response-within-route rewrite and reused the fake API's existing model-policy fixture; Fast Refresh stress passed 5/5 and the forced cold local gate passed 57/57, while credential-gated suites skipped loudly and GitHub Actions remains unverified because billing prevents job startup.
 - 2026-08-07: M1-GATE-5 done — replaced four literal synthetic basic-auth URLs in preview redaction tests with runtime URL construction after the pre-push secret guard blocked them; focused tests passed 3/3, the full preview suite passed 109/109, and GitHub Actions remains unverified because billing prevents job startup.
 - 2026-08-07: M1-GATE-6 done — raised only the workspace-runtime real-Git fixture's aggregate envelope to 60 seconds after cold-gate contention exceeded 15 seconds; individually enforced 5-second fixture and 30-second production Git deadlines remain authoritative, the package passed 35/35 locally, and GitHub Actions remains unverified because billing prevents job startup.
+- 2026-08-12 GATE-7 done — Forgejo integration fixtures now register each canonical private ref before provider creation, clean every owned ref idempotently with post-delete verification, and fail teardown on any error; the explicit local-only inventory removed 53 canonical private DB-orphaned refs (0 database-backed) and rechecked zero candidates.
 
 ## M0 gate sign-off — 2026-08-04
 

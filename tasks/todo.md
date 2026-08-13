@@ -310,7 +310,7 @@ Blockers below must close before M0 is signed off.
 - [x] GATE-4 dependabot scan permissions fixed (8f367fb; least-privilege pull-requests: read) — verify on the next dependabot PR
 - [x] GATE-5 No control-api → git-service → Forgejo integration test (each half proven separately; M1/CP-9 needs the join)
 - [x] GATE-6 Desktop's own suites run on every pull request (full unit corpus plus four no-retry Playwright shards; signed tag/manual packaging retained)
-- [ ] GATE-7 Dev Forgejo has 42 orphaned test repos despite afterAll cleanup claims
+- [x] GATE-7 Forgejo fixture cleanup and guarded dev-orphan inventory
 
 **Unverified by credential absence (stated plainly, not hidden):** Stytch against a real
 IdP; macOS signing + notarization (steps skipped on every run — MAC-2's core claim has

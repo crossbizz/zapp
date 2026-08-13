@@ -10,6 +10,11 @@ import {
   createTokenServiceGitBundleCredentials,
 } from '../../src/export.js';
 import type { ForgejoClient } from '../../src/forgejo/client.js';
+import {
+  cleanupFixtureOrganizations,
+  RepositoryFixtureLifecycle,
+  runFixtureCleanup,
+} from '../../src/forgejo/repository-fixture-lifecycle.js';
 import { createForgejoGitProvider } from '../../src/provider/forgejo.js';
 import type { GitProvider } from '../../src/provider/types.js';
 import { createTokenService, expiryOf, type TokenService } from '../../src/tokens.js';
@@ -51,7 +56,7 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
   let provider: GitProvider;
   let tokens: TokenService;
   let audit: RecordingGitAuditSink;
-  const created: { organizationId: string; projectId: string }[] = [];
+  const lifecycle = new RepositoryFixtureLifecycle();
   /** Ephemeral users this suite minted, cleaned up even when an assertion fails. */
   const minted: string[] = [];
 
@@ -71,8 +76,9 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
     ref: string;
   } {
     const projectId = newId('proj');
-    created.push({ organizationId, projectId });
-    return { organizationId, projectId, ref: internalRepoRef({ organizationId, projectId }) };
+    const ref = internalRepoRef({ organizationId, projectId });
+    lifecycle.record(ref);
+    return { organizationId, projectId, ref };
   }
 
   async function mint(
@@ -99,27 +105,30 @@ describe.skipIf(!hasForgejo)('repository-scoped tokens, against a real instance'
   });
 
   afterAll(async () => {
-    for (const username of minted) {
-      await client.send({
-        method: 'DELETE',
-        path: `/admin/users/${username}?purge=true`,
-        allow: [404],
-      });
-    }
+    await runFixtureCleanup([
+      {
+        name: 'token users',
+        run: async () => {
+          const failures: string[] = [];
+          for (const username of minted) {
+            try {
+              await client.send({ method: 'DELETE', path: `/admin/users/${username}?purge=true`, allow: [404] });
+              const remaining = await client.send({ method: 'GET', path: `/users/${username}`, allow: [404] });
+              if (remaining.status !== 404) failures.push(`${username}: still exists`);
+            } catch {
+              failures.push(`${username}: deletion or absence verification failed`);
+            }
+          }
+          if (failures.length > 0) throw new Error(failures.join('; '));
+        },
+      },
     // Two passes, and the order is not optional: this suite deliberately puts
     // two projects in one organization (see `project`), and Forgejo answers a
     // delete of an organization that still owns a repository with a 500. Every
     // repository first, then each organization once.
-    for (const { organizationId, projectId } of created) {
-      const [owner, name] = internalRepoRef({ organizationId, projectId }).split('/') as [
-        string,
-        string,
-      ];
-      await client.send({ method: 'DELETE', path: `/repos/${owner}/${name}`, allow: [404] });
-    }
-    for (const owner of new Set(created.map((entry) => entry.organizationId.toLowerCase()))) {
-      await client.send({ method: 'DELETE', path: `/orgs/${owner}`, allow: [404] });
-    }
+      { name: 'repositories', run: async () => { await lifecycle.cleanup(provider); } },
+      { name: 'organizations', run: async () => { await cleanupFixtureOrganizations(client, lifecycle.refs()); } },
+    ]);
   });
 
   it('clones and pushes its own repository, and cannot touch any other', async () => {

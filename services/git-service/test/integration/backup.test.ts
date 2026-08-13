@@ -25,6 +25,11 @@ import {
 } from '../../src/backup.js';
 import { loadArtifactEnv } from '../../src/env.js';
 import type { ForgejoClient } from '../../src/forgejo/client.js';
+import {
+  cleanupFixtureOrganizations,
+  RepositoryFixtureLifecycle,
+  runFixtureCleanup,
+} from '../../src/forgejo/repository-fixture-lifecycle.js';
 import { createForgejoGitProvider } from '../../src/provider/forgejo.js';
 import type { GitProvider } from '../../src/provider/types.js';
 import { createTokenService } from '../../src/tokens.js';
@@ -127,6 +132,7 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
   const mainBranchId = newId('br');
   const featureBranchId = newId('br');
   const ref = internalRepoRef({ organizationId, projectId });
+  const lifecycle = new RepositoryFixtureLifecycle();
   const scratch: string[] = [];
   let database: Awaited<ReturnType<typeof setUpTestDatabase>> | undefined;
   let client: ForgejoClient | undefined;
@@ -164,6 +170,7 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
       createdBy: userId,
     });
 
+    lifecycle.record(ref);
     const created = await provider.createRepository({
       organizationId,
       projectId,
@@ -223,20 +230,29 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
   }, 180_000);
 
   afterAll(async () => {
-    if (provider !== undefined) {
-      await provider.deleteRepository(ref);
-    }
-    if (client !== undefined) {
-      await client.send({
-        method: 'DELETE',
-        path: `/orgs/${organizationId.toLowerCase()}`,
-        allow: [404],
-      });
-    }
-    if (store !== undefined && backupObjectKey !== undefined) {
-      await store.delete(backupObjectKey);
-    }
-    if (store !== undefined) {
+    await runFixtureCleanup([
+      {
+        name: 'repositories',
+        run: async () => {
+          if (provider !== undefined) await lifecycle.cleanup(provider);
+        },
+      },
+      {
+        name: 'organizations',
+        run: async () => {
+          if (client !== undefined) await cleanupFixtureOrganizations(client, lifecycle.refs());
+        },
+      },
+      {
+        name: 'backup objects',
+        run: async () => {
+          if (store !== undefined && backupObjectKey !== undefined) await store.delete(backupObjectKey);
+        },
+      },
+      {
+        name: 'restore receipt objects',
+        run: async () => {
+          if (store === undefined) return;
       const activeStore = store;
       const intentKeys = [...restoreReceiptKeys].filter((key) =>
         /^git-restore-intents\/(?:manual|drill)\/[0-9a-f]{64}\.json$/.test(key),
@@ -252,21 +268,28 @@ describe.skipIf(!backupGate.present)('live Forgejo + MinIO bundle backup and res
           continuationToken = page.continuationToken;
         } while (continuationToken !== undefined);
       }
-      await Promise.all(
-        [...restoreReceiptKeys].map(async (key) => {
-          await activeStore.delete(key);
-        }),
-      );
-    }
-    if (database !== undefined) {
+          await Promise.all([...restoreReceiptKeys].map(async (key) => { await activeStore.delete(key); }));
+        },
+      },
+      {
+        name: 'database rows',
+        run: async () => {
+          if (database === undefined) return;
       await database.db.delete(branches).where(eq(branches.projectId, projectId));
       await database.db.delete(repositories).where(eq(repositories.id, repositoryId));
       await database.db.delete(projects).where(eq(projects.id, projectId));
       await database.db.delete(organizations).where(eq(organizations.id, organizationId));
       await database.db.delete(users).where(eq(users.id, userId));
       await database.close();
-    }
-    await Promise.all(scratch.map((path) => rm(path, { recursive: true, force: true })));
+        },
+      },
+      {
+        name: 'scratch directories',
+        run: async () => {
+          await Promise.all(scratch.map(async (path) => { await rm(path, { recursive: true, force: true }); }));
+        },
+      },
+    ]);
   }, 180_000);
 
   it('backs up, deletes, restores, compares every ref and database branch, then clones', async () => {

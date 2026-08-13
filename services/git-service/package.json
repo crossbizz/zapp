@@ -13,6 +13,7 @@
     "backup": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts nightly",
     "backup:restore": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore",
     "backup:restore-drill": "tsx --env-file-if-exists=../../.env.local.forgejo scripts/backup.ts restore-drill",
+    "forgejo:orphans": "tsx --env-file-if-exists=../../.env --env-file-if-exists=../../.env.local.forgejo scripts/forgejo-orphans.ts",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

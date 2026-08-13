@@ -2,6 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { internalRepoRef, newId } from '@zapp/contracts';
 
 import type { ForgejoClient } from '../../src/forgejo/client.js';
+import {
+  cleanupFixtureOrganizations,
+  RepositoryFixtureLifecycle,
+  runFixtureCleanup,
+} from '../../src/forgejo/repository-fixture-lifecycle.js';
 import { createGitMirror, GitMirrorConflictError } from '../../src/import/mirror.js';
 import { createForgejoGitProvider } from '../../src/provider/forgejo.js';
 import type { GitProvider } from '../../src/provider/types.js';
@@ -19,13 +24,14 @@ import {
 describe.skipIf(!hasForgejo)('GitHub-style import mirror, against a real Forgejo instance', () => {
   let client: ForgejoClient;
   let provider: GitProvider;
-  const created: { organizationId: string; projectId: string }[] = [];
+  const lifecycle = new RepositoryFixtureLifecycle();
 
   function project(): { organizationId: string; projectId: string; ref: string } {
     const organizationId = newId('org');
     const projectId = newId('proj');
-    created.push({ organizationId, projectId });
-    return { organizationId, projectId, ref: internalRepoRef({ organizationId, projectId }) };
+    const ref = internalRepoRef({ organizationId, projectId });
+    lifecycle.record(ref);
+    return { organizationId, projectId, ref };
   }
 
   beforeAll(() => {
@@ -34,13 +40,10 @@ describe.skipIf(!hasForgejo)('GitHub-style import mirror, against a real Forgejo
   });
 
   afterAll(async () => {
-    for (const { organizationId, projectId } of created) {
-      const [owner, name] = internalRepoRef({ organizationId, projectId }).split('/') as [string, string];
-      await client.send({ method: 'DELETE', path: `/repos/${owner}/${name}`, allow: [404] });
-    }
-    for (const owner of new Set(created.map((entry) => entry.organizationId.toLowerCase()))) {
-      await client.send({ method: 'DELETE', path: `/orgs/${owner}`, allow: [404] });
-    }
+    await runFixtureCleanup([
+      { name: 'repositories', run: async () => { await lifecycle.cleanup(provider); } },
+      { name: 'organizations', run: async () => { await cleanupFixtureOrganizations(client, lifecycle.refs()); } },
+    ]);
   });
 
   it('preserves selected-branch lineage, retries equal heads, and refuses divergent history', async () => {
