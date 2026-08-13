@@ -278,7 +278,12 @@ export function Composer({
   };
 
   return (
-    <form className="zapp-conversation-composer" onSubmit={(event) => void submit(event)}>
+    <form
+      aria-label="Message composer"
+      className="zapp-conversation-composer"
+      data-run-active={active}
+      onSubmit={(event) => void submit(event)}
+    >
       <div aria-label="Attached images" className="zapp-conversation-images" role="list">
         {images
           .filter((image) => image.selection === undefined)

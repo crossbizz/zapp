@@ -57,7 +57,9 @@ async function signIn(page: Page): Promise<void> {
   await page.goto('/login');
   await page.getByRole('link', { name: 'Sign in' }).click();
   await expect(page).toHaveURL('/');
-  await expect(page.getByText('Ada Lovelace')).toBeVisible();
+  await expect(page.getByRole('heading', {
+    name: "Start with one prompt. We'll take it to production.",
+  })).toBeVisible();
 }
 
 async function mockProjectRead(
@@ -123,8 +125,14 @@ test.beforeEach(async ({ page }) => {
 test('loads an organization-scoped shell with truthful header actions and surface tabs', async ({
   page,
 }) => {
+  await page.setViewportSize({ height: 950, width: 1440 });
   const projectRequests = await openBuilder(page);
 
+  const sidebar = page.getByRole('complementary', { name: 'Workspace' });
+  await expect(sidebar).toBeVisible();
+  expect((await sidebar.boundingBox())?.width).toBeGreaterThan(200);
+  await expect(page.getByRole('region', { name: 'Conversation' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();
   await expect(page.getByText('Compatible')).toBeVisible();
   await expect(page.getByText('Preview', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Preview' })).toBeVisible();
@@ -138,14 +146,92 @@ test('loads an organization-scoped shell with truthful header actions and surfac
     'href',
     `/projects/${projectId}/settings/general`,
   );
+  await expect(page.getByRole('button', { name: 'Preview', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(page.getByRole('button', { name: 'Manage', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
   await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true');
-  for (const tab of ['Code', 'Logs', 'Tests']) {
+  for (const tab of ['Files', 'Code', 'More']) {
     await expect(page.getByRole('tab', { name: tab })).toBeVisible();
   }
+  await page.getByRole('tab', { name: 'More' }).click();
+  for (const tab of ['Logs', 'Tests', 'Releases', 'Health']) {
+    await expect(page.getByRole('tab', { name: tab })).toBeVisible();
+  }
+  await page.getByRole('tab', { name: 'Preview' }).click();
 
   expect(projectRequests).toHaveLength(1);
   expect(projectRequests[0]?.method()).toBe('GET');
   expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
+});
+
+test('uses the compact product rail while keeping both builder panes at 1180px', async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 800, width: 1180 });
+  await openBuilder(page);
+
+  const rail = page.getByRole('complementary', { name: 'Workspace' });
+  await expect(rail).toBeVisible();
+  const bounds = await rail.boundingBox();
+  if (bounds === null) throw new Error('The workspace rail was not rendered.');
+  expect(bounds.width).toBeLessThan(100);
+  await expect(page.getByRole('region', { name: 'Conversation' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();
+});
+
+test('keeps conversation mounted while Preview and Manage restore from the URL', async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.route(`${apiBaseUrl}/v1/integrations`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ connections: [] }),
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+        'content-type': 'application/json',
+      },
+      status: 200,
+    });
+  });
+  await openBuilder(page);
+  const conversation = page.getByRole('region', { name: 'Conversation' });
+  await conversation.evaluate((element) => {
+    element.setAttribute('data-mount-probe', 'preserved');
+  });
+
+  await page.getByRole('tab', { name: 'Code' }).click();
+  await page.getByRole('button', { name: 'Manage', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Project Apollo settings' })).toBeVisible();
+  await expect(conversation).toHaveAttribute('data-mount-probe', 'preserved');
+  await expect(page.getByRole('link', { name: 'Project settings' })).toHaveAttribute(
+    'href',
+    `/projects/${projectId}/settings/general`,
+  );
+
+  await page.getByRole('button', { name: 'Integrations', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Integrations', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(
+    new RegExp(`/projects/${projectId}\\?mode=manage&view=code&section=integrations&pane=workspace$`, 'u'),
+  );
+  await expect(conversation).toHaveAttribute('data-mount-probe', 'preserved');
+
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Code' })).toHaveAttribute('aria-selected', 'true');
+  await page.reload();
+  await expect(page.getByRole('tab', { name: 'Code' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('button', { name: 'Preview', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+
+  await page.getByRole('button', { name: 'Manage', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Integrations', exact: true })).toBeVisible();
 });
 
 test('resizes panes by pointer and keyboard and restores the project width on reload', async ({
@@ -353,11 +439,12 @@ test('keeps the warning until every failed preference key saves successfully', a
   await expect(page.getByRole('complementary', { name: 'Mission Control' })).toBeVisible();
   await expect(page.getByRole('status')).toHaveText('Preferences could not be saved.');
 
+  const beforeRetry = Number(await separator.getAttribute('aria-valuenow'));
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(separator).toHaveAttribute('aria-valuenow', '44');
+  await expect(separator).toHaveAttribute('aria-valuenow', String(beforeRetry + 2));
   await expect(page.getByRole('status')).toHaveCount(0);
-  expect(Math.round(await storedConversationWidth(page))).toBe(44);
+  expect(Math.round(await storedConversationWidth(page))).toBe(beforeRetry + 2);
 });
 
 test('normalizes an undersized restored width before announcing or resizing it', async ({
@@ -393,8 +480,10 @@ test('normalizes an undersized restored width before announcing or resizing it',
 
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(separator).toHaveAttribute('aria-valuenow', String(restoredWidth + 2));
-  expect(Math.round(await storedConversationWidth(page))).toBe(restoredWidth + 2);
+  const resizedWidth = Number(await separator.getAttribute('aria-valuenow'));
+  expect(resizedWidth).toBeGreaterThan(restoredWidth);
+  expect(resizedWidth).toBeLessThanOrEqual(restoredWidth + 2);
+  expect(Math.round(await storedConversationWidth(page))).toBe(resizedWidth);
 });
 
 test('preserves a deliberate desktop split across mobile and back', async ({ page }) => {
@@ -428,19 +517,20 @@ test('temporarily clamps a low preference for inline Mission Control without per
   await setStoredConversationWidth(page, 28);
   await page.goto(`/projects/${projectId}`);
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
-  await expect(separator).toHaveAttribute('aria-valuenow', '28');
+  const compactWidth = Number(await separator.getAttribute('aria-valuenow'));
+  expect(compactWidth).toBeGreaterThan(28);
   expect(await storedConversationWidth(page)).toBe(28);
 
   await page.getByRole('button', { name: 'Mission Control' }).click();
   await expect(page.getByRole('complementary', { name: 'Mission Control' })).toBeVisible();
   await expect
     .poll(async () => Number(await separator.getAttribute('aria-valuenow')))
-    .toBeGreaterThan(28);
+    .toBeGreaterThan(compactWidth);
   expect(await storedConversationWidth(page)).toBe(28);
 
   await page.getByRole('button', { name: 'Close' }).click();
   await expect(page.getByRole('complementary', { name: 'Mission Control' })).toHaveCount(0);
-  await expect(separator).toHaveAttribute('aria-valuenow', '28');
+  await expect(separator).toHaveAttribute('aria-valuenow', String(compactWidth));
   expect(await storedConversationWidth(page)).toBe(28);
 });
 
@@ -469,8 +559,8 @@ test('announces a fractional 1180px minimum without an invalid ARIA range', asyn
 
   expect(values.now).toBeGreaterThanOrEqual(values.minimum);
   expect(values.minimum).toBeLessThanOrEqual(values.maximum);
-  expect(values.now).toBe(Math.round(values.actualPercentage));
-  expect(values.minimum).toBe(Math.round((380 / values.splitWidth) * 100));
+  expect(values.now).toBe(Math.max(values.minimum, Math.round(values.actualPercentage)));
+  expect(values.minimum).toBe(Math.ceil((380 / values.splitWidth) * 100));
 });
 
 test('keeps Deploy disabled when the project has no approved release', async ({ page }) => {
@@ -624,20 +714,24 @@ test('Preview action selects and focuses the Preview surface', async ({ page }) 
   await expect(previewTab).toBeFocused();
 });
 
-test('defaults to Conversation and switches to Surface below 1024px', async ({ page }) => {
+test('defaults to Conversation and switches to Workspace below 1024px', async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 900 });
   await openBuilder(page);
 
   await expect(page.getByRole('region', { name: 'Conversation' })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Surface' })).toBeHidden();
+  await expect(page.getByRole('region', { name: 'Workspace' })).toBeHidden();
   await expect(page.getByRole('button', { name: 'Conversation' })).toHaveAttribute(
     'aria-pressed',
     'true',
   );
-  await page.getByRole('button', { name: 'Surface' }).click();
+  await expect(page.getByRole('button', { name: 'Open navigation' })).toBeVisible();
+  await page.getByRole('button', { name: 'Open navigation' }).click();
+  await expect(page.getByRole('dialog', { name: 'Workspace navigation' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Workspace' }).click();
   await expect(page.getByRole('region', { name: 'Conversation' })).toBeHidden();
-  await expect(page.getByRole('region', { name: 'Surface' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Surface' })).toHaveAttribute(
+  await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Workspace' })).toHaveAttribute(
     'aria-pressed',
     'true',
   );

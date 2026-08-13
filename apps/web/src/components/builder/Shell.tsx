@@ -22,10 +22,10 @@ import {
   type ResolveApprovalInput,
 } from '../../lib/api';
 import { readFirstPrompt } from '../../lib/prompt-handoff';
-import { organizationStorageKey, resolveOrganization } from '../../lib/session';
+import { useAppSession } from '../../hooks/useAppSession';
 import { Thread } from '../conversation/Thread';
 import type { ConversationImageInput } from '../conversation/Composer';
-import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
+import { WorkingSurface } from './WorkingSurface';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
 import { TopBar } from './TopBar';
 import { BuilderDeploy } from './BuilderDeploy';
@@ -38,6 +38,16 @@ import { FilesCommits } from '../mission-control/FilesCommits';
 import { Tests } from '../mission-control/Tests';
 import { Approvals } from '../mission-control/Approvals';
 import { Risks } from '../mission-control/Risks';
+import { AppShell } from '../shell/AppShell';
+import {
+  DEFAULT_BUILDER_NAVIGATION,
+  parseBuilderNavigation,
+  serializeBuilderNavigation,
+  type BuilderMode,
+  type BuilderNavigation,
+  type BuilderPane,
+  type ManageSection,
+} from './builder-navigation';
 
 const defaultConversationWidth = 40;
 const minimumConversationWidth = 28;
@@ -68,8 +78,6 @@ function getProject(organizationId: string, projectId: string) {
 }
 
 type ProjectResponse = Awaited<ReturnType<typeof getProject>>;
-
-type BuilderPane = 'conversation' | 'surface';
 
 function conversationWidthKey(projectId: string): string {
   return `zapp:builder:conversation-width:${projectId}`;
@@ -141,6 +149,17 @@ function BuilderStyles(): ReactElement {
         line-height: 1.3;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      .zapp-builder-project-title {
+        display: grid;
+        min-width: 0;
+        gap: 0.05rem;
+      }
+
+      .zapp-builder-save-state {
+        color: var(--zapp-text-tertiary);
+        font-size: var(--zapp-text-12);
       }
 
       .zapp-builder-project-actions {
@@ -500,9 +519,8 @@ function MissionControlPanel({ organizationId, runId, onOpenPreview, onCompare }
 }
 
 export function Shell({ projectId }: ShellProps): ReactElement {
-  const [activePane, setActivePane] = useState<BuilderPane>('conversation');
+  const session = useAppSession();
   const [activeRun, setActiveRun] = useState<BuilderRun>();
-  const [allowedModels, setAllowedModels] = useState<readonly string[]>([]);
   const [desktopSplit, setDesktopSplit] = useState(false);
   const [effectiveConversationWidth, setEffectiveConversationWidth] =
     useState(defaultConversationWidth);
@@ -511,11 +529,11 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const [focusPreviewRequest, setFocusPreviewRequest] = useState(0);
   const [firstPrompt, setFirstPrompt] = useState<string>();
   const [inlineMissionControl, setInlineMissionControl] = useState(false);
-  const [invalidOrganizationOverride, setInvalidOrganizationOverride] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [loadFailed, setLoadFailed] = useState(false);
   const [missionControlOpen, setMissionControlOpen] = useState(false);
-  const [organizationId, setOrganizationId] = useState<string>();
+  const [navigation, setNavigation] = useState<BuilderNavigation>(DEFAULT_BUILDER_NAVIGATION);
+  const [navigationReady, setNavigationReady] = useState(false);
   const [failedPreferenceKeys, setFailedPreferenceKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -523,12 +541,14 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const [previewAttachments, setPreviewAttachments] = useState<readonly ConversationImageInput[]>(
     [],
   );
-  const [surfaceTab, setSurfaceTab] = useState<SurfaceTab>('preview');
   const preferredConversationWidthRef = useRef(defaultConversationWidth);
   const activeResizePointerIdRef = useRef<number | null>(null);
   const missionControlTriggerRef = useRef<HTMLButtonElement>(null);
   const restoreMissionControlFocusRef = useRef(false);
   const splitRef = useRef<HTMLDivElement>(null);
+  const readySession = session.snapshot.status === 'ready' ? session.snapshot : undefined;
+  const organizationId = readySession?.membership.organization.id;
+  const allowedModels = readySession?.membership.allowedModels ?? [];
 
   useEffect(() => {
     const media = window.matchMedia('(min-width: 1024px)');
@@ -541,6 +561,34 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       media.removeEventListener('change', update);
     };
   }, []);
+
+  useEffect(() => {
+    const restore = (): void => {
+      setNavigation(parseBuilderNavigation(new URLSearchParams(window.location.search)));
+      setNavigationReady(true);
+    };
+    restore();
+    window.addEventListener('popstate', restore);
+    return () => {
+      window.removeEventListener('popstate', restore);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!navigationReady) return;
+    const current = new URLSearchParams(window.location.search);
+    for (const key of ['mode', 'view', 'section', 'pane']) current.delete(key);
+    const builder = new URLSearchParams(serializeBuilderNavigation(navigation));
+    builder.forEach((value, key) => {
+      current.set(key, value);
+    });
+    const query = current.toString();
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${window.location.pathname}${query === '' ? '' : `?${query}`}${window.location.hash}`,
+    );
+  }, [navigation, navigationReady]);
 
   useEffect(() => {
     const media = window.matchMedia('(min-width: 1280px)');
@@ -561,29 +609,16 @@ export function Shell({ projectId }: ShellProps): ReactElement {
     const load = async (): Promise<void> => {
       setErrorDetail(undefined);
       setFailedPreferenceKeys(new Set());
-      setInvalidOrganizationOverride(false);
       setLoadFailed(false);
       setFirstPrompt(undefined);
-      setOrganizationId(undefined);
       setProject(undefined);
+      if (session.snapshot.status === 'loading') return;
+      if (session.snapshot.status !== 'ready') {
+        setLoadFailed(true);
+        return;
+      }
       try {
-        const me = await createControlPlaneClient().getMe();
-        if (!isCurrent()) return;
-        const override = new URLSearchParams(window.location.search).get('organizationId');
-        const storageKey = organizationStorageKey(me.user.id);
-        const selected = resolveOrganization(
-          me.memberships,
-          override,
-          localStorage.getItem(storageKey),
-        );
-        if (selected.membership === undefined) {
-          throw new Error('No active organization is available.');
-        }
-
-        const organizationId = selected.membership.organization.id;
-        localStorage.setItem(storageKey, organizationId);
-        const scopedClient = createControlPlaneClient(organizationId);
-        await scopedClient.getMe();
+        const organizationId = session.snapshot.membership.organization.id;
         const loadedProject = await getProject(organizationId, projectId);
         if (!isCurrent()) return;
 
@@ -593,10 +628,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
         preferredConversationWidthRef.current = restoredWidth;
         setEffectiveConversationWidth(restoredWidth);
         setMissionControlOpen(localStorage.getItem(missionControlKey(projectId)) === 'true');
-        setInvalidOrganizationOverride(selected.invalidOverride);
-        setAllowedModels(selected.membership.allowedModels);
         setFirstPrompt(readFirstPrompt(projectId));
-        setOrganizationId(organizationId);
         setProject(loadedProject);
       } catch (error) {
         if (error instanceof ZappApiError && error.status === 401) {
@@ -611,7 +643,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
     return () => {
       current = false;
     };
-  }, [loadAttempt, projectId]);
+  }, [loadAttempt, projectId, session.snapshot]);
 
   const updateConversationWidth = useCallback((nextWidth: number) => {
     const splitWidth = splitRef.current?.getBoundingClientRect().width ?? 0;
@@ -726,14 +758,38 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   };
 
   const previewSurface = (): void => {
-    setActivePane('surface');
-    setSurfaceTab('preview');
+    setNavigation((current) => ({
+      ...current,
+      mode: 'preview',
+      pane: 'workspace',
+      preview: 'preview',
+    }));
     setFocusPreviewRequest((value) => value + 1);
   };
 
   const openCommit = (): void => {
-    setActivePane('surface');
-    setSurfaceTab('code');
+    setNavigation((current) => ({
+      ...current,
+      mode: 'preview',
+      pane: 'workspace',
+      preview: 'code',
+    }));
+  };
+
+  const selectMode = (mode: BuilderMode): void => {
+    if (mode === 'preview' && navigation.mode === 'preview') {
+      previewSurface();
+      return;
+    }
+    setNavigation((current) => ({ ...current, mode, pane: 'workspace' }));
+  };
+
+  const selectManageSection = (section: ManageSection): void => {
+    setNavigation((current) => ({ ...current, manage: section }));
+  };
+
+  const selectPane = (pane: BuilderPane): void => {
+    setNavigation((current) => ({ ...current, pane }));
   };
 
   const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>): void => {
@@ -749,6 +805,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   };
 
   const retry = (): void => {
+    session.retry();
     setLoadAttempt((value) => value + 1);
   };
 
@@ -775,7 +832,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
     );
   }
 
-  if (project === undefined || organizationId === undefined) {
+  if (project === undefined || organizationId === undefined || readySession === undefined) {
     return (
       <>
         <BuilderStyles />
@@ -816,7 +873,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const splitStyle = {
     '--conversation-width': `${String(effectiveConversationWidth)}%`,
   } as CSSProperties;
-  const announcedConversationMinimum = Math.round(conversationMinimum);
+  const announcedConversationMinimum = Math.ceil(conversationMinimum);
   const announcedConversationWidth = Math.max(
     announcedConversationMinimum,
     Math.round(effectiveConversationWidth),
@@ -830,17 +887,24 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   return (
     <>
       <BuilderStyles />
-      <main className="zapp-builder-shell">
+      <AppShell
+        activePath={`/projects/${projectId}`}
+        invalidOrganization={false}
+        onSignOut={() => session.signOut(organizationId)}
+        onSwitchOrganization={session.switchOrganization}
+        recentProjects={[{ id: projectId, name: project.project.name }]}
+        session={readySession}
+      >
+      <div className="zapp-builder-shell">
         <TopBar
           deploy={<BuilderDeploy organizationId={organizationId} projectId={projectId} />}
           missionControl={missionControl}
-          onPreview={previewSurface}
           projectId={projectId}
           projectName={project.project.name}
           supportLevel={project.project.supportLevel}
           syncState="unavailable"
         />
-        {invalidOrganizationOverride ? (
+        {readySession.invalidOrganization ? (
           <p className="zapp-builder-notice" role="status">
             Invalid organization selection. Showing your active organization.
           </p>
@@ -864,7 +928,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
             <section
               aria-label="Conversation"
               className="zapp-builder-pane"
-              data-mobile-active={activePane === 'conversation' ? 'true' : 'false'}
+              data-mobile-active={navigation.pane === 'conversation' ? 'true' : 'false'}
               id="conversation-pane"
             >
               <Thread
@@ -896,12 +960,12 @@ export function Shell({ projectId }: ShellProps): ReactElement {
               <span aria-hidden="true" className="zapp-builder-separator-handle" />
             </div>
             <section
-              aria-label="Surface"
+              aria-label="Workspace"
               className="zapp-builder-pane"
-              data-mobile-active={activePane === 'surface' ? 'true' : 'false'}
+              data-mobile-active={navigation.pane === 'workspace' ? 'true' : 'false'}
               id="surface-pane"
             >
-              <SurfaceTabs
+              <WorkingSurface
                 {...(fallbackCommitSha === undefined || fallbackCommitSha === null
                   ? {}
                   : { fallbackCommitSha })}
@@ -920,7 +984,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                             pending.filter((candidate) => candidate.id !== id),
                           );
                           if (accepted) {
-                            setActivePane('conversation');
+                            selectPane('conversation');
                           }
                           resolve(accepted);
                         },
@@ -940,7 +1004,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                           setPreviewAttachments((pending) =>
                             pending.filter((candidate) => candidate.id !== id),
                           );
-                          if (accepted) setActivePane('conversation');
+                          if (accepted) selectPane('conversation');
                           resolve(accepted);
                         },
                         selection,
@@ -949,11 +1013,17 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                   });
                 }}
                 onRunCreated={setActiveRun}
-                onValueChange={setSurfaceTab}
+                manageSection={navigation.manage}
+                mode={navigation.mode}
+                onManageSectionChange={selectManageSection}
+                onModeChange={selectMode}
+                onValueChange={(preview) => {
+                  setNavigation((current) => ({ ...current, preview }));
+                }}
                 organizationId={organizationId}
                 projectId={projectId}
                 {...(activeRun === undefined ? {} : { runId: activeRun.id })}
-                value={surfaceTab}
+                value={navigation.preview}
               />
             </section>
           </div>
@@ -971,25 +1041,26 @@ export function Shell({ projectId }: ShellProps): ReactElement {
         </div>
         <nav aria-label="Builder pane" className="zapp-builder-mobile-switcher">
           <Button
-            aria-pressed={activePane === 'conversation'}
+            aria-pressed={navigation.pane === 'conversation'}
             onClick={() => {
-              setActivePane('conversation');
+              selectPane('conversation');
             }}
-            variant={activePane === 'conversation' ? 'primary' : 'ghost'}
+            variant={navigation.pane === 'conversation' ? 'primary' : 'ghost'}
           >
             Conversation
           </Button>
           <Button
-            aria-pressed={activePane === 'surface'}
+            aria-pressed={navigation.pane === 'workspace'}
             onClick={() => {
-              setActivePane('surface');
+              selectPane('workspace');
             }}
-            variant={activePane === 'surface' ? 'primary' : 'ghost'}
+            variant={navigation.pane === 'workspace' ? 'primary' : 'ghost'}
           >
-            Surface
+            Workspace
           </Button>
         </nav>
-      </main>
+      </div>
+      </AppShell>
     </>
   );
 }

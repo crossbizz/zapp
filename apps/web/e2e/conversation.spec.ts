@@ -277,6 +277,7 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
   await page.getByLabel('After commit').fill(after);
   await page.getByRole('button', { name: 'Compare', exact: true }).click();
   await expect(page.getByText('src/page.tsx +2 −1')).toBeVisible();
+  await page.getByRole('tab', { name: 'More' }).click();
   await page.getByRole('tab', { name: 'Tests' }).click();
   await expect(page.getByText('checkout submits — failed')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create Fix run' })).toBeVisible();

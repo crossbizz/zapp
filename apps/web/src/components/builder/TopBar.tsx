@@ -1,4 +1,4 @@
-import { Button, EnvBadge, SupportLevelBadge } from '@zapp/ui';
+import { EnvBadge, SupportLevelBadge } from '@zapp/ui';
 import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
 
@@ -14,7 +14,6 @@ const syncLabels: Readonly<Record<RepositorySyncState, string>> = {
 interface TopBarProps {
   readonly deploy: ReactNode;
   readonly missionControl: ReactNode;
-  readonly onPreview: () => void;
   readonly projectId: string;
   readonly projectName: string;
   readonly supportLevel: 'compatible' | 'verified' | 'managed';
@@ -50,7 +49,6 @@ function SettingsIcon(): ReactElement {
 export function TopBar({
   deploy,
   missionControl,
-  onPreview,
   projectId,
   projectName,
   supportLevel,
@@ -60,14 +58,14 @@ export function TopBar({
     <header className="zapp-builder-top-bar">
       <div className="zapp-builder-project-identity">
         <Link href="/projects">Projects</Link>
-        <h1 className="zapp-builder-project-name">{projectName}</h1>
+        <div className="zapp-builder-project-title">
+          <h1 className="zapp-builder-project-name">{projectName}</h1>
+          <span className="zapp-builder-save-state">Last saved version</span>
+        </div>
         <SupportLevelBadge level={supportLevel} />
         <EnvBadge environment="preview" />
       </div>
       <nav aria-label="Project actions" className="zapp-builder-project-actions">
-        <Button onClick={onPreview} variant="secondary">
-          Preview
-        </Button>
         <a
           className="zapp-builder-action-link"
           href={`/projects/${projectId}/settings/integrations`}

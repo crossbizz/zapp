@@ -16,6 +16,10 @@ import {
   revokeThumbnail,
 } from '../src/components/projects/project-thumbnail.js';
 import { INTEGRATION_CATALOG } from '../src/components/settings/integration-catalog.js';
+import {
+  parseBuilderNavigation,
+  serializeBuilderNavigation,
+} from '../src/components/builder/builder-navigation.js';
 
 const memberships = [
   {
@@ -246,5 +250,54 @@ void describe('project settings integration catalog', () => {
         },
       ],
     );
+  });
+});
+
+void describe('builder navigation', () => {
+  void it('defaults to Preview with the conversation pane selected', () => {
+    assert.deepEqual(parseBuilderNavigation(new URLSearchParams()), {
+      manage: 'general',
+      mode: 'preview',
+      pane: 'conversation',
+      preview: 'preview',
+    });
+  });
+
+  void it('accepts supported Manage sections and rejects unknown query values', () => {
+    assert.deepEqual(
+      parseBuilderNavigation(new URLSearchParams('mode=manage&section=integrations')),
+      {
+        manage: 'integrations',
+        mode: 'manage',
+        pane: 'conversation',
+        preview: 'preview',
+      },
+    );
+    assert.deepEqual(
+      parseBuilderNavigation(
+        new URLSearchParams('mode=unexpected&section=unknown&view=other&pane=drawer'),
+      ),
+      {
+        manage: 'general',
+        mode: 'preview',
+        pane: 'conversation',
+        preview: 'preview',
+      },
+    );
+  });
+
+  void it('serializes Preview restoration and mobile Workspace state', () => {
+    const value = {
+      manage: 'github',
+      mode: 'manage',
+      pane: 'workspace',
+      preview: 'code',
+    } as const;
+
+    assert.equal(
+      serializeBuilderNavigation(value),
+      'mode=manage&view=code&section=github&pane=workspace',
+    );
+    assert.deepEqual(parseBuilderNavigation(new URLSearchParams(serializeBuilderNavigation(value))), value);
   });
 });

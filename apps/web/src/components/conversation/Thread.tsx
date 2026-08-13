@@ -290,23 +290,25 @@ function ThreadStyles(): ReactElement {
         display: flex;
         min-height: 100%;
         flex-direction: column;
-        gap: 0.875rem;
+        gap: 0.625rem;
       }
       .zapp-conversation-items {
         display: flex;
         flex: 1;
         flex-direction: column;
-        gap: 0.75rem;
+        gap: 0.625rem;
+        padding-bottom: 0.35rem;
       }
       .zapp-conversation-message {
         max-width: 92%;
-        border: 1px solid var(--zapp-border);
+        border: 1px solid transparent;
         border-radius: var(--zapp-radius-panel);
-        padding: 0.75rem 0.875rem;
-        background: var(--zapp-surface-raised);
+        padding: 0.65rem 0.75rem;
+        background: transparent;
       }
       .zapp-conversation-message[data-role='user'] {
         align-self: flex-end;
+        border-color: var(--zapp-border);
         background: var(--zapp-surface-subtle);
       }
       .zapp-conversation-message p,
@@ -372,11 +374,16 @@ function ThreadStyles(): ReactElement {
       }
       .zapp-conversation-composer {
         position: sticky;
+        z-index: 2;
         bottom: 0;
         display: grid;
         gap: 0.625rem;
-        padding-top: 0.75rem;
+        margin: 0 -0.35rem -0.35rem;
+        padding: 0.65rem;
+        border: 1px solid var(--zapp-border);
+        border-radius: var(--zapp-radius-card);
         background: var(--zapp-surface-raised);
+        box-shadow: var(--zapp-shadow-card);
       }
       .zapp-conversation-composer textarea {
         width: 100%;
