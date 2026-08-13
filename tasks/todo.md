@@ -189,6 +189,8 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] MAC-6-FIX-1 Structural local-agent containment + terminal recovery
 - [x] MAC-6-FIX-2 Durable local turn results + mutation recovery
 - [x] MAC-6-FIX-3 Single-writer local operation finalization
+- [x] MAC-6-FIX-4 Preserve legacy hybrid fixture coverage through the contained local-agent gateway
+- [ ] MAC-6-FIX-5 Reconcile the hybrid corpus with the contained runtime contract
 
 ## M3 — Verification-first + Autonomous (Weeks 12–18)
 

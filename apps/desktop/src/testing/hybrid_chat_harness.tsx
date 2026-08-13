@@ -158,6 +158,10 @@ import {
   type RendererIpcBridge,
 } from "./renderer_ipc_bridge";
 import { loadLocalAgentFixtureForTesting } from "../../testing/fake-llm-server/localAgentHandler";
+import {
+  extractHybridFixtureTrigger,
+  loadLegacyFixtureTurnsForTesting,
+} from "./legacy-fixture-adapter";
 
 const SECOND_SETUP_ERROR =
   "Second harness setup in one process — one harness per test FILE " +
@@ -198,18 +202,6 @@ function testLocalAgentSession(chatId: number) {
   };
 }
 
-function fixtureNameFor(request: CompleteRequest): string {
-  const match = JSON.stringify(request.messages).match(
-    /tc=local-agent\/([^\s"\\]+)/u,
-  );
-  if (match?.[1] === undefined) {
-    throw new Error(
-      "Hybrid local-agent tests must use a tc=local-agent/<fixture> prompt",
-    );
-  }
-  return match[1];
-}
-
 /**
  * The production desktop main process creates this composition after restoring
  * platform auth. Hybrid tests cannot use a real user token or control API, so
@@ -228,12 +220,16 @@ function createHybridLocalAgentPlatform(): DesktopLocalAgentPlatform {
         async *stream(
           request: CompleteRequest,
         ): AsyncIterable<GatewayStreamEvent> {
-          const fixtureName = fixtureNameFor(request);
-          const fixture = await loadLocalAgentFixtureForTesting(fixtureName);
-          const turns = fixture.turns ?? fixture.passes?.[0]?.turns;
-          const turnKey = `${session.sessionId}:${fixtureName}`;
+          const trigger = extractHybridFixtureTrigger(request.messages);
+          const resolvedTurns =
+            trigger.kind === "local-agent"
+              ? await loadLocalAgentFixtureForTesting(trigger.name).then(
+                  (fixture) => fixture.turns ?? fixture.passes?.[0]?.turns,
+                )
+              : loadLegacyFixtureTurnsForTesting(trigger.name);
+          const turnKey = `${session.sessionId}:${trigger.operation}:${trigger.kind}:${trigger.name}`;
           const turnIndex = turnIndexes.get(turnKey) ?? 0;
-          const turn = turns?.[turnIndex];
+          const turn = resolvedTurns?.[turnIndex];
           turnIndexes.set(turnKey, turnIndex + 1);
           if (turn === undefined) {
             yield {

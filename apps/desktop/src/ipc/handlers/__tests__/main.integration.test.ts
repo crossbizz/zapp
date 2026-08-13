@@ -46,17 +46,18 @@ describe("main chat flow (hybrid)", () => {
     );
 
     // Type + click the real Send button (the whole path is real from here).
-    const { send } = await harness.typeInChat("hi");
+    const fixture = "tc=dyad-write-angle";
+    const { send } = await harness.typeInChat(fixture);
     send();
 
     // The user's prompt renders first...
-    await waitFor(() => expect(screen.getByText("hi")).toBeTruthy(), {
+    await waitFor(() => expect(screen.getByText(fixture)).toBeTruthy(), {
       timeout: 15_000,
     });
-    // ...then the streamed assistant response. The canned response's dyad-write
-    // tag is parsed into a DyadWrite card; the trailing literal text ("EOM")
+    // ...then the streamed assistant response. The explicit fixture's dyad-write
+    // tag is parsed into a DyadWrite card; the trailing literal text
     // renders directly and is what we can assert on in the DOM.
-    await waitFor(() => expect(screen.getByText(/EOM/)).toBeTruthy(), {
+    await waitFor(() => expect(screen.getByText(/AFTER TAG/)).toBeTruthy(), {
       timeout: 20_000,
     });
 
@@ -69,14 +70,18 @@ describe("main chat flow (hybrid)", () => {
     expect(messages).toHaveLength(2);
     const [userMessage, assistantMessage] = messages;
     expect(userMessage.role).toBe("user");
-    expect(userMessage.content).toBe("hi");
+    expect(userMessage.content).toBe(fixture);
     expect(assistantMessage.role).toBe("assistant");
-    expect(assistantMessage.content).toContain('<dyad-write path="file1.txt">');
-    expect(assistantMessage.content).toContain("EOM");
+    expect(assistantMessage.content).toContain(
+      '<dyad-write path="src/foo/bar.tsx"',
+    );
+    expect(assistantMessage.content).toContain("AFTER TAG");
 
     // The dyad-write was applied and committed (auto-approve).
-    expect(harness.readAppFile("file1.txt").trim()).toBe("A file (2)");
-    expect(assistantMessage.approvalState).toBe("approved");
+    expect(harness.readAppFile("src/foo/bar.tsx").trim()).toBe(
+      "// BEGINNING OF FILE",
+    );
+    expect(assistantMessage.approvalState).toBeNull();
     expect(assistantMessage.commitHash).toBeTruthy();
 
     // Every channel the UI invoked had a real handler.

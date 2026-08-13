@@ -984,6 +984,31 @@ describe("desktop local agent session", () => {
     database.$client.close();
   });
 
+  it("creates absent parent directories for a new agent-owned file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "zapp-local-owned-nested-"));
+    roots.push(root);
+    const runtime = new LocalAgentWorkspaceRuntime(root);
+
+    await expect(
+      runtime.writeFile(
+        "src/features/new/Panel.tsx",
+        new TextEncoder().encode("export const Panel = true;\n"),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      readFile(join(root, "src/features/new/Panel.tsx"), "utf8"),
+    ).resolves.toBe("export const Panel = true;\n");
+    await expect(
+      runtime.writeFile("../outside.ts", new TextEncoder().encode("outside\n")),
+    ).rejects.toThrow();
+    await expect(
+      runtime.writeFile(
+        ".GIT/hooks/new-hook",
+        new TextEncoder().encode("outside\n"),
+      ),
+    ).rejects.toThrow();
+  });
+
   it("serializes distinct local message operations before the next gateway turn", async () => {
     const root = await mkdtemp(join(tmpdir(), "zapp-local-operation-owner-"));
     roots.push(root);

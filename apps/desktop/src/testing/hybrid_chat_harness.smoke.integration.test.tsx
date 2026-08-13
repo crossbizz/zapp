@@ -65,27 +65,33 @@ describe("hybrid chat harness (smoke)", () => {
     });
 
     // The streamed text hits the DOM before the main-process post-stream work
-    // (tag processing, file writes, commit, approval) completes — wait for the
+    // (contained tool execution, file writes, and commit) completes — wait for the
     // real end-of-stream event before asserting main-side outcomes.
     await harness.waitForStreamEnd(harness.chatId);
 
     // Prove it went through the REAL main-process pipeline:
     // 1. The dyad-write tag was executed against the real app checkout.
-    expect(harness.appFileExists("src/foo/bar.tsx")).toBe(true);
+    expect(
+      harness.appFileExists("src/foo/bar.tsx"),
+      "contained write_file should create src/foo/bar.tsx",
+    ).toBe(true);
     expect(harness.readAppFile("src/foo/bar.tsx").trim()).toBe(
       "// BEGINNING OF FILE",
     );
     // 2. A real commit was made.
     expect(harness.gitLog().length).toBeGreaterThan(1);
-    // 3. Real db rows exist and were auto-approved.
+    // 3. Real db rows exist with a commit and no legacy proposal state.
     const messages = await harness.db.query.messages.findMany();
     const assistant = messages.find((m) => m.role === "assistant");
     expect(assistant).toBeTruthy();
     expect(assistant!.content).toContain("AFTER TAG");
-    expect(assistant!.approvalState).toBe("approved");
+    expect(assistant!.approvalState).toBeNull();
     expect(assistant!.commitHash).toBeTruthy();
     // 4. The renderer got the stream events through the bridge.
-    expect(bridgeSawChunk(harness)).toBe(true);
+    expect(
+      bridgeSawChunk(harness),
+      "renderer bridge should receive a chunk",
+    ).toBe(true);
   }, 60_000);
 
   it("rejects a second setup before the active harness is disposed", async () => {

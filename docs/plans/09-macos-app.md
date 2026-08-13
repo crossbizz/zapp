@@ -165,6 +165,28 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - [x] Verify: focused concurrent finalization/replay tests, MAC-6 owned suite, desktop type/lint, affected control/model suites, architecture checks, one final real-provider acceptance, max two reviews with exit zero Critical/Important.
 - [x] Commit: `fix(desktop): serialize local agent finalization`
 
+### Task MAC-6-FIX-4 [M2]: Preserve legacy hybrid fixture coverage through the contained gateway
+
+**Files:** Create: `apps/desktop/src/testing/legacy-fixture-adapter{,.test}.ts`; Modify: `apps/desktop/src/testing/hybrid_chat_harness.tsx`, focused hybrid integration tests, `apps/desktop/src/zapp/runtime/local.ts`, `apps/desktop/src/zapp/runtime/local-session.spec.ts`, `tasks/todo.md`, this plan
+**Effort:** M
+
+- [x] RED: prove the offline hybrid gateway rejects a legacy `tc=dyad-write-angle` fixture even though the repository fixture contains one valid write and a final assistant response.
+- [x] GREEN: adapt legacy markdown fixtures into strict current gateway turns, mapping supported file mutations to contained local-agent tools while retaining the exact assistant fixture text; reject unknown, traversal, malformed, or unsupported mutating fixtures without any provider/network fallback.
+- [x] RED/GREEN: prove local-agent `write_file` can create a new file below absent workspace directories while retaining path confinement, then create those parents inside the local workspace runtime.
+- [x] Verify: parser unit tests, hybrid smoke and version-history integrations, the affected desktop unit/integration projects, then the complete desktop `test:unit` corpus; classify any residual failures into separate bounded fix tasks rather than weakening or excluding tests.
+- [x] Commit: `test(desktop): preserve contained legacy fixture coverage`
+
+### Task MAC-6-FIX-5 [M2]: Reconcile the hybrid corpus with the contained runtime contract
+
+**Files:** Modify: `apps/desktop/src/testing/hybrid_chat_harness.tsx`, `apps/desktop/src/ipc/handlers/__tests__/*`, `apps/desktop/e2e-tests/fixtures/engine/local-agent/*`, `apps/desktop/vitest.config.ts`, `tasks/todo.md`, this plan
+**Effort:** L
+
+- [ ] RED: inventory each remaining hybrid failure serially and classify it as current public/local-runtime behavior, an obsolete removed provider-private behavior, or a test-runner resource-isolation failure.
+- [ ] GREEN: retain product-valid flows through exact typed contained tools and public APIs; replace provider transport dumps with strict captured `CompleteRequest` assertions; delete or rewrite obsolete Pro/tag-processor expectations without weakening current product guarantees.
+- [ ] GREEN: honor typed fixture delay/usage with abortable waits, scope fixture turns to one user operation, and serialize only the resource-owning integration project if concurrent fake services remain unstable.
+- [ ] Verify: complete desktop `test:unit`, desktop lint/typecheck, four Playwright lists, and all focused migrated clusters are green with no skipped replacement coverage.
+- [ ] Commit: `test(desktop): reconcile hybrid runtime coverage`
+
 ### Task MAC-7 [M4]: Docker runtime adapter
 
 **Files:** Create: `apps/desktop/src/zapp/runtime/docker.ts`
@@ -274,6 +296,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-12 MAC-8 done — Added the shared web/desktop SSE reducer and desktop cloud builder controller with authenticated-preview enforcement, Mission Control state, native pause/resume actions, and approval badge projection; the fixture parity suite passed 2/2.
 - 2026-08-13 MAC-8-FIX-1 done — Extended the shared ordered builder projection to conversation, run/Mission Control, preview, and deployment state; the reducer passed 2/2 and the desktop parity fixture passed 3/3 against that exact web projection.
 - 2026-08-13 MAC-8-FIX-2 done — Added a cross-client integration contract that feeds one typed event stream through the web SSE subscriber and desktop cloud controller, then compares conversation, approval/Mission Control, preview, and deployment projections; focused desktop tests passed 4/4, while E2 remains a candidate pending packaged macOS journey evidence.
+- 2026-08-13 MAC-6-FIX-4 done — Routed safe legacy write fixtures through the typed contained local-agent gateway, added nested parent creation without weakening path or case-insensitive Git-metadata confinement, and passed adapter/runtime 20/20 plus hybrid smoke/main/version 6/6; the complete corpus diagnostic still contains removed Pro/tag-processor expectations and concurrent fixture-server instability, now owned by MAC-6-FIX-5.
 - 2026-08-11 MAC-9 BLOCKED — API-first audit found no public session-authenticated internal-Git credential or sync API in the generated SDK; the only git-service credentials are internal service/repository-scoped boundaries. Without the prescribed user-scoped token, desktop cannot safely fetch/push or exercise the divergence/merge contract, so the task remains unchecked and no alternate credential path was introduced.
 - 2026-08-12 MAC-9 done — Added commit-boundary synchronization over GIT-7 leases: dirty work requires Commit/Stash/Discard, ancestry selects fast-forward or push, divergence requires an explicit parent-checked merge commit, and credentials remain ephemeral Git environment configuration; focused acceptance passed 4/4.
 - 2026-08-11 MAC-10 BLOCKED — Promotion depends on MAC-9's missing authenticated Git push path: project creation and capability scan APIs exist, but the desktop cannot push the local repository to the new internal repository through any public SDK operation. The task remains unchecked; no direct git-service backdoor or local-only linked marker was added.

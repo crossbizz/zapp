@@ -1,7 +1,7 @@
 import { exec as execBundledGit } from "dugite";
-import { lstat } from "node:fs/promises";
+import { lstat, mkdir } from "node:fs/promises";
 import { spawn as spawnPty } from "node-pty";
-import { relative, sep } from "node:path";
+import { dirname, relative, sep } from "node:path";
 import {
   MAX_EXEC_OUTPUT_BYTES,
   MemoryWorkspaceRuntime,
@@ -288,7 +288,11 @@ export class LocalAgentWorkspaceRuntime extends LocalWorkspaceRuntime {
     const normalized = relative(await resolveInRoot(this.root, "."), resolved)
       .split(sep)
       .join("/");
-    if (normalized.split("/").includes(".git")) {
+    if (
+      normalized
+        .split("/")
+        .some((component) => component.toLowerCase() === ".git")
+    ) {
       throw new LocalAgentPathDeniedError(path);
     }
     return normalized.length === 0 ? "." : normalized;
@@ -353,6 +357,9 @@ export class LocalAgentWorkspaceRuntime extends LocalWorkspaceRuntime {
 
   override async writeFile(path: string, data: Uint8Array): Promise<void> {
     const normalized = await this.assertWritable(path);
+    const parent = await resolveInRoot(this.root, dirname(normalized));
+    await mkdir(parent, { recursive: true });
+    await this.modelPath(normalized);
     await super.writeFile(normalized, data);
     this.ownership?.apply({ add: [normalized], remove: [] });
     this.ownedPaths.add(normalized);
