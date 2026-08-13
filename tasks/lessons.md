@@ -91,3 +91,13 @@ blocker does not require another approval. Re-scope it, record it, and continue.
 Stop only when progress needs genuinely new authority, a vendor/architecture
 substitution, destructive action, or a plan conflict the existing instructions
 do not resolve.
+
+## 2026-08-13 — Worktree progress is not authoritative completion
+
+**What happened:** Parallel milestone branches contained substantial finished
+work, but the primary branch tracker still showed dozens of open tasks. Reporting
+the branch work as if it were integrated made the completion status wrong.
+
+**Rule:** Reconcile and integrate the selected commits into the authoritative
+branch before reporting milestone counts. Derive completion from that branch's
+tracker and fresh verification, never from a task report or another worktree.

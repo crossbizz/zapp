@@ -4,7 +4,7 @@ const apiBaseUrl = 'http://127.0.0.1:4100';
 const appBaseUrl = 'http://127.0.0.1:3100';
 const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
-const organizationId = 'org-alpha';
+const organizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 const contractOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 
 const projectRead = {
@@ -13,7 +13,7 @@ const projectRead = {
   project: {
     archivedAt: null,
     createdAt: '2026-08-10T12:00:00.000Z',
-    createdBy: 'user-ada',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     description: 'A conversation fixture.',
     id: projectId,
     name: 'Conversation Fixture',
@@ -35,7 +35,7 @@ const activeRun = {
   organizationId,
   projectId,
   startedAt: '2026-08-10T12:00:00.000Z',
-  startedBy: 'user-ada',
+  startedBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
   status: 'running',
 };
 
@@ -227,7 +227,7 @@ test('submits typed interview answers and resolves specification and plan cards'
     const content = {
       problem: 'Teams need a reliable release workspace.', targetUsers: ['Product teams'], goals: ['Ship safely'], nonGoals: ['Native mobile'], journeys: ['Create and deploy'], pagesRoutes: ['/'], rolesPermissions: ['Owner approves'], dataModel: ['Project'], integrations: ['GitHub'], functionalRequirements: ['Build project'], nonfunctionalRequirements: ['Accessible'], acceptanceCriteria: [{ id: 'AC-1', text: 'A release can be approved', priority: 'critical', criticalFlow: true }], assumptions: ['Authenticated user'], risks: ['Deployment failure'], definitionOfDone: ['Evidence attached'],
     };
-    await route.fulfill({ body: JSON.stringify({ specification: { id: specificationId, organizationId, projectId, version: 1, status: 'draft', content, createdBy: 'user-ada', approvedBy: null, approvedAt: null } }), headers: corsHeaders(), status: 200 });
+    await route.fulfill({ body: JSON.stringify({ specification: { id: specificationId, organizationId, projectId, version: 1, status: 'draft', content, createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG', approvedBy: null, approvedAt: null } }), headers: corsHeaders(), status: 200 });
   });
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/plans/${planArtifactId}`, async (route) => {
     await route.fulfill({ body: JSON.stringify({ plan: { artifactId: planArtifactId, approvalId: planApprovalId, approvalKind: 'plan_diff', phaseCount: 1, taskCount: 1, truncated: false, phases: [{ id: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE', sequence: 1, title: 'Checkout', status: 'queued', acceptanceCriteria: ['AC-1'], optional: false }], tasks: [{ id: 'task_01K27Q9C2W85CMN1V9S6Q3D4FF', phaseId: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE', title: 'Build checkout', status: 'queued', riskLevel: 'medium', acceptanceCriteria: ['AC-1'], dependencies: [], assignedAgentRole: 'builder' }] } }), headers: corsHeaders(), status: 200 });

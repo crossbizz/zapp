@@ -413,6 +413,10 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       limits: { config: TEST_RATE_LIMITS },
       now: () => clock,
     });
+    nextApp.addHook('onRequest', (_request, reply) => {
+      reply.header('x-route-hook', 'preserved');
+      return Promise.resolve();
+    });
     app = nextApp;
     baseUrl = await nextApp.listen({ host: '127.0.0.1', port: 0 });
   }
@@ -433,6 +437,7 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
     });
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(response.headers.get('x-route-hook')).toBe('preserved');
 
     let replayed!: () => void;
     const replayComplete = new Promise<void>((resolve) => {

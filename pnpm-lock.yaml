@@ -599,6 +599,12 @@ importers:
       '@tailwindcss/postcss':
         specifier: ^4.1.18
         version: 4.3.3
+      '@temporalio/testing':
+        specifier: 1.22.0
+        version: 1.22.0(lightningcss@1.32.0)
+      '@temporalio/worker':
+        specifier: 1.22.0
+        version: 1.22.0(lightningcss@1.32.0)
       '@types/node':
         specifier: ^22.9.0
         version: 22.20.1

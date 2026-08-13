@@ -13,7 +13,7 @@ const projectRead = {
       headCommitSha: 'a'.repeat(40),
       id: 'branch-main',
       name: 'main',
-      organizationId: 'org-alpha',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
       projectId,
       status: 'active',
     },
@@ -22,11 +22,11 @@ const projectRead = {
   project: {
     archivedAt: null,
     createdAt: '2026-08-12T12:00:00.000Z',
-    createdBy: 'user-ada',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     description: 'A production checkout.',
     id: projectId,
     name: 'Project Apollo',
-    organizationId: 'org-alpha',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
     slug: 'project-apollo',
     sourceType: 'prompt',
     supportLevel: 'managed' as const,
@@ -36,7 +36,7 @@ const projectRead = {
     externalRepoRef: null,
     id: 'repository-apollo',
     internalRepoRef: 'org_alpha/project_apollo',
-    organizationId: 'org-alpha',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
     projectId,
     provider: 'forgejo',
     syncPolicy: 'none',
@@ -156,7 +156,7 @@ test('creates an explicit Fix run from the production incident seed', async ({ p
   await page.getByRole('button', { name: 'Create Fix run' }).click();
   await expect(page.getByText('Fix run started')).toBeVisible();
   expect(runRequest).toBeDefined();
-  expect(runRequest?.headers()['x-organization-id']).toBe('org-alpha');
+  expect(runRequest?.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
   expect(runRequest?.headers()['idempotency-key']).toBeTruthy();
   expect(runRequest?.postDataJSON()).toEqual({
     mode: 'fix',

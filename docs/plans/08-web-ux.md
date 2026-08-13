@@ -228,6 +228,18 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Binding behavior: production health card (health checks, error rate from Grafana link-through (Faro/Loki panels), web vitals summary from Faro where available, synthetic check history sparkline + last failures with "Create Fix run"); release annotations timeline; Rollback dialog: target release picker (previous healthy default) + DEP-9 `databaseState` rendering — `incompatible` blocks with explanation, `requires_compensation` shows plan requirement (never "rollback complete" implication for DB, PRD §27.5).
 - [x] Commit: `feat(web): production health + guarded rollback UI`
 
+### Task WEB-14-FIX-2 [M6]: Integrated unified-builder E1 proof
+
+**Files:** Modify: `apps/web/src/components/builder/BuilderDeploy.tsx`, `apps/web/e2e/e1-journey.spec.ts`, `apps/web/e2e/support/{server,e1-composition}.ts`, `apps/web/e2e/*.spec.ts` fixture identifiers, `apps/web/package.json`, `pnpm-lock.yaml`, `services/control-api/src/{events/sse,routes/releases}.ts`, `services/control-api/test/{releases,integration/sse}.test.ts`, `tasks/{todo,lessons}.md`, `docs/plans/{00-master-plan,08-web-ux}.md`
+**Effort:** M
+
+- [x] Preserve the review RED: the browser journey stayed green while a preloaded orchestrator/release fake ignored approvals and iteration, and it bypassed the authenticated preview bootstrap with fulfilled HTML.
+- [x] Run the production autonomous Temporal workflow in a local test server with only provider/persistence adapters, make interview and approval signals advance its durable state, and prove redirect changes the dependent task before final evidence is created.
+- [x] Exercise the real Next preview bootstrap, public share-session exchange, signed preview credential redemption, and authorized proxy response; preserve upstream SSE headers across the public control-api stream.
+- [x] Discover a candidate created after the builder mounts, show the real readiness policy result, approve through the generated public SDK, and execute the production deployment workflow through its eight stages.
+- [x] Run the exact E1 browser journey, complementary autonomous and deployment workflow suites, control-api release/SSE checks, full serial web regression, lint, typecheck, and the second/final review round; at the two-round cap, re-scope its two release-state findings into exact lifecycle enforcement and focused browser regressions without starting a third review.
+- [x] Commit: `test(web): prove integrated unified builder journey`
+
 ### Task WEB-17 [M2]: Template gallery + detail with live preview & Remix
 
 **Files:** Create: `src/app/templates/{page,[slug]/page}.tsx`, `src/components/templates/*`
@@ -258,6 +270,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-13 WEB-14-FIX-2 done — Replaced the scripted E1 backend with the production autonomous Temporal workflow, real signal-driven interview/approval/redirect sequencing, actual preview bootstrap/session redemption, readiness policy, public release approval, and eight-stage deployment workflow; round-2 findings were re-scoped at the cap into exact candidate→verifying→ready/warnings→approved→deploying→healthy enforcement and ready/warnings builder discovery, with E1 1/1, focused browser 22/22, full serial web 111/111, autonomous 10/10, deploy 4/4, release routes 19/19, SSE integration green, and package lint/typecheck/build green.
 - 2026-08-12 WEB-16 done — Closed the final WEB-14-dependent acceptance gap with a single keyboard-only prompt→preview→release→successful-deploy path, preserved the existing usage/billing/Owner-audit and exact activation contracts, and passed focused web E2E 6/6 plus activation 3/3, lint, and typecheck; no provider call was required.
 - 2026-08-12 WEB-15 done — Added the public production health/synthetic/monitoring annotation view, Fix creation, healthy-target selection, and non-mutating database compatibility preview that blocks incompatible and unapproved-compensation rollback; focused E2E passed 1/1 and web lint/typecheck/build passed.
 - 2026-08-12 WEB-14 done — Connected readiness/actions, server-classified confirmation, keyed deployment, live progress polling, safe failure actions, terminal success, custom-domain and rollback links through the generated public SDK; focused E2E passed 4/4 and web lint/typecheck/build passed.

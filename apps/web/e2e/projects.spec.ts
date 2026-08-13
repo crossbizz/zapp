@@ -43,7 +43,7 @@ function project(id: string, name: string, organizationId: string, supportLevel:
   return {
     archivedAt: null,
     createdAt: '2026-08-07T12:00:00.000Z',
-    createdBy: 'user-ada',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     description: null,
     id,
     name,
@@ -131,7 +131,7 @@ function importedProjectFixture(projectId = 'proj-import') {
         headCommitSha: null,
         id: `branch-${projectId}`,
         name: 'main',
-        organizationId: 'org-alpha',
+        organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
         projectId,
         status: 'active',
       },
@@ -140,11 +140,11 @@ function importedProjectFixture(projectId = 'proj-import') {
     project: {
       archivedAt: null,
       createdAt: '2026-08-10T20:00:00.000Z',
-      createdBy: 'user-ada',
+      createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
       description: null,
       id: projectId,
       name: 'ada/portal',
-      organizationId: 'org-alpha',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
       slug: projectId,
       sourceType: 'github_import',
       supportLevel: 'compatible',
@@ -153,8 +153,8 @@ function importedProjectFixture(projectId = 'proj-import') {
       defaultBranch: 'main',
       externalRepoRef: null,
       id: `repo-${projectId}`,
-      internalRepoRef: `org-alpha/${projectId}`,
-      organizationId: 'org-alpha',
+      internalRepoRef: `org_01K27Q9C2W85CMN1V9S6Q3D4FD/${projectId}`,
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
       projectId,
       provider: 'forgejo',
       syncPolicy: 'internal',
@@ -191,9 +191,9 @@ test('switches active organizations and renders only API-backed project card fie
     requests.push({ cursor, organizationId });
     await projectListResponse(route, {
       items:
-        organizationId === 'org-beta'
-          ? [project('beta-console', 'Beta Console', 'org-beta', 'managed')]
-          : [project('alpha-portal', 'Alpha Portal', 'org-alpha', 'verified')],
+        organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE'
+          ? [project('beta-console', 'Beta Console', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed')]
+          : [project('alpha-portal', 'Alpha Portal', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
       nextCursor: null,
     });
   });
@@ -210,7 +210,7 @@ test('switches active organizations and renders only API-backed project card fie
   );
   await expect(page.getByText('Beta Console')).toHaveCount(0);
 
-  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org-beta');
+  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 
   await expect(page.getByRole('heading', { name: 'Beta Console' })).toBeVisible();
   await expect(page.getByText('Managed')).toBeVisible();
@@ -218,14 +218,14 @@ test('switches active organizations and renders only API-backed project card fie
   await expect
     .poll(async () => {
       return await page.evaluate(() => {
-        return localStorage.getItem('zapp:selected-organization:user-ada');
+        return localStorage.getItem('zapp:selected-organization:user_01K27Q9C2W85CMN1V9S6Q3D4FG');
       });
     })
-    .toBe('org-beta');
+    .toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 
   expect(requests).toEqual([
-    { cursor: null, organizationId: 'org-alpha' },
-    { cursor: null, organizationId: 'org-beta' },
+    { cursor: null, organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD' },
+    { cursor: null, organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FE' },
   ]);
   await expect(page.getByText(/last activity/iu)).toHaveCount(0);
   await expect(page.getByText('Preview', { exact: true })).toHaveCount(0);
@@ -240,19 +240,19 @@ test('replaces the URL override on organization switch and refreshes into the pe
     const organizationId = route.request().headers()['x-organization-id'];
     await projectListResponse(route, {
       items:
-        organizationId === 'org-beta'
-          ? [project('beta-console', 'Beta Console', 'org-beta', 'managed')]
-          : [project('alpha-portal', 'Alpha Portal', 'org-alpha', 'verified')],
+        organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE'
+          ? [project('beta-console', 'Beta Console', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed')]
+          : [project('alpha-portal', 'Alpha Portal', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
       nextCursor: null,
     });
   });
 
   await signIn(page);
-  await page.goto('/projects?organizationId=org-alpha&view=grid');
+  await page.goto('/projects?organizationId=org_01K27Q9C2W85CMN1V9S6Q3D4FD&view=grid');
   await expect(page.getByRole('heading', { name: 'Alpha Portal' })).toBeVisible();
   const historyLength = await page.evaluate(() => window.history.length);
 
-  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org-beta');
+  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 
   await expect(page).toHaveURL('/projects?view=grid');
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
@@ -277,11 +277,11 @@ test('loads the next opaque keyset page once when the grid sentinel enters view'
       route,
       cursor === null
         ? {
-            items: [project('alpha-portal', 'Alpha Portal', 'org-alpha', 'verified')],
+            items: [project('alpha-portal', 'Alpha Portal', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
             nextCursor: 'cursor-after-alpha',
           }
         : {
-            items: [project('mercury-shop', 'Mercury Shop', 'org-alpha', 'compatible')],
+            items: [project('mercury-shop', 'Mercury Shop', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible')],
             nextCursor: null,
           },
     );
@@ -316,9 +316,9 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
     const cursor = new URL(request.url()).searchParams.get('cursor');
     requests.push({ cursor, organizationId });
 
-    if (organizationId === 'org-beta') {
+    if (organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE') {
       await projectListResponse(route, {
-        items: [project('beta-console', 'Beta Console', 'org-beta', 'managed')],
+        items: [project('beta-console', 'Beta Console', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed')],
         nextCursor: null,
       });
       return;
@@ -329,11 +329,11 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
         route,
         alphaFirstPage === 1
           ? {
-              items: [project('alpha-initial', 'Alpha Initial', 'org-alpha', 'verified')],
+              items: [project('alpha-initial', 'Alpha Initial', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
               nextCursor: 'alpha-old-cursor',
             }
           : {
-              items: [project('alpha-fresh-one', 'Alpha Fresh One', 'org-alpha', 'verified')],
+              items: [project('alpha-fresh-one', 'Alpha Fresh One', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
               nextCursor: 'alpha-fresh-cursor',
             },
       );
@@ -343,7 +343,7 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
       staleStarted.resolve();
       await releaseStale.promise;
       await projectListResponse(route, {
-        items: [project('alpha-stale', 'Alpha Stale Page', 'org-alpha', 'compatible')],
+        items: [project('alpha-stale', 'Alpha Stale Page', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible')],
         nextCursor: 'alpha-stale-next',
       });
       staleSettled.resolve();
@@ -353,14 +353,14 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
       freshStarted.resolve();
       await releaseFresh.promise;
       await projectListResponse(route, {
-        items: [project('alpha-fresh-two', 'Alpha Fresh Two', 'org-alpha', 'compatible')],
+        items: [project('alpha-fresh-two', 'Alpha Fresh Two', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible')],
         nextCursor: null,
       });
       return;
     }
     if (cursor === 'alpha-stale-next') {
       await projectListResponse(route, {
-        items: [project('alpha-skipped', 'Alpha Skipped Page', 'org-alpha', 'compatible')],
+        items: [project('alpha-skipped', 'Alpha Skipped Page', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible')],
         nextCursor: null,
       });
       return;
@@ -374,9 +374,9 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
   await staleStarted.promise;
 
   const organization = page.getByRole('combobox', { name: 'Organization' });
-  await organization.selectOption('org-beta');
+  await organization.selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await expect(page.getByRole('heading', { name: 'Beta Console' })).toBeVisible();
-  await organization.selectOption('org-alpha');
+  await organization.selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
   await expect(page.getByRole('heading', { name: 'Alpha Fresh One' })).toBeVisible();
   await freshStarted.promise;
 
@@ -397,11 +397,11 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
   await expect(page.getByRole('heading', { name: 'Alpha Stale Page' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Alpha Skipped Page' })).toHaveCount(0);
   expect(requests).toEqual([
-    { cursor: null, organizationId: 'org-alpha' },
-    { cursor: 'alpha-old-cursor', organizationId: 'org-alpha' },
-    { cursor: null, organizationId: 'org-beta' },
-    { cursor: null, organizationId: 'org-alpha' },
-    { cursor: 'alpha-fresh-cursor', organizationId: 'org-alpha' },
+    { cursor: null, organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD' },
+    { cursor: 'alpha-old-cursor', organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD' },
+    { cursor: null, organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FE' },
+    { cursor: null, organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD' },
+    { cursor: 'alpha-fresh-cursor', organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD' },
   ]);
 });
 
@@ -441,15 +441,15 @@ test('announces organization-switch loading as polite status', async ({ page }) 
   const releaseBeta = deferred();
   await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
     const organizationId = route.request().headers()['x-organization-id'];
-    if (organizationId === 'org-beta') {
+    if (organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE') {
       betaStarted.resolve();
       await releaseBeta.promise;
     }
     await projectListResponse(route, {
       items:
-        organizationId === 'org-beta'
-          ? [project('beta-console', 'Beta Console', 'org-beta', 'managed')]
-          : [project('alpha-portal', 'Alpha Portal', 'org-alpha', 'verified')],
+        organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE'
+          ? [project('beta-console', 'Beta Console', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed')]
+          : [project('alpha-portal', 'Alpha Portal', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
       nextCursor: null,
     });
   });
@@ -458,7 +458,7 @@ test('announces organization-switch loading as polite status', async ({ page }) 
   await page.goto('/projects');
   await expect(page.getByRole('heading', { name: 'Alpha Portal' })).toBeVisible();
 
-  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org-beta');
+  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await betaStarted.promise;
   const status = page.getByRole('status');
   await expect(status).toHaveAttribute('aria-live', 'polite');
@@ -477,7 +477,7 @@ test('offers only a working Retry when the project list cannot load', async ({ p
     attempts += 1;
     if (attempts > 1) {
       await projectListResponse(route, {
-        items: [project('alpha-recovered', 'Alpha Recovered', 'org-alpha', 'verified')],
+        items: [project('alpha-recovered', 'Alpha Recovered', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
         nextCursor: null,
       });
       return;
@@ -517,10 +517,10 @@ test('renders batch-backed activity and accessible environment states with Deplo
 }) => {
   const summaryRequests: ProjectSummaryRequest[] = [];
   const projects = [
-    project('alpha-ready', 'Alpha Ready', 'org-alpha', 'verified'),
-    project('alpha-starting', 'Alpha Starting', 'org-alpha', 'compatible'),
-    project('alpha-failed', 'Alpha Failed', 'org-alpha', 'managed'),
-    project('alpha-blocked', 'Alpha Blocked', 'org-alpha', 'verified'),
+    project('alpha-ready', 'Alpha Ready', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified'),
+    project('alpha-starting', 'Alpha Starting', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible'),
+    project('alpha-failed', 'Alpha Failed', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'managed'),
+    project('alpha-blocked', 'Alpha Blocked', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified'),
   ];
   await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
     if (route.request().method() !== 'GET') {
@@ -635,7 +635,7 @@ test('renders batch-backed activity and accessible environment states with Deplo
   await expect(ready.locator('[data-status-icon="true"]')).toHaveCount(2);
   expect(summaryRequests).toEqual([
     {
-      organizationId: 'org-alpha',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
       projectIds: ['alpha-ready', 'alpha-starting', 'alpha-failed', 'alpha-blocked'],
     },
   ]);
@@ -653,7 +653,7 @@ test('preserves base cards when summaries fail and retries only the failed summa
     }
     projectRequests += 1;
     await projectListResponse(route, {
-      items: [project('alpha-retry', 'Alpha Retry', 'org-alpha', 'verified')],
+      items: [project('alpha-retry', 'Alpha Retry', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
       nextCursor: null,
     });
   });
@@ -709,9 +709,9 @@ test('rejects an old Alpha summary after an Alpha to Beta to Alpha switch', asyn
   let alphaSummaryPage = 0;
   await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
     const organizationId = route.request().headers()['x-organization-id'];
-    if (organizationId === 'org-beta') {
+    if (organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE') {
       await projectListResponse(route, {
-        items: [project('beta-summary', 'Beta Summary', 'org-beta', 'managed')],
+        items: [project('beta-summary', 'Beta Summary', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed')],
         nextCursor: null,
       });
       return;
@@ -722,7 +722,7 @@ test('rejects an old Alpha summary after an Alpha to Beta to Alpha switch', asyn
         project(
           alphaProjectPage === 1 ? 'alpha-old-summary' : 'alpha-fresh-summary',
           alphaProjectPage === 1 ? 'Alpha Old Summary' : 'Alpha Fresh Summary',
-          'org-alpha',
+          'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           'verified',
         ),
       ],
@@ -733,7 +733,7 @@ test('rejects an old Alpha summary after an Alpha to Beta to Alpha switch', asyn
     new RegExp(`^${apiBaseUrl}/v1/projects/summaries(?:\\?.*)?$`, 'u'),
     async (route) => {
       const organizationId = route.request().headers()['x-organization-id'];
-      if (organizationId === 'org-beta') {
+      if (organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE') {
         await apiResponse(route, {
           summaries: [
             summary('beta-summary', {
@@ -781,9 +781,9 @@ test('rejects an old Alpha summary after an Alpha to Beta to Alpha switch', asyn
   await staleStarted.promise;
 
   const organization = page.getByRole('combobox', { name: 'Organization' });
-  await organization.selectOption('org-beta');
+  await organization.selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await expect(page.getByRole('heading', { name: 'Beta Summary' })).toBeVisible();
-  await organization.selectOption('org-alpha');
+  await organization.selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
   await expect(page.getByRole('heading', { name: 'Alpha Fresh Summary' })).toBeVisible();
   await expect(page.getByText('Preview: Starting', { exact: true })).toBeVisible();
 
@@ -825,7 +825,7 @@ test('paginates GitHub repositories and branches by keyboard, then resumes durab
           configuration: { installationId: '41122' },
           credentialRef: null,
           id: 'int-github',
-          organizationId: 'org-alpha',
+          organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           projectId: null,
           provider: 'github',
           status: 'connected',
@@ -1001,7 +1001,7 @@ test('retries a failed durable import with the exact project-create and import o
           configuration: { installationId: '41122' },
           credentialRef: null,
           id: 'int-github',
-          organizationId: 'org-alpha',
+          organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           projectId: null,
           provider: 'github',
           status: 'connected',
@@ -1110,7 +1110,7 @@ test('renews import keys after selection changes and resets the flow on organiza
           configuration: { installationId: '41122' },
           credentialRef: null,
           id: 'int-github',
-          organizationId: 'org-alpha',
+          organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           projectId: null,
           provider: 'github',
           status: 'connected',
@@ -1189,7 +1189,7 @@ test('renews import keys after selection changes and resets the flow on organiza
     importRequests[0]?.headers['idempotency-key'],
   );
 
-  await page.locator('select[aria-label="Organization"]').selectOption('org-beta');
+  await page.locator('select[aria-label="Organization"]').selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await expect(dialog.getByRole('button', { name: 'Connect GitHub' })).toBeVisible();
   await expect(dialog.getByRole('option', { name: 'ada/portal' })).toHaveCount(0);
 });
@@ -1208,7 +1208,7 @@ test('consumes successful callback material once across a keyboard close and reo
           configuration: { installationId: '41122' },
           credentialRef: null,
           id: 'int-github',
-          organizationId: 'org-alpha',
+          organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           projectId: null,
           provider: 'github',
           status: 'connected',
@@ -1300,7 +1300,7 @@ test('keeps branch discovery independent from overlapping repository pagination'
           configuration: { installationId: '41122' },
           credentialRef: null,
           id: 'int-github',
-          organizationId: 'org-alpha',
+          organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           projectId: null,
           provider: 'github',
           status: 'connected',
@@ -1383,7 +1383,7 @@ test('clears branch loading immediately when repository selection is cleared', a
           configuration: { installationId: '41122' },
           credentialRef: null,
           id: 'int-github',
-          organizationId: 'org-alpha',
+          organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           projectId: null,
           provider: 'github',
           status: 'connected',

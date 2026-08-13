@@ -386,8 +386,15 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
       if (deps.port.getDeploymentProgress === undefined) throw releaseServiceFailed();
       const progress = await deps.port.getDeploymentProgress({ organizationId: ctx.organizationId, deploymentId: DeploymentParams.parse(request.params).deploymentId });
       if (progress === undefined) throw releaseNotFound();
+      for (const [name, value] of Object.entries(reply.getHeaders())) {
+        if (value !== undefined) reply.raw.setHeader(name, value);
+      }
       reply.hijack();
-      reply.raw.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'close' });
+      reply.raw.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        connection: 'close',
+      });
       for (const event of progress.events) reply.raw.write(`id: ${String(event.sequence)}\nevent: deployment.updated\ndata: ${JSON.stringify(event)}\n\n`);
       reply.raw.end();
     },

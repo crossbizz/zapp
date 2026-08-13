@@ -143,10 +143,10 @@ test('returns a protected 503 when CP-2 validation has a transport outage', asyn
 
 test('persists a valid organization override under the authenticated user key', async ({ page }) => {
   await signIn(page);
-  await page.goto('/?organizationId=org-beta');
+  await page.goto('/?organizationId=org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 
   await expect(page.getByText('Selected organization: Beta Org')).toBeVisible();
-  await expect.poll(async () => await page.evaluate(() => localStorage.getItem('zapp:selected-organization:user-ada'))).toBe('org-beta');
+  await expect.poll(async () => await page.evaluate(() => localStorage.getItem('zapp:selected-organization:user_01K27Q9C2W85CMN1V9S6Q3D4FG'))).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await page.reload();
   await expect(page.getByText('Selected organization: Beta Org')).toBeVisible();
 });
@@ -157,19 +157,19 @@ test('rejects an organization override outside the active memberships', async ({
 
   await expect(page.getByText('Invalid organization selection.')).toBeVisible();
   await expect(page.getByText('Selected organization: Alpha Org')).toBeVisible();
-  await expect.poll(async () => await page.evaluate(() => localStorage.getItem('zapp:selected-organization:user-ada'))).toBe('org-alpha');
+  await expect.poll(async () => await page.evaluate(() => localStorage.getItem('zapp:selected-organization:user_01K27Q9C2W85CMN1V9S6Q3D4FG'))).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
 });
 
 test('invalid URL override falls back to the persisted active organization', async ({ page }) => {
   await signIn(page);
   await page.addInitScript(() => {
-    localStorage.setItem('zapp:selected-organization:user-ada', 'org-beta');
+    localStorage.setItem('zapp:selected-organization:user_01K27Q9C2W85CMN1V9S6Q3D4FG', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   });
   await page.goto('/?organizationId=org-not-a-member');
 
   await expect(page.getByText('Invalid organization selection.')).toBeVisible();
   await expect(page.getByText('Selected organization: Beta Org')).toBeVisible();
-  await expect.poll(async () => await page.evaluate(() => localStorage.getItem('zapp:selected-organization:user-ada'))).toBe('org-beta');
+  await expect.poll(async () => await page.evaluate(() => localStorage.getItem('zapp:selected-organization:user_01K27Q9C2W85CMN1V9S6Q3D4FG'))).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 });
 
 test('renders a recoverable error instead of redirecting for a control-plane failure', async ({ page }) => {
@@ -205,26 +205,26 @@ test('invited memberships cannot be selected from the URL or persisted storage',
     };
   }, apiBaseUrl);
   expect(body.memberships).toContainEqual(expect.objectContaining({
-    organization: expect.objectContaining({ id: 'org-invited' }),
+    organization: expect.objectContaining({ id: 'org_01K27Q9C2W85CMN1V9S6Q3D4FF' }),
     status: 'invited',
   }));
 
   await page.addInitScript(() => {
-    localStorage.setItem('zapp:selected-organization:user-ada', 'org-invited');
+    localStorage.setItem('zapp:selected-organization:user_01K27Q9C2W85CMN1V9S6Q3D4FG', 'org_01K27Q9C2W85CMN1V9S6Q3D4FF');
   });
-  await page.goto('/?organizationId=org-invited');
+  await page.goto('/?organizationId=org_01K27Q9C2W85CMN1V9S6Q3D4FF');
   await expect(page.getByText('Invalid organization selection.')).toBeVisible();
   await expect(page.getByText('Selected organization: Alpha Org')).toBeVisible();
-  await expect.poll(async () => await page.evaluate(() => localStorage.getItem('zapp:selected-organization:user-ada'))).toBe('org-alpha');
+  await expect.poll(async () => await page.evaluate(() => localStorage.getItem('zapp:selected-organization:user_01K27Q9C2W85CMN1V9S6Q3D4FG'))).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
 });
 
 test('injects the selected organization header through the central SDK wrapper', async ({ page }) => {
   await signIn(page);
-  await page.goto('/?organizationId=org-beta');
+  await page.goto('/?organizationId=org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 
   await expect.poll(async () => (await fakeRequests(page)).some((request) => {
     const typed = request as { path: string; organizationId: string | null };
-    return typed.path === '/v1/me' && typed.organizationId === 'org-beta';
+    return typed.path === '/v1/me' && typed.organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE';
   })).toBe(true);
 });
 

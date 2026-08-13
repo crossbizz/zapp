@@ -12,7 +12,7 @@ const projectRead = {
       headCommitSha: null,
       id: 'branch-main',
       name: 'main',
-      organizationId: 'org-alpha',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
       projectId,
       status: 'active',
     },
@@ -24,7 +24,7 @@ const projectRead = {
       deploymentProvider: null,
       id: 'environment-preview',
       name: 'preview',
-      organizationId: 'org-alpha',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
       projectId,
       type: 'preview',
     },
@@ -32,11 +32,11 @@ const projectRead = {
   project: {
     archivedAt: null,
     createdAt: '2026-08-05T12:00:00.000Z',
-    createdBy: 'user-ada',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     description: 'A mission planning workspace.',
     id: projectId,
     name: 'Project Apollo',
-    organizationId: 'org-alpha',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
     slug: 'project-apollo',
     sourceType: 'prompt',
     supportLevel: 'compatible' as const,
@@ -46,7 +46,7 @@ const projectRead = {
     externalRepoRef: null,
     id: 'repository-apollo',
     internalRepoRef: 'org_alpha/project_apollo',
-    organizationId: 'org-alpha',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
     projectId,
     provider: 'forgejo',
     syncPolicy: 'none',
@@ -145,7 +145,7 @@ test('loads an organization-scoped shell with truthful header actions and surfac
 
   expect(projectRequests).toHaveLength(1);
   expect(projectRequests[0]?.method()).toBe('GET');
-  expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org-alpha');
+  expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
 });
 
 test('resizes panes by pointer and keyboard and restores the project width on reload', async ({
@@ -478,19 +478,19 @@ test('keeps Deploy disabled when the project has no approved release', async ({ 
   await expect(page.getByRole('button', { name: 'Deploy' })).toBeDisabled();
 });
 
-test('deploys an approved release without leaving the unified builder', async ({ page }) => {
+test('approves a readiness-evaluated release before deploying without leaving the builder', async ({ page }) => {
   const releaseId = 'rel_01J00000000000000000000000';
   const deploymentId = 'dep_01J00000000000000000000000';
   const release = {
     id: releaseId,
-    organizationId: 'org-alpha',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
     projectId,
     environmentId: 'environment-preview',
     commitSha: 'a'.repeat(40),
     specificationId: null,
-    status: 'approved',
+    status: 'warnings',
     evidenceManifestArtifactId: null,
-    createdBy: 'user-ada',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     createdAt: '2026-08-12T12:00:00.000Z',
   };
   const respond = (route: import('@playwright/test').Route, body: unknown) =>
@@ -517,8 +517,15 @@ test('deploys an approved release without leaving the unified builder', async ({
       requiresExplicitDataDisposition: false,
     }),
   );
+  let approved = false;
+  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/approve`, (route) => {
+    approved = true;
+    return respond(route, { release: { ...release, status: 'approved' } });
+  });
   await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deploy`, (route) =>
-    respond(route, { deploymentId }),
+    approved
+      ? respond(route, { deploymentId })
+      : route.fulfill({ body: 'release not approved', status: 409 }),
   );
   await page.route(`${apiBaseUrl}/v1/deployments/${deploymentId}`, (route) =>
     respond(route, {
@@ -549,6 +556,7 @@ test('deploys an approved release without leaving the unified builder', async ({
   await expect(page.getByRole('heading', { name: 'Ready to deploy' })).toBeVisible();
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { name: 'First deploy' })).toBeVisible();
+  expect(approved).toBe(true);
   await page.getByRole('button', { name: 'Confirm deployment' }).click();
   await expect(page.getByRole('heading', { name: 'Deployment succeeded' })).toBeVisible();
   expect(page.url()).toBe(builderUrl);
@@ -660,7 +668,7 @@ test('warns about an invalid organization override while using the safe membersh
   );
   await expect(page).toHaveURL(builderUrl);
   expect(projectRequests).toHaveLength(1);
-  expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org-alpha');
+  expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
 });
 
 test('offers all standard recovery actions when the project cannot load', async ({ page }) => {

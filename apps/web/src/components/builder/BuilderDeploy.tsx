@@ -13,6 +13,7 @@ import { StageTimeline } from '../deploy/StageTimeline';
 import { SuccessCard } from '../deploy/SuccessCard';
 
 type DeploymentStep = 'confirm' | 'readiness' | 'success' | 'timeline';
+type ReleaseStatus = 'approved' | 'candidate' | 'ready' | 'warnings';
 type ReleaseReadiness = Awaited<
   ReturnType<ReturnType<typeof createControlPlaneClient>['getRelease']>
 >['readiness'];
@@ -25,6 +26,7 @@ export function BuilderDeploy({
   readonly projectId: string;
 }): ReactElement {
   const [releaseId, setReleaseId] = useState<string>();
+  const [releaseStatus, setReleaseStatus] = useState<ReleaseStatus>();
   const [step, setStep] = useState<DeploymentStep>();
   const [preview, setPreview] = useState<DeploymentPreviewData>();
   const [progress, setProgress] = useState<DeploymentProgressData>();
@@ -34,17 +36,29 @@ export function BuilderDeploy({
 
   useEffect(() => {
     let active = true;
-    void createControlPlaneClient(organizationId)
-      .listProjectReleases(projectId)
-      .then((page) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const discoverRelease = async (): Promise<void> => {
+      try {
+        const page = await createControlPlaneClient(organizationId).listProjectReleases(projectId);
         if (!active) return;
-        setReleaseId(page.items.find((release) => release.status === 'approved')?.id);
-      })
-      .catch(() => {
+        const release = page.items.find(({ status: nextStatus }) => nextStatus === 'approved') ??
+          page.items.find(({ status: nextStatus }) =>
+            nextStatus === 'candidate' || nextStatus === 'ready' || nextStatus === 'warnings');
+        if (release !== undefined) {
+          setReleaseId(release.id);
+          setReleaseStatus(release.status as ReleaseStatus);
+          setStatus('');
+          return;
+        }
+      } catch {
         if (active) setStatus('Deployment is unavailable until a release is ready.');
-      });
+      }
+      if (active) timer = setTimeout(() => { void discoverRelease(); }, 1_000);
+    };
+    void discoverRelease();
     return () => {
       active = false;
+      if (timer !== undefined) clearTimeout(timer);
     };
   }, [organizationId, projectId]);
 
@@ -57,15 +71,37 @@ export function BuilderDeploy({
         client.getRelease(releaseId),
         client.getDeploymentPreview(releaseId),
       ]);
-      if (detail.release.projectId !== projectId || detail.release.status !== 'approved') {
+      if (
+        detail.release.projectId !== projectId ||
+        !['approved', 'candidate', 'ready', 'warnings'].includes(detail.release.status)
+      ) {
         throw new Error('Release is not deployable.');
       }
+      setReleaseStatus(detail.release.status as ReleaseStatus);
       setReadiness(detail.readiness);
       setPreview(nextPreview);
       setStep('readiness');
       setStatus('');
     } catch {
       setStatus('Deployment confirmation could not be loaded.');
+    }
+  }
+
+  async function continueAfterReadiness(): Promise<void> {
+    if (releaseId === undefined) return;
+    if (releaseStatus === 'approved') {
+      setStep('confirm');
+      return;
+    }
+    setStatus('Approving release…');
+    try {
+      const approved = await createControlPlaneClient(organizationId).approveRelease(releaseId);
+      if (approved.release.status !== 'approved') throw new Error('Release was not approved.');
+      setReleaseStatus('approved');
+      setStep('confirm');
+      setStatus('');
+    } catch {
+      setStatus('The release could not be approved.');
     }
   }
 
@@ -97,7 +133,7 @@ export function BuilderDeploy({
         <ReadinessSheet
           onAction={() => { setStatus('Resolve the readiness finding before deployment.'); }}
           onClose={() => { setStep(undefined); }}
-          onContinue={() => { setStep('confirm'); }}
+          onContinue={() => { void continueAfterReadiness(); }}
           readiness={readiness}
         />
       ) : null}

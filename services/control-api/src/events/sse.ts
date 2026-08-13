@@ -501,6 +501,9 @@ async function streamEvents(input: {
     }
   };
 
+  for (const [name, value] of Object.entries(reply.getHeaders())) {
+    if (value !== undefined) reply.raw.setHeader(name, value);
+  }
   reply.hijack();
   reply.raw.writeHead(200, {
     'cache-control': 'no-cache, no-transform',

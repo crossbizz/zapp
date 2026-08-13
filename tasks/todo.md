@@ -253,6 +253,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-16-FIX-1 Keep the cold web test command aligned with activation coverage
 - [x] WEB-14 Deploy flow UI (readiness→confirm→timeline→success)
 - [x] WEB-14-FIX-1 Unified-builder deployment journey
+- [x] WEB-14-FIX-2 Integrated unified-builder E1 proof
 - [x] WEB-15 Production health + guarded rollback UI
 - [x] MAC-7 Docker runtime mode
 - [x] MAC-8 Cloud builder + Mission Control parity

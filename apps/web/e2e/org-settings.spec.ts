@@ -31,7 +31,7 @@ test('renders usage burn-down and persists budget alert channels through the pub
   const preferenceMutations: { readonly body: unknown; readonly type: string }[] = [];
   let finishPreferenceMutation: (() => void) | undefined;
   await page.route(new RegExp(`^${apiBaseUrl}/v1/usage/summary\?`, 'u'), async (route) => {
-    expect(route.request().headers()['x-organization-id']).toBe('org-alpha');
+    expect(route.request().headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
     await json(route, {
       credits: {
         available: '82.5000',
@@ -53,9 +53,9 @@ test('renders usage burn-down and persists budget alert channels through the pub
         desktopPush: true,
         email: true,
         inApp: true,
-        organizationId: 'org-alpha',
+        organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
         type: `budget_${String(threshold)}`,
-        userId: 'user-ada',
+        userId: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
       })),
     });
   });
@@ -75,9 +75,9 @@ test('renders usage burn-down and persists budget alert channels through the pub
           desktopPush: true,
           email: false,
           inApp: true,
-          organizationId: 'org-alpha',
+          organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           type: 'budget_80',
-          userId: 'user-ada',
+          userId: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
         },
       });
     },
@@ -156,7 +156,7 @@ test('manages plan seats, payment method, and top-up checkout', async ({ page })
 
 test('shows the filterable audit table only to an organization owner', async ({ page }) => {
   let auditReads = 0;
-  await page.route(`${apiBaseUrl}/v1/organizations/org-alpha/audit-events*`, async (route) => {
+  await page.route(`${apiBaseUrl}/v1/organizations/org_01K27Q9C2W85CMN1V9S6Q3D4FD/audit-events*`, async (route) => {
     auditReads += 1;
     const query = new URL(route.request().url()).searchParams;
     expect(query.get('action')).toBe(auditReads === 1 ? null : 'project.created');
@@ -164,12 +164,12 @@ test('shows the filterable audit table only to an organization owner', async ({ 
       items: [
         {
           action: 'project.created',
-          actorId: 'user-ada',
+          actorId: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
           actorType: 'user',
           id: 'aud_fixture',
           metadata: {},
           occurredAt: '2026-08-12T12:00:00.000Z',
-          organizationId: 'org-alpha',
+          organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
           targetId: 'proj-home',
           targetType: 'project',
         },
@@ -185,7 +185,7 @@ test('shows the filterable audit table only to an organization owner', async ({ 
   await page.getByRole('combobox', { name: 'Action' }).selectOption('project.created');
   await expect.poll(() => auditReads).toBe(2);
 
-  await page.goto('/org/audit?organization=org-beta');
+  await page.goto('/org/audit?organization=org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await expect(page.getByRole('heading', { name: 'Owner access required' })).toBeVisible();
   expect(auditReads).toBe(2);
 });

@@ -23,7 +23,7 @@ const projectFixture = {
       headCommitSha: null,
       id: 'branch-main',
       name: 'main',
-      organizationId: 'org-alpha',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
       projectId: 'proj-home',
       status: 'active',
     },
@@ -32,7 +32,7 @@ const projectFixture = {
       headCommitSha: null,
       id: 'branch-develop',
       name: 'develop',
-      organizationId: 'org-alpha',
+      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
       projectId: 'proj-home',
       status: 'active',
     },
@@ -41,11 +41,11 @@ const projectFixture = {
   project: {
     archivedAt: null,
     createdAt: '2026-08-05T12:00:00.000Z',
-    createdBy: 'user-ada',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     description: null,
     id: 'proj-home',
     name: 'Build a customer support portal',
-    organizationId: 'org-alpha',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
     slug: 'build-a-customer-support-portal',
     sourceType: 'prompt',
     supportLevel: 'compatible',
@@ -54,8 +54,8 @@ const projectFixture = {
     defaultBranch: 'main',
     externalRepoRef: null,
     id: 'repo-home',
-    internalRepoRef: 'org-alpha/proj-home',
-    organizationId: 'org-alpha',
+    internalRepoRef: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD/proj-home',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
     projectId: 'proj-home',
     provider: 'forgejo',
     syncPolicy: 'internal',
@@ -70,10 +70,10 @@ const runFixture = {
     id: 'run-home',
     mode: 'build',
     model: null,
-    organizationId: 'org-alpha',
+    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
     projectId: 'proj-home',
     startedAt: '2026-08-05T12:00:01.000Z',
-    startedBy: 'user-ada',
+    startedBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     status: 'queued',
   },
 } as const;
@@ -256,7 +256,7 @@ test('loads organization-scoped flags before rendering the home controls', async
   await expect(page.getByRole('tab', { name: /Mobile App/u })).toBeEnabled();
   await expect.poll(async () => (await fakeRequests(page)).some((request) => {
     const typed = request as { path?: string; organizationId?: string | null };
-    return typed.path === '/v1/feature-flags' && typed.organizationId === 'org-alpha';
+    return typed.path === '/v1/feature-flags' && typed.organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
   })).toBe(true);
 });
 
@@ -419,7 +419,7 @@ test('defaults Auto to web without model and hands the first prompt to the real 
   });
 
   for (const request of [projectRequest, runRequest]) {
-    expect(request?.headers['x-organization-id']).toBe('org-alpha');
+    expect(request?.headers['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
     expect(request?.headers['x-zapp-csrf']).toBeTruthy();
     expect(request?.headers.cookie).toContain('zapp_session=');
     expect(request?.headers['idempotency-key']).toBeTruthy();
@@ -494,11 +494,11 @@ test('lists active organizations and signs out through the public API', async ({
   await page.getByRole('button', { name: 'Open account menu' }).click();
   await expect(page.getByRole('link', { name: 'Alpha Org' })).toHaveAttribute(
     'href',
-    '/?organizationId=org-alpha',
+    '/?organizationId=org_01K27Q9C2W85CMN1V9S6Q3D4FD',
   );
   await expect(page.getByRole('link', { name: 'Beta Org' })).toHaveAttribute(
     'href',
-    '/?organizationId=org-beta',
+    '/?organizationId=org_01K27Q9C2W85CMN1V9S6Q3D4FE',
   );
   await expect(page.getByRole('link', { name: 'Organization settings' })).toHaveAttribute(
     'href',
@@ -519,11 +519,11 @@ test('re-runs tenant selection when an organization is chosen from the account m
   await page.getByRole('button', { name: 'Open account menu' }).click();
   await page.getByRole('link', { name: 'Beta Org' }).click();
 
-  await expect(page).toHaveURL('/?organizationId=org-beta');
+  await expect(page).toHaveURL('/?organizationId=org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await expect(page.getByText('Selected organization: Beta Org')).toBeVisible();
   await expect.poll(async () => (await fakeRequests(page)).some((request) => {
     const typed = request as { path?: string; organizationId?: string | null };
-    return typed.path === '/v1/me' && typed.organizationId === 'org-beta';
+    return typed.path === '/v1/me' && typed.organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE';
   })).toBe(true);
 });
 
@@ -537,7 +537,7 @@ test('clears stale session-derived state before retry revalidation', async ({ pa
 
   await page.route(`${apiBaseUrl}/v1/me`, async (route) => {
     const organizationId = route.request().headers()['x-organization-id'];
-    if (organizationId === 'org-alpha' && !failedScopedRequest) {
+    if (organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FD' && !failedScopedRequest) {
       failedScopedRequest = true;
       await route.fulfill({
         body: JSON.stringify({ error: { code: 'fixture_failure' } }),

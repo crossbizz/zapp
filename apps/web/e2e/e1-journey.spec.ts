@@ -1,39 +1,22 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const apiBaseUrl = 'http://127.0.0.1:4100';
-const appBaseUrl = 'http://127.0.0.1:3100';
-const organizationId = 'org-alpha';
-const contractOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
-const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
-const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
-const releaseId = 'rel_01J00000000000000000000000';
-const workspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FG';
+const organizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 
-function headers(contentType = 'application/json'): Record<string, string> {
-  return {
-    'access-control-allow-credentials': 'true',
-    'access-control-allow-headers': 'content-type, idempotency-key, x-zapp-csrf, x-organization-id',
-    'access-control-allow-origin': appBaseUrl,
-    'content-type': contentType,
-  };
-}
-
-function respond(route: Route, body: unknown, status = 200): Promise<void> {
-  return route.fulfill({ body: JSON.stringify(body), headers: headers(), status });
-}
-
-function event(sequence: number, type: string, payload: Record<string, unknown>): string {
-  return `id: ${String(sequence)}\nevent: ${type}\ndata: ${JSON.stringify({
-    id: `evt_01K27Q9C2W85CMN1V9S6${sequence.toString(32).toUpperCase().padStart(6, '0')}`,
-    occurredAt: new Date(Date.parse('2026-08-12T12:00:00.000Z') + sequence * 1_000).toISOString(),
-    organizationId: contractOrganizationId,
-    projectId,
-    runId,
-    sequence,
-    type,
-    visibility: 'user',
-    payload,
-  })}\n\n`;
+interface E1Status {
+  readonly deploymentStages: readonly string[];
+  readonly deploys: readonly { readonly releaseId: string }[];
+  readonly eventErrors: readonly string[];
+  readonly requests: readonly {
+    readonly body?: unknown;
+    readonly method: string;
+    readonly path: string;
+    readonly organizationId: string | null;
+  }[];
+  readonly signals: readonly { readonly signal: string }[];
+  readonly starts: readonly { readonly mode: string; readonly prompt: string }[];
+  readonly taskPrompts: readonly { readonly taskId: string; readonly prompt: string }[];
+  readonly workflowOutcomes: readonly unknown[];
 }
 
 async function signIn(page: Page): Promise<void> {
@@ -43,110 +26,216 @@ async function signIn(page: Page): Promise<void> {
   await expect(page.getByText('Ada Lovelace')).toBeVisible();
 }
 
-test('takes one signed-in user from an initial prompt to deployed app in one unified builder', async ({ page }) => {
+test('takes one signed-in user through the real public API from prompt to deployed app', async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
   const initialPrompt = 'Build a friendly appointment scheduler for neighborhood clinics.';
   const iteration = 'Make the booking confirmation warmer and easier to scan.';
-  const project = {
-    archivedAt: null,
-    createdAt: '2026-08-12T12:00:00.000Z',
-    createdBy: 'user-ada',
-    description: initialPrompt,
-    id: projectId,
-    name: 'Neighborhood clinic scheduler',
-    organizationId,
-    slug: 'neighborhood-clinic-scheduler',
-    sourceType: 'prompt',
-    supportLevel: 'compatible',
-  };
-  const run = {
-    appType: 'web', branchId: 'branch_main', completedAt: null, id: runId, mode: 'build', model: null,
-    organizationId, projectId, startedAt: '2026-08-12T12:00:00.000Z', startedBy: 'user-ada', status: 'running',
-  };
-  const requests: Array<{ body: unknown; path: string; projectId: string | undefined }> = [];
-  const stream = [
-    event(1, 'conversation.card', { card: { version: 1, cardId: 'card_interview', kind: 'question', questions: [{ questionId: 'audience', prompt: 'Who will book appointments?', options: [{ label: 'Patients', tradeoff: 'Simple patient booking.', recommended: true }, { label: 'Staff', tradeoff: 'Staff schedule appointments.', recommended: false }] }] } }),
-    event(2, 'conversation.card', { card: { version: 1, cardId: 'card_spec', kind: 'specification', approvalId: 'appr_01K27Q9C2W85CMN1V9S6Q3D4FB', artifactId: 'spec_01K27Q9C2W85CMN1V9S6Q3D4FA', artifactVersion: 1 } }),
-    event(3, 'conversation.card', { card: { version: 1, cardId: 'card_plan', kind: 'plan', approvalId: 'appr_01K27Q9C2W85CMN1V9S6Q3D4FD', artifactId: 'art_01K27Q9C2W85CMN1V9S6Q3D4FC', approvalKind: 'plan_diff' } }),
-    event(4, 'phase.started', { name: 'Build checkout', phase: 'build' }),
-    event(5, 'tool.completed', { tool: 'write_file', userSummary: 'Built appointment booking' }),
-    event(6, 'preview.ready', { workspaceId }),
-  ].join('');
+  const previewRequests: Array<{ method: string; path: string }> = [];
+  let previewSessionCookie: string | undefined;
 
-  await page.route(`${apiBaseUrl}/v1/projects`, async (route) => {
-    if (route.request().method() !== 'POST') {
+  await page.request.get(`${apiBaseUrl}/__reset`);
+  await page.route('https://app.e1.test/**', async (route) => {
+    const publicUrl = new URL(route.request().url());
+    const response = await route.fetch({
+      url: `http://127.0.0.1:3100${publicUrl.pathname}${publicUrl.search}`,
+    });
+    await route.fulfill({ response });
+  });
+  await page.route(`${apiBaseUrl}/**`, async (route) => {
+    if (!route.request().frame().url().startsWith('https://app.e1.test/')) {
       await route.fallback();
       return;
     }
-    requests.push({ body: route.request().postDataJSON(), path: '/v1/projects', projectId: undefined });
-    await respond(route, { project, branches: [{ id: 'branch_main', name: 'main' }], repository: { defaultBranch: 'main' } }, 201);
+    const response = await route.fetch();
+    await route.fulfill({ response });
   });
-  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
-    if (route.request().method() === 'GET') {
-      await respond(route, { items: [run], nextCursor: null });
-      return;
+  await page.route('https://*.preview.e1.test/**', async (route) => {
+    const publicUrl = new URL(route.request().url());
+    previewRequests.push({ method: route.request().method(), path: publicUrl.pathname });
+    const response = await route.fetch({
+      url: `${apiBaseUrl}${publicUrl.pathname}${publicUrl.search}`,
+      headers: {
+        ...route.request().headers(),
+        host: publicUrl.host,
+        ...(previewSessionCookie === undefined ? {} : { cookie: previewSessionCookie }),
+      },
+    });
+    const headers = response.headers();
+    const setCookie = response.headersArray().find(
+      ({ name }) => name.toLowerCase() === 'set-cookie',
+    )?.value;
+    if (setCookie !== undefined) {
+      const [credential] = setCookie.split(';', 1);
+      const separator = credential?.indexOf('=') ?? -1;
+      if (credential !== undefined && separator > 0) {
+        previewSessionCookie = credential;
+        await page.context().addCookies([{
+          name: credential.slice(0, separator),
+          value: credential.slice(separator + 1),
+          url: publicUrl.origin,
+          httpOnly: true,
+          secure: true,
+          sameSite: 'Lax',
+        }]);
+      }
     }
-    requests.push({ body: route.request().postDataJSON(), path: '/runs', projectId });
-    await respond(route, { run }, 201);
+    delete headers['content-encoding'];
+    delete headers['content-length'];
+    await route.fulfill({
+      status: response.status(),
+      headers,
+      body: await response.body(),
+    });
   });
-  await page.route(`${apiBaseUrl}/v1/projects/${projectId}`, (route) =>
-    respond(route, { project, branches: [{ id: 'branch_main', name: 'main', organizationId, projectId, status: 'active', baseBranchId: null, headCommitSha: null }], environments: [], repository: { defaultBranch: 'main' } }),
-  );
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, (route) =>
-    route.fulfill({ body: stream, headers: headers('text/event-stream'), status: 200 }),
-  );
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/conversation-responses`, async (route) => {
-    requests.push({ body: route.request().postDataJSON(), path: '/conversation-responses', projectId });
-    await respond(route, { operationKey: `op_${'a'.repeat(64)}` }, 202);
-  });
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/approvals/*`, async (route) => {
-    requests.push({ body: route.request().postDataJSON(), path: new URL(route.request().url()).pathname, projectId });
-    await respond(route, { approval: { approvalId: route.request().url().split('/').at(-1), kind: 'plan_diff', status: 'approved' } });
-  });
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/specifications/*`, (route) => respond(route, { specification: { id: 'spec_01K27Q9C2W85CMN1V9S6Q3D4FA', organizationId, projectId, version: 1, status: 'draft', content: { problem: 'Patients need warm appointment booking.', targetUsers: ['Patients'], goals: ['Book appointments'], nonGoals: [], journeys: ['Book appointment'], pagesRoutes: ['/'], rolesPermissions: [], dataModel: [], integrations: [], functionalRequirements: [], nonfunctionalRequirements: [], acceptanceCriteria: [], assumptions: [], risks: [], definitionOfDone: [] }, createdBy: 'user-ada', approvedBy: null, approvedAt: null } }));
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/plans/*`, (route) => respond(route, { plan: { artifactId: 'art_01K27Q9C2W85CMN1V9S6Q3D4FC', approvalId: 'appr_01K27Q9C2W85CMN1V9S6Q3D4FD', approvalKind: 'plan_diff', phaseCount: 1, taskCount: 1, truncated: false, phases: [{ id: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE', sequence: 1, title: 'Build appointment booking', status: 'running', acceptanceCriteria: [], optional: false }], tasks: [{ id: 'task_01K27Q9C2W85CMN1V9S6Q3D4FF', phaseId: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE', title: 'Build booking flow', status: 'running', riskLevel: 'low', acceptanceCriteria: [], dependencies: [], assignedAgentRole: 'builder' }] } }));
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/messages`, async (route) => {
-    requests.push({ body: route.request().postDataJSON(), path: '/messages', projectId });
-    await respond(route, { messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FC', sequence: 7 }, 202);
-  });
-  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, (route) => respond(route, { entries: [], failureId: null, nextCursor: 0, state: 'ready', truncated: false }));
-  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/shares`, (route) => respond(route, { share: { id: '01j00000000000000000000000', policy: 'org', expiresAt: new Date(Date.now() + 300_000).toISOString(), url: `${appBaseUrl}/preview/${organizationId}/01j00000000000000000000000` } }, 201));
-  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/events`, (route) => route.fulfill({ body: '', headers: headers('text/event-stream'), status: 200 }));
-  await page.route(`${appBaseUrl}/preview/${organizationId}/01j00000000000000000000000`, (route) => route.fulfill({ body: '<h1>Authenticated clinic preview</h1>', contentType: 'text/html', status: 200 }));
-  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects/${projectId}/releases`, 'u'), (route) => respond(route, { items: [{ id: releaseId, projectId, environmentId: 'env_preview', commitSha: 'a'.repeat(40), status: 'approved', createdBy: 'user-ada', supportLevel: 'compatible', activeProduction: false, createdAt: '2026-08-12T12:00:00.000Z', deployments: [] }], nextCursor: null, rollbackTargets: [] }));
-  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}`, (route) => respond(route, { release: { id: releaseId, organizationId, projectId, environmentId: 'env_preview', commitSha: 'a'.repeat(40), specificationId: null, status: 'approved', evidenceManifestArtifactId: null, createdBy: 'user-ada', createdAt: '2026-08-12T12:00:00.000Z' }, readiness: { state: 'ready', findings: [] } }));
-  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deployment-preview?retarget=false`, (route) => respond(route, { title: 'First deploy', deploymentType: 'first_deploy', effects: { productionData: 'Created', secrets: 'Applied', url: 'Created', activeUsers: 'No users affected' }, requiresExplicitDataDisposition: false }));
-  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deploy`, (route) => respond(route, { deploymentId: 'dep_01J00000000000000000000000' }));
-  await page.route(`${apiBaseUrl}/v1/deployments/dep_01J00000000000000000000000`, (route) => respond(route, { deploymentId: 'dep_01J00000000000000000000000', releaseId, projectId, environmentId: 'env_preview', status: 'healthy', url: 'https://clinic.example.test', events: [], terminalSuccess: { status: 'succeeded', permanentUrl: 'https://clinic.example.test', release: { id: releaseId, commitSha: 'a'.repeat(40) }, evidence: { statusLink: `/v1/releases/${releaseId}/evidence` }, productionHealth: { status: 'healthy' }, monitoring: { grafanaDashboardLinks: [], faroAppLink: 'https://grafana.example.test/faro', posthogAnnotationLink: 'https://posthog.example.test/release' }, customDomainAction: { method: 'POST', href: `/v1/projects/${projectId}/domains` }, previousHealthyRelease: null, previewChanges: { requireRedeploy: true, note: 'Preview changes require redeploy.' } } }));
 
   await signIn(page);
+  const sessionCookies = (await page.context().cookies()).filter(({ name }) =>
+    name === 'zapp_session' || name === 'zapp_csrf');
+  await page.context().addCookies(sessionCookies.flatMap((cookie) => [
+    {
+      name: cookie.name,
+      value: cookie.value,
+      domain: 'app.e1.test',
+      path: '/',
+      httpOnly: cookie.httpOnly,
+      secure: true,
+      sameSite: 'None' as const,
+    },
+    {
+      name: cookie.name,
+      value: cookie.value,
+      domain: '127.0.0.1',
+      path: '/',
+      httpOnly: cookie.httpOnly,
+      secure: true,
+      sameSite: 'None' as const,
+    },
+  ]));
+  await page.goto(`/?organizationId=${organizationId}`);
+  await expect(page.getByText('Alpha Org')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Add attachment or controls' }).click();
+  await page.getByRole('button', { name: 'Auto ▸' }).click();
+  await page.getByRole('radio', { name: 'Autonomous' }).check();
   await page.getByLabel('Describe your project').fill(initialPrompt);
   await page.getByRole('button', { name: 'Create project' }).click();
-  await expect(page).toHaveURL(`/projects/${projectId}`);
+
+  await expect(page).toHaveURL(/\/projects\/proj_[0-9A-HJKMNP-TV-Z]{26}$/u);
   const builderUrl = page.url();
   await expect(page.getByText(initialPrompt)).toBeVisible();
-  await page.getByLabel('Agent questions').getByLabel(/Patients/u).check();
-  await page.getByRole('button', { name: 'Submit answers' }).click();
-  await expect(page.getByText('Answers submitted.')).toBeVisible();
+
+  let answeredCards = 0;
+  for (;;) {
+    const startBuilding = page.getByRole('button', { name: 'Start building' });
+    if (await startBuilding.isVisible()) break;
+    const form = page.getByLabel('Agent questions').nth(answeredCards);
+    await expect(form).toBeVisible();
+    const fieldsets = form.locator('fieldset');
+    for (let index = 0; index < await fieldsets.count(); index += 1) {
+      await fieldsets.nth(index).getByRole('radio').first().check();
+    }
+    await form.getByRole('button', { name: 'Submit answers' }).click();
+    await expect(form.getByText('Answers submitted.')).toBeVisible();
+    answeredCards += 1;
+    await expect.poll(async () =>
+      await startBuilding.isVisible() ||
+      await page.getByLabel('Agent questions').count() > answeredCards,
+    ).toBe(true);
+  }
   await page.getByRole('button', { name: 'Start building' }).click();
   await page.getByRole('button', { name: 'Approve plan' }).click();
-  await expect(page.getByText('Build appointment booking')).toBeVisible();
-  await expect(page.locator('iframe')).toHaveCount(1);
-  await page.getByLabel('Message the agent').fill(iteration);
-  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect.poll(async () => {
+    const response = await page.request.get(`${apiBaseUrl}/__e1`);
+    const raw: unknown = await response.json();
+    return {
+      eventErrors: (raw as E1Status).eventErrors,
+      iframeCount: await page.locator('iframe').count(),
+    };
+  }).toEqual({ eventErrors: [], iframeCount: 1 });
+  await expect(
+    page.frameLocator('iframe').getByRole('heading', { name: 'Authenticated clinic preview' }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Mission Control' }).click();
+  await page.getByLabel('Redirect instructions').fill(iteration);
+  await page.getByRole('button', { name: 'Redirect', exact: true }).click();
+  await expect(page.getByText('Redirect applied.')).toBeVisible();
+
+  await expect.poll(async () => {
+    const response = await page.request.get(`${apiBaseUrl}/__e1`);
+    const raw: unknown = await response.json();
+    const status = raw as E1Status;
+    return {
+      changedTaskRan: status.taskPrompts.some(({ prompt }) => prompt.includes(iteration)),
+      eventErrors: status.eventErrors,
+      workflowOutcomes: status.workflowOutcomes.length,
+    };
+  }).toEqual({ changedTaskRan: true, eventErrors: [], workflowOutcomes: 1 });
+
   await expect(page.getByRole('button', { name: 'Deploy' })).toBeEnabled();
   await page.getByRole('button', { name: 'Deploy' }).click();
   await expect(page.getByRole('heading', { name: 'Ready to deploy' })).toBeVisible();
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Confirm deployment' }).click();
   await expect(page.getByRole('heading', { name: 'Deployment succeeded' })).toBeVisible();
+
   expect(page.url()).toBe(builderUrl);
   await expect(page.getByText(/terminal/iu)).toHaveCount(0);
-  expect(requests.find((request) => request.path === '/v1/projects')).toEqual({
-    body: { name: 'Build a friendly appointment scheduler for neighborhood clinics', sourceType: 'prompt' },
-    path: '/v1/projects',
-    projectId: undefined,
+
+  const statusResponse = await page.request.get(`${apiBaseUrl}/__e1`);
+  const rawStatus: unknown = await statusResponse.json();
+  const status = rawStatus as E1Status;
+  expect(status.starts).toEqual([
+    expect.objectContaining({ mode: 'autonomous', prompt: initialPrompt }),
+  ]);
+  expect(status.signals.filter(({ signal }) => signal === 'conversation_card_response')).toHaveLength(
+    answeredCards,
+  );
+  expect(status.signals.map(({ signal }) => signal)).toEqual(
+    expect.arrayContaining(['approval_decision', 'redirect']),
+  );
+  expect(status.deploys).toHaveLength(1);
+  const approvalRequestIndex = status.requests.findIndex(({ method, path }) =>
+    method === 'POST' && /^\/v1\/releases\/rel_[^/]+\/approve$/u.test(path));
+  const deployRequestIndex = status.requests.findIndex(({ method, path }) =>
+    method === 'POST' && /^\/v1\/releases\/rel_[^/]+\/deploy$/u.test(path));
+  expect(approvalRequestIndex).toBeGreaterThanOrEqual(0);
+  expect(deployRequestIndex).toBeGreaterThan(approvalRequestIndex);
+  expect(status.deploymentStages).toEqual([
+    'readiness_check',
+    'build_artifact',
+    'configure_secrets',
+    'apply_migrations',
+    'provision_runtime',
+    'start_services',
+    'production_health_check',
+    'go_live',
+  ]);
+  expect(previewRequests).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ method: 'POST', path: '/v1/preview/session' }),
+      expect.objectContaining({ method: 'GET', path: '/' }),
+    ]),
+  );
+  expect(
+    status.requests.find(({ path }) =>
+      /^\/v1\/organizations\/org_[^/]+\/preview-shares\/[^/]+\/sessions$/u.test(path)),
+  ).toMatchObject({ method: 'POST' });
+  expect(status.requests.find(({ path }) => path === '/v1/projects')).toMatchObject({
+    body: {
+      name: 'Build a friendly appointment scheduler for neighborhood clinics',
+      sourceType: 'prompt',
+    },
+    method: 'POST',
+    organizationId,
   });
-  expect(requests.find((request) => request.path === '/runs')?.body).toMatchObject({ prompt: initialPrompt });
-  expect(requests.find((request) => request.path === '/conversation-responses')?.body).toEqual({ version: 1, kind: 'question_answers', cardId: 'card_interview', answers: [{ questionId: 'audience', answer: 'Patients' }] });
-  expect(requests.find((request) => request.path === '/messages')?.body).toEqual({ attachments: [], content: iteration });
+  expect(
+    status.requests.find(({ path }) => /^\/v1\/projects\/proj_[^/]+\/runs$/u.test(path)),
+  ).toMatchObject({
+    body: expect.objectContaining({ mode: 'autonomous', prompt: initialPrompt }),
+    method: 'POST',
+    organizationId,
+  });
 });

@@ -26,6 +26,8 @@
   "devDependencies": {
     "@grafana/faro-cli": "0.11.0",
     "@playwright/test": "^1.55.0",
+    "@temporalio/testing": "1.22.0",
+    "@temporalio/worker": "1.22.0",
     "@next/eslint-plugin-next": "^15.5.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^22.9.0",

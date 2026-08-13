@@ -267,6 +267,10 @@ async function wire(productAnalytics?: ProductAnalytics): Promise<Wired> {
     releaseFork,
     ...(productAnalytics === undefined ? {} : { productAnalytics }),
   });
+  built.app.addHook('onRequest', (_request, reply) => {
+    reply.header('x-route-hook', 'preserved');
+    return Promise.resolve();
+  });
   harnesses.push(built);
   const owner = await signIn(built, OWNER);
   const organization = await built.app.inject({
@@ -394,6 +398,7 @@ describe('release route shells', () => {
     const events = await wired.built.app.inject({ method: 'GET', url: `/v1/deployments/${wired.releases.deploymentId}/events`, headers: wired.as(wired.owner) });
     expect(events.statusCode, events.body).toBe(200);
     expect(events.headers['content-type']).toContain('text/event-stream');
+    expect(events.headers['x-route-hook']).toBe('preserved');
     expect(events.body).toContain('event: deployment.updated');
     const retry = await wired.built.app.inject({ method: 'POST', url: `/v1/deployments/${wired.releases.deploymentId}/actions`, headers: mutationHeaders(wired, wired.owner, 'dep14-retry'), payload: { action: 'retry', stage: 'go_live' } });
     expect(retry.statusCode, retry.body).toBe(200);

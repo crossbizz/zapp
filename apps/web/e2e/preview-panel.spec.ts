@@ -8,9 +8,9 @@ const fixRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FZ';
 const workspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FG';
 const previewEvidenceId = 'art_01K27Q9C2W85CMN1V9S6Q3D4FH';
 const previewCommitSha = '0123456789abcdef0123456789abcdef01234567';
-const organizationId = 'org-alpha';
+const organizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 const contractOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
-const shareUrl = `${appBaseUrl}/preview/org-alpha/01j00000000000000000000000#token=psb_fixture`;
+const shareUrl = `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000#token=psb_fixture`;
 
 const projectRead = {
   branches: [],
@@ -18,7 +18,7 @@ const projectRead = {
   project: {
     archivedAt: null,
     createdAt: '2026-08-10T12:00:00.000Z',
-    createdBy: 'user-ada',
+    createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     description: 'A preview fixture.',
     id: projectId,
     name: 'Preview Fixture',
@@ -40,7 +40,7 @@ const activeRun = {
   organizationId,
   projectId,
   startedAt: '2026-08-10T12:00:00.000Z',
-  startedBy: 'user-ada',
+  startedBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
   status: 'running',
 };
 
@@ -305,7 +305,7 @@ test('renders preview lifecycle states from structured events and public workspa
       status: 200,
     });
   });
-  await page.route(`${appBaseUrl}/preview/org-alpha/01j00000000000000000000000*`, async (route) => {
+  await page.route(`${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`, async (route) => {
     await route.fulfill({
       body: '<!doctype html><title>Fixture preview</title><h1>Preview application</h1>',
       contentType: 'text/html',
@@ -486,7 +486,7 @@ test('captures a console error and attaches its screenshot to the conversation c
       });
     },
   );
-  await page.route(`${appBaseUrl}/preview/org-alpha/01j00000000000000000000000*`, async (route) => {
+  await page.route(`${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`, async (route) => {
     await route.fulfill({ body: '<!doctype html><h1>Preview</h1>', contentType: 'text/html' });
   });
 
@@ -609,7 +609,7 @@ test('attaches a trusted selected element and sends its canonical context with t
       status: 202,
     });
   });
-  await page.route(`${appBaseUrl}/preview/org-alpha/01j00000000000000000000000*`, async (route) => {
+  await page.route(`${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`, async (route) => {
     await route.fulfill({
       body: `<!doctype html><script>
         window.addEventListener('message', (event) => {
@@ -754,7 +754,7 @@ test('does not attach a selected-element screenshot completed after the preview 
       });
     },
   );
-  await page.route(`${appBaseUrl}/preview/org-alpha/01j00000000000000000000000*`, async (route) => {
+  await page.route(`${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`, async (route) => {
     await route.fulfill({ body: '<!doctype html><h1>Preview</h1>', contentType: 'text/html' });
   });
 

@@ -17,12 +17,12 @@ function apiResponse(route: Route, body: unknown, status = 200): Promise<void> {
 }
 
 const project = {
-  id: 'proj_01J00000000000000000000000', organizationId: 'org-alpha', name: 'Alpha Settings',
+  id: 'proj_01J00000000000000000000000', organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', name: 'Alpha Settings',
   slug: 'alpha-settings', description: null, sourceType: 'prompt', supportLevel: 'compatible',
-  createdBy: 'user-ada', createdAt: '2026-08-12T12:00:00.000Z', archivedAt: null,
+  createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG', createdAt: '2026-08-12T12:00:00.000Z', archivedAt: null,
 };
 const environment = {
-  id: 'env_01J00000000000000000000000', organizationId: 'org-alpha', projectId: project.id,
+  id: 'env_01J00000000000000000000000', organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', projectId: project.id,
   name: 'production', type: 'production', deploymentProvider: null, databaseConnectionId: null,
   createdAt: '2026-08-12T12:00:00.000Z',
 };
@@ -35,7 +35,7 @@ test('writes a secret once and never renders or receives its value back', async 
   await page.route(new RegExp(`^${apiBaseUrl}/v1/projects/${project.id}/secrets(?:\\?.*)?$`, 'u'), async (route) => {
     if (route.request().method() === 'POST') {
       expect(route.request().postDataJSON()).toMatchObject({ name: 'API_TOKEN', value: secretValue });
-      metadata = [{ id: 'sec_01J00000000000000000000000', organizationId: 'org-alpha', projectId: project.id, environmentId: null, name: 'API_TOKEN', createdBy: 'user-ada', createdAt: '2026-08-12T12:00:00.000Z', rotatedAt: null, keyVersion: 1 }];
+      metadata = [{ id: 'sec_01J00000000000000000000000', organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', projectId: project.id, environmentId: null, name: 'API_TOKEN', createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG', createdAt: '2026-08-12T12:00:00.000Z', rotatedAt: null, keyVersion: 1 }];
       await apiResponse(route, { secret: metadata[0] }, 201);
       return;
     }

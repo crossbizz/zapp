@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 
+import { createFeatureFlagEvaluator } from '../../../../packages/config/src/index.js';
+
 import { buildApp } from '../../../../services/control-api/src/app.js';
 import { createInMemoryTokenDenylist } from '../../../../services/control-api/src/auth/denylist.js';
 import { createInMemoryDeviceStore } from '../../../../services/control-api/src/auth/device.js';
@@ -10,37 +12,50 @@ import type {
 } from '../../../../services/control-api/src/auth/users.js';
 import { createInMemoryIdempotencyStore } from '../../../../services/control-api/src/plugins/idempotency.js';
 import { createInMemoryRateLimiter } from '../../../../services/control-api/src/plugins/rate-limit.js';
+import { createInMemoryAuditSink } from '../../../../services/control-api/src/plugins/audit.js';
+import { createInMemoryInviteStore } from '../../../../services/control-api/src/orgs/invites.js';
 import {
   InMemoryUserStore,
   TEST_AUTH_CONFIG,
+  TEST_CAPABILITY_SCAN,
+  TEST_PRICING,
   TEST_PROXY_TRUST,
   TEST_RATE_LIMITS,
+  TEST_RUN_INTENT_HMAC_KEY,
 } from '../../../../services/control-api/test/support/harness.js';
 import { FakeAuthPort } from '../../../../services/control-api/test/support/fake-auth-port.js';
+import { InMemoryOrganizationStore } from '../../../../services/control-api/test/support/org-store.js';
 
+import {
+  createE1Composition,
+  E1_ORGANIZATION_ID,
+  E1_ORGANIZATION_NAME,
+} from './e1-composition.js';
 import { resetNextDevOutput } from './next-dev-output.js';
 
 const appPort = Number(process.env['ZAPP_WEB_E2E_APP_PORT'] ?? 3100);
 const apiPort = Number(process.env['ZAPP_WEB_E2E_API_PORT'] ?? 4100);
 const appBaseUrl = `http://127.0.0.1:${String(appPort)}`;
 const apiBaseUrl = `http://127.0.0.1:${String(apiPort)}`;
+const betaOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FE';
+const invitedOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FF';
 
 const memberships: UserProfile['memberships'] = [
   {
     allowedModels: ['anthropic/claude-sonnet-5', 'openai:gpt_5.1-mini'],
-    organization: { id: 'org-alpha', name: 'Alpha Org', slug: 'alpha' },
+    organization: { id: E1_ORGANIZATION_ID, name: 'Alpha Org', slug: 'alpha' },
     role: 'owner',
     status: 'active',
   },
   {
     allowedModels: [],
-    organization: { id: 'org-beta', name: 'Beta Org', slug: 'beta' },
+    organization: { id: betaOrganizationId, name: 'Beta Org', slug: 'beta' },
     role: 'builder',
     status: 'active',
   },
   {
     allowedModels: [],
-    organization: { id: 'org-invited', name: 'Invited Org', slug: 'invited' },
+    organization: { id: invitedOrganizationId, name: 'Invited Org', slug: 'invited' },
     role: 'viewer',
     status: 'invited',
   },
@@ -50,7 +65,7 @@ class FixtureUserStore extends InMemoryUserStore {
   override upsertFromIdentity(identity: AuthIdentity): Promise<UserUpsertResult> {
     this.upsertCount += 1;
     const user = {
-      id: 'user-ada',
+      id: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
       email: identity.email,
       displayName: identity.displayName,
       avatarUrl: identity.avatarUrl ?? null,
@@ -91,6 +106,50 @@ const users = new FixtureUserStore();
 const port = new LocalFakeAuthPort();
 let clockOffset = 0;
 const now = (): Date => new Date(Date.now() + clockOffset);
+const e1 = await createE1Composition({ appBaseUrl: new URL('https://app.e1.test') });
+const organizations = new InMemoryOrganizationStore();
+organizations.organizations.set(E1_ORGANIZATION_ID, {
+  id: E1_ORGANIZATION_ID,
+  name: E1_ORGANIZATION_NAME,
+  slug: 'alpha',
+  plan: 'trial',
+});
+organizations.memberships.set(`${E1_ORGANIZATION_ID}\u0000user_01K27Q9C2W85CMN1V9S6Q3D4FG`, {
+  organizationId: E1_ORGANIZATION_ID,
+  userId: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+  role: 'owner',
+  status: 'active',
+});
+organizations.organizations.set(betaOrganizationId, {
+  id: betaOrganizationId,
+  name: 'Beta Org',
+  slug: 'beta',
+  plan: 'trial',
+});
+organizations.memberships.set(`${betaOrganizationId}\u0000user_01K27Q9C2W85CMN1V9S6Q3D4FG`, {
+  organizationId: betaOrganizationId,
+  userId: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+  role: 'builder',
+  status: 'active',
+});
+organizations.organizations.set(invitedOrganizationId, {
+  id: invitedOrganizationId,
+  name: 'Invited Org',
+  slug: 'invited',
+  plan: 'trial',
+});
+organizations.memberships.set(`${invitedOrganizationId}\u0000user_01K27Q9C2W85CMN1V9S6Q3D4FG`, {
+  organizationId: invitedOrganizationId,
+  userId: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+  role: 'viewer',
+  status: 'invited',
+});
+let clientFeatureFlags = {
+  'voice-input': false,
+  'mobile-app-tab': false,
+  'visual-editing': false,
+};
+let featureFlagClock = 0;
 const built = {
   port,
   app: buildApp({
@@ -110,6 +169,58 @@ const built = {
       limiter: createInMemoryRateLimiter(now),
       idempotency: createInMemoryIdempotencyStore(now),
     },
+    orgs: {
+      organizations,
+      audit: createInMemoryAuditSink(),
+      invites: createInMemoryInviteStore(now),
+    },
+    tenant: {
+      tenantDb: e1.data.factory,
+      runIntentHmacKey: TEST_RUN_INTENT_HMAC_KEY,
+      capabilityScan: TEST_CAPABILITY_SCAN,
+      orchestrator: e1.orchestrator,
+      pricing: TEST_PRICING,
+      builderPreviewSandbox: e1.builderPreviewSandbox,
+      builderPreviewProxy: e1.builderPreviewProxy,
+      releasePort: e1.releasePort,
+      eventStream: {
+        onError(error) {
+          e1.recordEventError(error);
+        },
+        wakeups: {
+          subscribe(_channel, signal) {
+            return Promise.resolve({
+              next: () =>
+                new Promise((resolve) => {
+                  signal.addEventListener(
+                    'abort',
+                    () => {
+                      resolve({ sequence: 1 });
+                    },
+                    { once: true },
+                  );
+                }),
+              close: () => Promise.resolve(),
+              abort: () => undefined,
+            });
+          },
+        },
+      },
+    },
+    preview: e1.preview,
+    featureFlags: createFeatureFlagEvaluator({
+      now: () => {
+        featureFlagClock += 60_001;
+        return featureFlagClock;
+      },
+      provider: {
+        evaluate({ flag }) {
+          return Promise.resolve(
+            clientFeatureFlags[flag as keyof typeof clientFeatureFlags],
+          );
+        },
+      },
+    }),
   }),
 };
 const requests: RecordedRequest[] = [];
@@ -118,21 +229,25 @@ let meRequestCount = 0;
 let failMeRequest: number | undefined;
 let failMeStatus = 500;
 let dropMeRequest: number | undefined;
-let clientFeatureFlags = {
-  'voice-input': false,
-  'mobile-app-tab': false,
-  'visual-editing': false,
-};
 
 function hasCookie(header: string | undefined, name: string): boolean {
   return header?.split(';').some((pair) => pair.trim().startsWith(`${name}=`)) ?? false;
 }
 
 built.app.addHook('onRequest', async (request, reply) => {
-  reply.header('access-control-allow-origin', appBaseUrl);
+  const allowedOrigin = request.headers.origin === e1.preview.appBaseUrl.origin
+    ? e1.preview.appBaseUrl.origin
+    : appBaseUrl;
+  reply.header('access-control-allow-origin', allowedOrigin);
   reply.header('access-control-allow-credentials', 'true');
-  reply.header('access-control-allow-headers', 'content-type, x-zapp-csrf, x-organization-id');
+  reply.header(
+    'access-control-allow-headers',
+    'content-type, idempotency-key, x-zapp-csrf, x-organization-id',
+  );
   reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
+  if (request.headers['access-control-request-private-network'] === 'true') {
+    reply.header('access-control-allow-private-network', 'true');
+  }
 
   if (request.method === 'OPTIONS') {
     await reply.status(204).send();
@@ -180,8 +295,13 @@ built.app.addHook('preHandler', (request) => {
   return Promise.resolve();
 });
 
+built.app.addHook('onError', (request, _reply, error) => {
+  const path = new URL(request.raw.url ?? '/', apiBaseUrl).pathname;
+  if (path.includes('/preview')) e1.recordEventError(error);
+  return Promise.resolve();
+});
+
 built.app.get('/__requests', () => ({ requests }));
-built.app.get('/v1/feature-flags', () => ({ flags: clientFeatureFlags }));
 built.app.get('/__feature-flags', (request) => {
   const url = new URL(request.raw.url ?? '/', apiBaseUrl);
   clientFeatureFlags = {
@@ -192,6 +312,7 @@ built.app.get('/__feature-flags', (request) => {
 });
 built.app.get('/__reset', () => {
   requests.length = 0;
+  e1.reset();
   clockOffset = 0;
   meRequestCount = 0;
   failMeRequest = undefined;
@@ -204,6 +325,7 @@ built.app.get('/__reset', () => {
   };
   return { ok: true };
 });
+built.app.get('/__e1', () => ({ ...e1.status(), requests }));
 built.app.get('/__advance-time', (request) => {
   const url = new URL(request.raw.url ?? '/', apiBaseUrl);
   const milliseconds = Number(url.searchParams.get('milliseconds'));
@@ -265,6 +387,7 @@ async function stop(exitCode = 0): Promise<void> {
   stopping = true;
   next.kill('SIGTERM');
   await built.app.close();
+  await e1.close();
   process.exit(exitCode);
 }
 

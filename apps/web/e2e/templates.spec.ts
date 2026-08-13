@@ -12,10 +12,10 @@ const template = {
   stack: ['Next.js', 'TypeScript'],
 } as const;
 const project = {
-  branches: [{ baseBranchId: null, headCommitSha: null, id: 'branch-template', name: 'main', organizationId: 'org-alpha', projectId: 'proj-template', status: 'active' }],
+  branches: [{ baseBranchId: null, headCommitSha: null, id: 'branch-template', name: 'main', organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', projectId: 'proj-template', status: 'active' }],
   environments: [],
-  project: { archivedAt: null, createdAt: '2026-08-12T12:00:00.000Z', createdBy: 'user-ada', description: null, id: 'proj-template', name: 'Next.js Starter Remix', organizationId: 'org-alpha', slug: 'next-js-starter-remix', sourceType: 'template', supportLevel: 'compatible' },
-  repository: { defaultBranch: 'main', externalRepoRef: null, id: 'repo-template', internalRepoRef: 'org-alpha/proj-template', organizationId: 'org-alpha', projectId: 'proj-template', provider: 'forgejo', syncPolicy: 'internal' },
+  project: { archivedAt: null, createdAt: '2026-08-12T12:00:00.000Z', createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG', description: null, id: 'proj-template', name: 'Next.js Starter Remix', organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', slug: 'next-js-starter-remix', sourceType: 'template', supportLevel: 'compatible' },
+  repository: { defaultBranch: 'main', externalRepoRef: null, id: 'repo-template', internalRepoRef: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD/proj-template', organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', projectId: 'proj-template', provider: 'forgejo', syncPolicy: 'internal' },
 } as const;
 
 function respond(route: Route, body: unknown, status = 200): Promise<void> {
