@@ -28,6 +28,7 @@ import type { ConversationImageInput } from '../conversation/Composer';
 import { SurfaceTabs, type SurfaceTab } from './SurfaceTabs';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
 import { TopBar } from './TopBar';
+import { BuilderDeploy } from './BuilderDeploy';
 import { IncidentBanner } from './IncidentBanner';
 import { Overview } from '../mission-control/Overview';
 import { TaskGraph } from '../mission-control/TaskGraph';
@@ -831,6 +832,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       <BuilderStyles />
       <main className="zapp-builder-shell">
         <TopBar
+          deploy={<BuilderDeploy organizationId={organizationId} projectId={projectId} />}
           missionControl={missionControl}
           onPreview={previewSurface}
           projectId={projectId}

@@ -473,15 +473,85 @@ test('announces a fractional 1180px minimum without an invalid ARIA range', asyn
   expect(values.minimum).toBe(Math.round((380 / values.splitWidth) * 100));
 });
 
-test('explains disabled Deploy through hover and keyboard focus', async ({ page }) => {
+test('keeps Deploy disabled when the project has no approved release', async ({ page }) => {
   await openBuilder(page);
+  await expect(page.getByRole('button', { name: 'Deploy' })).toBeDisabled();
+});
 
-  const deployHelp = page.getByTestId('deploy-help');
-  await deployHelp.hover();
-  await expect(page.getByRole('tooltip')).toHaveText('Preview is not ready yet');
-  await page.keyboard.press('Escape');
-  await deployHelp.focus();
-  await expect(page.getByRole('tooltip')).toHaveText('Preview is not ready yet');
+test('deploys an approved release without leaving the unified builder', async ({ page }) => {
+  const releaseId = 'rel_01J00000000000000000000000';
+  const deploymentId = 'dep_01J00000000000000000000000';
+  const release = {
+    id: releaseId,
+    organizationId: 'org-alpha',
+    projectId,
+    environmentId: 'environment-preview',
+    commitSha: 'a'.repeat(40),
+    specificationId: null,
+    status: 'approved',
+    evidenceManifestArtifactId: null,
+    createdBy: 'user-ada',
+    createdAt: '2026-08-12T12:00:00.000Z',
+  };
+  const respond = (route: import('@playwright/test').Route, body: unknown) =>
+    route.fulfill({
+      body: JSON.stringify(body),
+      contentType: 'application/json',
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+      },
+      status: 200,
+    });
+  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects/${projectId}/releases`, 'u'), (route) =>
+    respond(route, { items: [{ ...release, supportLevel: 'compatible', activeProduction: false, deployments: [] }], nextCursor: null, rollbackTargets: [] }),
+  );
+  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}`, (route) =>
+    respond(route, { release, readiness: { state: 'ready', findings: [] } }),
+  );
+  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deployment-preview?retarget=false`, (route) =>
+    respond(route, {
+      title: 'First deploy',
+      deploymentType: 'first_deploy',
+      effects: { productionData: 'Created', secrets: 'Applied', url: 'Created', activeUsers: 'No users affected' },
+      requiresExplicitDataDisposition: false,
+    }),
+  );
+  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deploy`, (route) =>
+    respond(route, { deploymentId }),
+  );
+  await page.route(`${apiBaseUrl}/v1/deployments/${deploymentId}`, (route) =>
+    respond(route, {
+      deploymentId,
+      releaseId,
+      projectId,
+      environmentId: 'environment-preview',
+      status: 'healthy',
+      url: 'https://app.example.test',
+      events: [],
+      terminalSuccess: {
+        status: 'succeeded',
+        permanentUrl: 'https://app.example.test',
+        release: { id: releaseId, commitSha: release.commitSha },
+        evidence: { statusLink: `/v1/releases/${releaseId}/evidence` },
+        productionHealth: { status: 'healthy' },
+        monitoring: { grafanaDashboardLinks: [], faroAppLink: 'https://grafana.example.test/faro', posthogAnnotationLink: 'https://posthog.example.test/release' },
+        customDomainAction: { method: 'POST', href: `/v1/projects/${projectId}/domains` },
+        previousHealthyRelease: null,
+        previewChanges: { requireRedeploy: true, note: 'Preview changes require a new release and redeploy before they reach production.' },
+      },
+    }),
+  );
+
+  await openBuilder(page);
+  const builderUrl = page.url();
+  await page.getByRole('button', { name: 'Deploy' }).click();
+  await expect(page.getByRole('heading', { name: 'Ready to deploy' })).toBeVisible();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'First deploy' })).toBeVisible();
+  await page.getByRole('button', { name: 'Confirm deployment' }).click();
+  await expect(page.getByRole('heading', { name: 'Deployment succeeded' })).toBeVisible();
+  expect(page.url()).toBe(builderUrl);
 });
 
 test('opens and persists Mission Control without changing the URL', async ({ page }) => {

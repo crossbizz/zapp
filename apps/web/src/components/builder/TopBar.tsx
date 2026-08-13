@@ -1,4 +1,4 @@
-import { Button, EnvBadge, SupportLevelBadge, Tooltip } from '@zapp/ui';
+import { Button, EnvBadge, SupportLevelBadge } from '@zapp/ui';
 import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
 
@@ -12,6 +12,7 @@ const syncLabels: Readonly<Record<RepositorySyncState, string>> = {
 };
 
 interface TopBarProps {
+  readonly deploy: ReactNode;
   readonly missionControl: ReactNode;
   readonly onPreview: () => void;
   readonly projectId: string;
@@ -47,6 +48,7 @@ function SettingsIcon(): ReactElement {
 }
 
 export function TopBar({
+  deploy,
   missionControl,
   onPreview,
   projectId,
@@ -76,11 +78,7 @@ export function TopBar({
             {syncLabels[syncState]}
           </span>
         </a>
-        <Tooltip content="Preview is not ready yet">
-          <span className="zapp-builder-deploy-help" data-testid="deploy-help" tabIndex={0}>
-            <Button disabled>Deploy</Button>
-          </span>
-        </Tooltip>
+        {deploy}
         {missionControl}
         <a
           aria-label="Project settings"
