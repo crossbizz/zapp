@@ -100,6 +100,15 @@ Master plan §Global Constraints, plus:
 - [x] Failing test: a local-agent fixture prompt reaches the composed stream with no auth-precondition event, while the strict signed-out auth IPC boundary remains present and the desktop-config request returns the fake response.
 - [x] Commit: `fix(desktop): isolate hybrid test composition`
 
+### Task MAC-5.5-FIX-2 [M2]: Align local-agent edit fixture with contained tools
+
+**Files:** Modify: `apps/desktop/e2e-tests/fixtures/engine/local-agent/read-then-edit.ts`, `apps/desktop/src/ipc/handlers/__tests__/local_agent_basic.integration.test.tsx`, `tasks/todo.md`, this plan
+**Effort:** S
+
+- [x] RED: the legacy `apply_patch` fixture fails closed because the local filesystem runtime deliberately does not claim an external-writer compare-and-swap guarantee.
+- [x] GREEN: drive the same edit through the contained `write_file` tool and prove the durable transcript, exact operation receipt, applied commit contents, clean tracked path, and persisted assistant response.
+- [x] Commit: `test(desktop): repair local agent edit fixture`
+
 ### Task MAC-6A [M2]: Local runtime + resumable-session foundation
 
 **Files:** Create: `apps/desktop/src/zapp/runtime/{local,local-session}{,.spec}.ts`, desktop migrations, `services/orchestrator-worker/src/session/index.ts`; Modify: desktop schema/package, workspace-runtime environment seam, agent-tools mutation manifest, orchestrator session transcript/export, package manifests and lockfile
@@ -241,6 +250,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-10 MAC-5-FIX-1 done — Creation and list recovery are separate; ambiguous retries preserve the strict operation ID through the rendered recovery control.
 - 2026-08-10 MAC-5.5 done — Restored strict auth and preload composition in the hybrid/package paths, verified the real Monaco helper 3/3, and preserved the 13 ADR-0002 local-agent RED specifications plus the bounded diagnostic remainder for MAC-6.
 - 2026-08-13 MAC-5.5-FIX-1 done — Hybrid setup now composes the local-agent stream through a fixture-only fail-closed gateway and routes desktop config to the harness fake server; guard integration passed 5/5, while the legacy `local_agent_basic` fixture remains incompatible with the current contained tool allowlist after the auth precondition was removed.
+- 2026-08-13 MAC-5.5-FIX-2 done — Replaced the stale unsupported `apply_patch` fixture with the contained `write_file` path and verified the durable transcript, exact receipt commit, applied file, clean index entry, and assistant response in the focused hybrid integration.
 - 2026-08-10 MAC-6A done — Added the safe local runtime, packaged resumable AR-6 session state, exact changed-path commit refs, and fail-closed guarded writes; MAC-6 remains open for the public user-authenticated model-gateway/accounting and UI/mode join plus explicit commit application.
 - 2026-08-10 MAC-6-FIX-1 BLOCKED — Containment, config-independent exact commits, terminal continuation, and truthful partial-commit reporting are focused-green (20/20), but the capped final review found missing keyed-result crash recovery, unresolved mutation-lease fencing, and durable owned-path hydration; provider acceptance was not consumed and MAC-6-FIX-2 owns the bounded closure.
 - 2026-08-10 MAC-6-FIX-2 BLOCKED — Exact keyed receipts, nonterminal unknown-outcome fencing, and exact durable owned-path add/remove recovery are focused-green (22/22), but the capped final review found terminal Git/receipt finalization can still overlap a distinct operation; provider acceptance was not consumed and MAC-6-FIX-3 owns the single-writer closure.

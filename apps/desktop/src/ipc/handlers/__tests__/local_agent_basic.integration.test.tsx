@@ -125,6 +125,49 @@ describe("local-agent basic flows (integration)", () => {
     );
     await harness.waitForStreamEnd(app.chatId);
 
+    const storedMessages = await harness.db.query.messages.findMany({
+      where: eq(messages.chatId, app.chatId),
+    });
+    expect(storedMessages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(storedMessages.at(-1)?.content).toContain("UPDATED imported app");
+    const transcript = harness.db.$client
+      .prepare<[string, string], { transcript_json: string }>(
+        `SELECT transcript_json
+           FROM zapp_local_agent_sessions
+          WHERE run_id = ? AND task_id = ?`,
+      )
+      .get(
+        `run_${String(app.chatId).padStart(26, "0")}`,
+        `task_${String(app.chatId).padStart(26, "0")}`,
+      );
+    const persistedTranscript = JSON.parse(transcript!.transcript_json) as {
+      changedPaths: string[];
+      successfulToolNames: string[];
+      messages: unknown[];
+      provenance: unknown[];
+    };
+    expect(persistedTranscript).toMatchObject({
+      changedPaths: ["src/App.tsx"],
+      successfulToolNames: ["write_file"],
+    });
+    const receipt = harness.db.$client
+      .prepare<
+        [string, string],
+        { status: string | null; commits_json: string | null }
+      >(
+        `SELECT status, commits_json
+           FROM zapp_local_agent_operation_receipts
+          WHERE run_id = ? AND task_id = ?`,
+      )
+      .get(
+        `run_${String(app.chatId).padStart(26, "0")}`,
+        `task_${String(app.chatId).padStart(26, "0")}`,
+      );
+    expect(receipt).toMatchObject({
+      status: "completed",
+      commits_json: expect.stringMatching(/^\["[a-f0-9]{40}"\]$/u),
+    });
+    const [agentCommit] = JSON.parse(receipt!.commits_json!) as [string];
     expect(
       fs
         .readFileSync(path.join(app.appDir, "src/App.tsx"), "utf8")
@@ -132,11 +175,20 @@ describe("local-agent basic flows (integration)", () => {
     ).toBe(
       "const App = () => <div>UPDATED imported app</div>;\n\nexport default App;\n",
     );
-    const storedMessages = await harness.db.query.messages.findMany({
-      where: eq(messages.chatId, app.chatId),
-    });
-    expect(storedMessages.map((m) => m.role)).toEqual(["user", "assistant"]);
-    expect(storedMessages.at(-1)?.content).toContain("UPDATED imported app");
+    expect(
+      execFileSync("git", ["show", `${agentCommit}:src/App.tsx`], {
+        cwd: app.appDir,
+        encoding: "utf8",
+      }).replace(/\r\n/g, "\n"),
+    ).toBe(
+      "const App = () => <div>UPDATED imported app</div>;\n\nexport default App;\n",
+    );
+    expect(
+      execFileSync("git", ["status", "--short", "--", "src/App.tsx"], {
+        cwd: app.appDir,
+        encoding: "utf8",
+      }),
+    ).toBe("");
     expect(errorEvents()).toHaveLength(0);
   }, 60_000);
 
