@@ -3,6 +3,13 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import {
+  LocalProjectPromotion,
+  type PromotionPort,
+  type PromotionState,
+  type PromotionStore,
+} from "./sync/promote";
+
 const MigrationInputSchema = z
   .object({
     destinationPath: z.string().trim().min(1).optional(),
@@ -68,6 +75,22 @@ export interface DyadMigrationPorts {
     readonly path: string;
     readonly source: "dyad-migration";
   }) => Promise<{ readonly appId: number; readonly chatId: number }>;
+}
+
+/** Joins the accepted import-wizard offer to MAC-10's durable promotion state machine. */
+export function createDyadCloudPromotionOffer(input: {
+  readonly port: PromotionPort;
+  readonly store: PromotionStore;
+}): (value: {
+  readonly appId: number;
+  readonly operationId: string;
+}) => Promise<PromotionState> {
+  return async (value) =>
+    new LocalProjectPromotion(
+      String(value.appId),
+      input.store,
+      input.port,
+    ).run();
 }
 
 const ARCHIVE_EXTENSIONS = new Set([".json", ".jsonl", ".md", ".txt", ".xml"]);

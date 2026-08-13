@@ -5,10 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createDyadCloudPromotionOffer,
   detectDyadProjects,
   migrateDyadProject,
   readDyadTranscriptArchive,
 } from "./migrate-dyad";
+import type { PromotionState } from "./sync/promote";
 
 const temporaryDirectories: string[] = [];
 
@@ -89,6 +91,35 @@ describe("readDyadTranscriptArchive", () => {
 });
 
 describe("migrateDyadProject", () => {
+  it("composes an accepted cloud offer with the resumable MAC-10 promotion", async () => {
+    let saved: PromotionState | undefined;
+    const createCloudProject = vi.fn(async () => "proj_cloud");
+    const offer = createDyadCloudPromotionOffer({
+      port: {
+        fingerprint: vi.fn(async () => "sha256:legacy"),
+        createCloudProject,
+        pushRepository: vi.fn(async () => undefined),
+        scanCapabilities: vi.fn(async () => undefined),
+        bootWorkspace: vi.fn(async () => "ws_cloud"),
+        markLinked: vi.fn(async () => undefined),
+      },
+      store: {
+        load: vi.fn(async () => saved),
+        save: vi.fn(async (state) => {
+          saved = state;
+        }),
+      },
+    });
+
+    await expect(
+      offer({ appId: 41, operationId: "ec3d30b1-7663-4a79-b242-1fca4a6af96b" }),
+    ).resolves.toMatchObject({ phase: "done" });
+    await expect(
+      offer({ appId: 41, operationId: "ec3d30b1-7663-4a79-b242-1fca4a6af96b" }),
+    ).resolves.toMatchObject({ phase: "done" });
+    expect(createCloudProject).toHaveBeenCalledOnce();
+  });
+
   it("copies, initializes Git, registers locally, archives history, and offers promotion", async () => {
     const homeDirectory = await temporaryDirectory();
     const sourcePath = path.join(homeDirectory, "dyad-apps", "legacy-app");

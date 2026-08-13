@@ -193,7 +193,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 **Files:** Create: `apps/desktop/src/zapp/migrate-dyad.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §21.2): detect existing Dyad projects (Dyad home dir layout); import wizard: copy/adopt project folder → ensure git initialized (init + initial commit if absent) → register as zapp local project → offer cloud promotion (MAC-10); Dyad chat history import: best-effort read-only transcript archive attached to project (not merged into zapp conversation state). *(Phased implementation is complete; user-facing composition and promotion remain blocked on MAC-10.)*
+- [x] Binding behavior (PRD §21.2): detect existing Dyad projects (Dyad home dir layout); import wizard: copy/adopt project folder → ensure git initialized (init + initial commit if absent) → register as zapp local project → offer cloud promotion (MAC-10); Dyad chat history import: best-effort read-only transcript archive attached to project (not merged into zapp conversation state).
 - [x] Commit: `feat(desktop): dyad project migration path` (`1155e94`)
 
 ---
@@ -210,6 +210,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 
 ## Execution log
 
+- 2026-08-12 MAC-12 done — Connected the phased safe Dyad importer to MAC-10's fingerprint-keyed durable promotion state machine, proved replay creates one cloud project, and passed filesystem import/promotion 11/11 plus desktop main-process typecheck, lint, and formatting; no provider call was required.
 - 2026-08-12 MAC-11 done — Attached the phased native-notification/update work to MAC-8 through CP-27's bounded tenant-scoped cursor API, accepted only the public organization/project/run deep-link grammar, and passed notification/updater 29/29, attachment 3/3, desktop main-process typecheck, lint, and formatting; no provider call was required.
 - 2026-08-03: MAC-1 done (0fdefcc + fix 090c01a, audit fully Approved; dyad v1.9.0 @ 282591c, license boundary byte-verified, 2344 files reconciled to zero unexplained). 13 local_agent_* tests = MAC-6 behavioral spec; 51-file integration triage deferred (tracked in todo); pnpm-store ABI hazard → MAC-3.
 - 2026-08-04: MAC-2 done (5190737 + fix 52df7a2, review fully Approved). Identity CI-asserted every build; updater neutralized until ZAPP_UPDATE_FEED (MAC-11 owns feed); signing env-gated (UNVERIFIED pending Developer ID cert — first real cert run is first execution). HANDOFFS: MAC-4 must re-host supabase/neon/pro OAuth returns (dead since dyad:// removal) + owns 5 of 6 remaining api.dyad.sh runtime endpoints; MAC-12: ~/dyad-apps is SHARED with any Dyad install (collision risk), not orphaned. Gatekeeper verify pending certs.
