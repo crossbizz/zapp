@@ -499,6 +499,7 @@ Execution expansion (2026-08-12):
 
 ## Execution log
 
+- 2026-08-13 M6-GATE-FIX-1 done — The uncached M6 repository gate exposed the real-Chrome preview-proxy cleanup exceeding its stale 30-second per-hook override under concurrent cold-start load; cleanup now inherits one explicit 60-second bounded hook budget, the contract test pins that headroom, and preview-proxy passed 110/110 plus lint/typecheck without changing runtime behavior or repeating a provider call.
 - 2026-08-12 WS-17 done — Published the existing provider-neutral forge-node-base recipe to public GHCR from a package-write-only workflow, recorded the observed tag@sha256 digest, and anonymously pulled that exact manifest; the first two cold attempts exposed missing build-order dependencies before the successful run.
 
 - 2026-08-04 WS-1 done — shared runtime interface, path guard, and memory test double added.

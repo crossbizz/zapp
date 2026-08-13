@@ -100,7 +100,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) {
     await cleanup();
   }
-}, 30_000);
+});
 
 async function startOrigin(
   configure: (app: Express) => void,
@@ -536,6 +536,7 @@ describe('preview proxy acceptance contract', () => {
     };
 
     expect(manifest.scripts?.['test']).toBe('vitest run --maxWorkers=1');
+    expect(configText).toContain('hookTimeout: 60_000');
     expect(configText).toContain('testTimeout: 30_000');
   });
 
