@@ -94,23 +94,235 @@ function backend(events: readonly unknown[]): ReservableCompletionBackend & { ca
   };
 
   function createStream() {
-      calls += 1;
-      return (async function* () {
-        await Promise.resolve();
-        for (const event of events) yield event as never;
-      })();
+    calls += 1;
+    return (async function* () {
+      await Promise.resolve();
+      for (const event of events) yield event as never;
+    })();
   }
 }
 
-async function collect(completion: CompletionBackend): Promise<unknown[]> {
+async function collect(
+  completion: CompletionBackend,
+  input: CompleteRequest = request,
+): Promise<unknown[]> {
   const events: unknown[] = [];
-  for await (const event of completion.stream(request, new AbortController().signal)) {
+  for await (const event of completion.stream(input, new AbortController().signal)) {
     events.push(event);
   }
   return events;
 }
 
+function trackedBackend(events: readonly BackendStreamEvent[]) {
+  const preparedRequests: CompleteRequest[] = [];
+  let providerCalls = 0;
+  const provider: ReservableCompletionBackend = {
+    prepare(value) {
+      preparedRequests.push(value);
+      return Promise.resolve({
+        route: [...route],
+        stream: () => {
+          providerCalls += 1;
+          return (async function* () {
+            await Promise.resolve();
+            yield* events;
+          })();
+        },
+      });
+    },
+    stream: () => {
+      throw new Error('The accounted path must use prepare().');
+    },
+  };
+  return {
+    provider,
+    preparedRequests,
+    get providerCalls() {
+      return providerCalls;
+    },
+  };
+}
+
 describe('durable completion accounting', () => {
+  it('replays a committed version-one request after response loss without a second provider execution', async () => {
+    const legacyRequest = {
+      ...request,
+      messages: [
+        { role: 'system', content: 'legacy original registered-secret' },
+        request.messages[1],
+      ],
+    } as const satisfies CompleteRequest;
+    const tracked = trackedBackend(completedRecord().events);
+    let originalFingerprint: string | undefined;
+    let committed: ReturnType<typeof completedRecord> | undefined;
+    const claim = vi.fn((input: Parameters<CompletionUsageClient['claim']>[0]) => {
+      if (committed === undefined) {
+        originalFingerprint ??= input.requestFingerprint;
+        if (input.requestFingerprint !== originalFingerprint) {
+          return Promise.reject(new Error('immutable legacy fingerprint changed before commit'));
+        }
+        return Promise.resolve({
+          status: 'claimed' as const,
+          claimExpiresAt: '2026-08-09T16:05:00.000Z',
+          reservedCredits: '1.0000',
+          credits: { used: '0.0000', reserved: '1.0000', ceiling: '10.0000', version: 1 },
+        });
+      }
+      if (input.requestFingerprint !== originalFingerprint) {
+        return Promise.reject(new Error('immutable legacy fingerprint changed on replay'));
+      }
+      return Promise.resolve({
+        status: 'completed' as const,
+        completion: committed,
+        credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+      });
+    });
+    const commit = vi.fn((input: Parameters<CompletionUsageClient['commit']>[0]) => {
+      committed = { ...completedRecord(), requestFingerprint: input.requestFingerprint };
+      return Promise.reject(new Error('response lost after durable commit'));
+    });
+    const accounting: CompletionUsageClient = {
+      claim,
+      commit,
+    };
+    const completion = createUsageAccountedCompletion({
+      backend: tracked.provider,
+      accounting,
+      claimOwner: 'gateway-one',
+      now: () => new Date('2026-08-09T16:00:00.000Z'),
+    });
+
+    await expect(collect(completion, legacyRequest)).rejects.toBeInstanceOf(
+      CompletionCommitIndeterminateError,
+    );
+    if (originalFingerprint === undefined) throw new Error('Expected original accounting claim');
+    const replay = {
+      ...legacyRequest,
+      messages: [
+        { role: 'system', content: 'legacy original [REDACTED]' },
+        legacyRequest.messages[1],
+      ],
+      accountingReplay: { version: 1, requestFingerprint: originalFingerprint },
+    } as const satisfies CompleteRequest;
+
+    await expect(collect(completion, replay)).resolves.toEqual([
+      ...completedRecord().events,
+      {
+        type: 'usage.recorded',
+        completionId: request.completionId,
+        usage: [usage],
+        credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+      },
+    ]);
+    expect(tracked.providerCalls).toBe(1);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(claim).toHaveBeenCalledTimes(2);
+    expect(claim).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        completionId: request.completionId,
+        requestFingerprint: originalFingerprint,
+      }),
+    );
+    expect(claim).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        completionId: request.completionId,
+        requestFingerprint: originalFingerprint,
+      }),
+    );
+    expect(tracked.preparedRequests).toHaveLength(2);
+    expect(JSON.stringify(tracked.preparedRequests[1])).not.toContain('registered-secret');
+    expect(tracked.preparedRequests[1]).not.toHaveProperty('accountingReplay');
+  });
+
+  it('reclaims an expired version-one reservation under its original fingerprint once', async () => {
+    const legacyRequest = {
+      ...request,
+      messages: [
+        { role: 'system', content: 'expired legacy registered-secret' },
+        request.messages[1],
+      ],
+    } as const satisfies CompleteRequest;
+    const tracked = trackedBackend(completedRecord().events);
+    let originalFingerprint: string | undefined;
+    let abandoned = false;
+    const claim = vi.fn((input: Parameters<CompletionUsageClient['claim']>[0]) => {
+      if (!abandoned) {
+        abandoned = true;
+        originalFingerprint = input.requestFingerprint;
+        return Promise.reject(new Error('gateway lost after the durable accounting claim'));
+      }
+      if (input.requestFingerprint !== originalFingerprint) {
+        return Promise.reject(new Error('expired legacy reservation fingerprint conflict'));
+      }
+      return Promise.resolve({
+        status: 'claimed' as const,
+        claimExpiresAt: '2026-08-09T16:05:00.000Z',
+        reservedCredits: '1.0000',
+        credits: { used: '0.0000', reserved: '1.0000', ceiling: '10.0000', version: 1 },
+      });
+    });
+    const commit = vi.fn((input: Parameters<CompletionUsageClient['commit']>[0]) =>
+      Promise.resolve({
+        completion: { ...completedRecord(), requestFingerprint: input.requestFingerprint },
+        credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+        ledgerRowIds: ['usage-input'],
+      }),
+    );
+    const accounting: CompletionUsageClient = {
+      claim,
+      commit,
+    };
+    const completion = createUsageAccountedCompletion({
+      backend: tracked.provider,
+      accounting,
+      claimOwner: 'gateway-one',
+      now: () => new Date('2026-08-09T16:00:00.000Z'),
+    });
+
+    await expect(collect(completion, legacyRequest)).rejects.toThrow(
+      'gateway lost after the durable accounting claim',
+    );
+    if (originalFingerprint === undefined) throw new Error('Expected abandoned accounting claim');
+    const replay = {
+      ...legacyRequest,
+      messages: [
+        { role: 'system', content: 'expired legacy [REDACTED]' },
+        legacyRequest.messages[1],
+      ],
+      accountingReplay: { version: 1, requestFingerprint: originalFingerprint },
+    } as const satisfies CompleteRequest;
+
+    await expect(collect(completion, replay)).resolves.toHaveLength(3);
+    expect(claim).toHaveBeenCalledTimes(2);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(claim).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        completionId: request.completionId,
+        requestFingerprint: originalFingerprint,
+      }),
+    );
+    expect(claim).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        completionId: request.completionId,
+        requestFingerprint: originalFingerprint,
+      }),
+    );
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        completionId: request.completionId,
+        requestFingerprint: originalFingerprint,
+      }),
+    );
+    expect(tracked.providerCalls).toBe(1);
+    expect(tracked.preparedRequests).toHaveLength(2);
+    expect(JSON.stringify(tracked.preparedRequests[1])).not.toContain('registered-secret');
+    expect(tracked.preparedRequests[1]).not.toHaveProperty('accountingReplay');
+  });
+
   it('uses only the strict service-authenticated control-plane accounting boundary', async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const client = createControlPlaneUsageClient({
@@ -278,18 +490,20 @@ describe('durable completion accounting', () => {
     });
     const accounting: CompletionUsageClient = {
       claim: vi.fn(() =>
-        Promise.resolve(stored === undefined
-          ? {
-              status: 'claimed' as const,
-              claimExpiresAt: '2026-08-09T16:05:00.000Z',
-              reservedCredits: '1.0000',
-              credits: { used: '0.0000', reserved: '1.0000', ceiling: '10.0000', version: 1 },
-            }
-          : {
-              status: 'completed' as const,
-              completion: stored,
-              credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
-            }),
+        Promise.resolve(
+          stored === undefined
+            ? {
+                status: 'claimed' as const,
+                claimExpiresAt: '2026-08-09T16:05:00.000Z',
+                reservedCredits: '1.0000',
+                credits: { used: '0.0000', reserved: '1.0000', ceiling: '10.0000', version: 1 },
+              }
+            : {
+                status: 'completed' as const,
+                completion: stored,
+                credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+              },
+        ),
       ),
       commit,
     };
@@ -329,14 +543,14 @@ describe('durable completion accounting', () => {
       stream: () => providerStream(),
     };
     const providerStream = () =>
-        (async function* () {
-          streamCalls += 1;
-          if (streamCalls === 1) {
-            signalFirstStarted?.();
-            await firstBlocked;
-          }
-          yield completedRecord().events[1] as never;
-        })();
+      (async function* () {
+        streamCalls += 1;
+        if (streamCalls === 1) {
+          signalFirstStarted?.();
+          await firstBlocked;
+        }
+        yield completedRecord().events[1] as never;
+      })();
     let activeOwner: string | undefined;
     const accounting: CompletionUsageClient = {
       claim: (input) => {
@@ -573,7 +787,9 @@ describe('durable completion accounting', () => {
       claimOwner: 'gateway-one',
       now: () => new Date('2026-08-09T16:00:00.000Z'),
     });
-    const iterator = completion.stream(request, new AbortController().signal)[Symbol.asyncIterator]();
+    const iterator = completion
+      .stream(request, new AbortController().signal)
+      [Symbol.asyncIterator]();
 
     await expect(iterator.next()).resolves.toMatchObject({
       done: false,
@@ -585,9 +801,7 @@ describe('durable completion accounting', () => {
     expect(commit.mock.calls[0]?.[0]).toMatchObject({
       events: [{ type: 'text-delta', text: 'started' }],
       terminal: { type: 'error', code: 'provider_error' },
-      usage: [
-        expect.objectContaining({ provider: 'anthropic', model: 'claude-sonnet-5' }),
-      ],
+      usage: [expect.objectContaining({ provider: 'anthropic', model: 'claude-sonnet-5' })],
     });
   });
 
@@ -634,14 +848,14 @@ describe('durable completion accounting', () => {
       stream: () => providerStream(),
     };
     const providerStream = () =>
-        (async function* () {
-          await Promise.resolve();
-          throw new ProviderAttemptError(
-            'anthropic',
-            'claude-sonnet-5',
-            new Error('provider transport failed'),
-          );
-        })();
+      (async function* () {
+        await Promise.resolve();
+        throw new ProviderAttemptError(
+          'anthropic',
+          'claude-sonnet-5',
+          new Error('provider transport failed'),
+        );
+      })();
     let committedInput: Parameters<CompletionUsageClient['commit']>[0] | undefined;
     const commit = vi.fn((input: Parameters<CompletionUsageClient['commit']>[0]) => {
       committedInput = input;
@@ -904,9 +1118,24 @@ describe('reserved routing and attempt telemetry', () => {
 
     await expect(collect(completion)).resolves.toHaveLength(1);
     expect(spans).toEqual([
-      expect.objectContaining({ provider: 'anthropic', model: 'claude-sonnet-5', attempt: 1, outcome: 'error' }),
-      expect.objectContaining({ provider: 'anthropic', model: 'claude-sonnet-5', attempt: 2, outcome: 'error' }),
-      expect.objectContaining({ provider: 'anthropic', model: 'claude-sonnet-5', attempt: 3, outcome: 'error' }),
+      expect.objectContaining({
+        provider: 'anthropic',
+        model: 'claude-sonnet-5',
+        attempt: 1,
+        outcome: 'error',
+      }),
+      expect.objectContaining({
+        provider: 'anthropic',
+        model: 'claude-sonnet-5',
+        attempt: 2,
+        outcome: 'error',
+      }),
+      expect.objectContaining({
+        provider: 'anthropic',
+        model: 'claude-sonnet-5',
+        attempt: 3,
+        outcome: 'error',
+      }),
       expect.objectContaining({
         provider: 'openai',
         model: 'gpt-5',
@@ -925,7 +1154,7 @@ describe('Anthropic prompt-cache boundaries', () => {
     const adapter = createAnthropicAdapter({
       apiKey: 'configured-in-test',
       dependencies: {
-        createProvider: () => (() => ({ provider: 'anthropic', modelId: 'test' }) as never),
+        createProvider: () => () => ({ provider: 'anthropic', modelId: 'test' }) as never,
         streamText: (options) => {
           instructions = options.instructions;
           messages = options.messages;

@@ -97,7 +97,10 @@ const JsonSchemaNode: z.ZodTypeAny = z.lazy(() =>
         const propertyNames = new Set(Object.keys(schema.properties));
         const required = schema.required ?? [];
         if (new Set(required).size !== required.length) {
-          context.addIssue({ code: z.ZodIssueCode.custom, message: 'required keys must be unique' });
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'required keys must be unique',
+          });
         }
         for (const name of required) {
           if (!propertyNames.has(name)) {
@@ -195,6 +198,13 @@ export const NeutralToolSchema = z
   })
   .strict();
 
+export const AccountingReplaySchema = z
+  .object({
+    version: z.literal(1),
+    requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
+
 const CompleteRequestObjectSchema = z
   .object({
     completionId: z.string().regex(/^cmp_[a-f0-9]{64}$/u),
@@ -209,6 +219,7 @@ const CompleteRequestObjectSchema = z
     maxInputTokens: z.number().int().nonnegative(),
     maxOutputTokens: z.number().int().positive(),
     budget: z.object({ remainingCredits: z.number() }).strict().optional(),
+    accountingReplay: AccountingReplaySchema.optional(),
   })
   .strict();
 
@@ -216,27 +227,29 @@ function validateCacheBreakpoints(
   request: { readonly cacheBreakpointMessageIndexes: number[]; readonly messages: unknown[] },
   context: z.RefinementCtx,
 ): void {
-    if (new Set(request.cacheBreakpointMessageIndexes).size !== request.cacheBreakpointMessageIndexes.length) {
+  if (
+    new Set(request.cacheBreakpointMessageIndexes).size !==
+    request.cacheBreakpointMessageIndexes.length
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'cache breakpoint message indexes must be unique',
+      path: ['cacheBreakpointMessageIndexes'],
+    });
+  }
+  for (const index of request.cacheBreakpointMessageIndexes) {
+    if (index >= request.messages.length) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'cache breakpoint message indexes must be unique',
+        message: 'cache breakpoint message index is outside the message list',
         path: ['cacheBreakpointMessageIndexes'],
       });
     }
-    for (const index of request.cacheBreakpointMessageIndexes) {
-      if (index >= request.messages.length) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'cache breakpoint message index is outside the message list',
-          path: ['cacheBreakpointMessageIndexes'],
-        });
-      }
-    }
+  }
 }
 
-export const CompleteRequestSchema = CompleteRequestObjectSchema.superRefine(
-  validateCacheBreakpoints,
-);
+export const CompleteRequestSchema =
+  CompleteRequestObjectSchema.superRefine(validateCacheBreakpoints);
 
 /** Public desktop payload; the control plane supplies and verifies every accounting identity. */
 export const LocalAgentCompletionRequestSchema = CompleteRequestObjectSchema.omit({
@@ -244,9 +257,11 @@ export const LocalAgentCompletionRequestSchema = CompleteRequestObjectSchema.omi
   projectId: true,
   runId: true,
   taskId: true,
+  accountingReplay: true,
 }).superRefine(validateCacheBreakpoints);
 
 export type CompleteRequest = z.infer<typeof CompleteRequestSchema>;
+export type AccountingReplay = z.infer<typeof AccountingReplaySchema>;
 export type LocalAgentCompletionRequest = z.infer<typeof LocalAgentCompletionRequestSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type NeutralTool = z.infer<typeof NeutralToolSchema>;

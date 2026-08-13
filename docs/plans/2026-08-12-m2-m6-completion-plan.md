@@ -456,6 +456,10 @@ security gates, Plan 10, master plan, tracker.
   architecture gates pass. The credential-gated Modal containment test skips visibly without
   `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET`.
 - [x] **Commit:** `fix(security): close runtime enforcement gaps`
+- [x] **Two-round re-scope:** The capped Task 45 review exposed durable legacy completion
+  replay as a distinct recovery contract. `OPS-12-FIX-2` versions in-flight records, keeps
+  version 1 accounting identity stable while redacting provider-bound bytes, and restricts the
+  recovery marker to the authenticated orchestrator-worker Model Gateway route.
 
 ## Execution log
 
@@ -465,3 +469,5 @@ security gates, Plan 10, master plan, tracker.
 - 2026-08-12 Task 43 done — Removed the one-time destructive orphan-cleanup mode and its lock/delete path; the inventory now rejects all arguments, pins the exact local Forgejo root and database identity, and reports zero candidates even when `FORGEJO_URL` is shell-overridden.
 - 2026-08-12 Task 44 done — Rejected unrelated or wrong-kind evidence and bound five typed result envelopes to each exact execution, app, run, and claimed outcome; V-2 remains blocked with no live artifact.
 - 2026-08-13 Task 45 done — Moved policy evidence after provider enforcement, redacted all model-bound session input, and upgraded the credential-gated Modal containment proof to descendant and kernel `oom_kill` evidence; live Modal remained visibly skipped without credentials.
+- 2026-08-13 Task 45 re-scoped at the two-round review cap — The legacy durable completion replay finding requires a versioned accounting recovery contract and continues as OPS-12-FIX-2 rather than a third Task 45 review round.
+- 2026-08-13 OPS-12-FIX-2 done — Version 1 durable replays retain their original accounting fingerprint and completion ID while redacting outbound provider bytes; Model Gateway accepts the strict recovery marker only from orchestrator-worker, strips it before provider routing, and replays/reclaims under the original reservation once.

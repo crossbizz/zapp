@@ -12,7 +12,11 @@ import {
   type CompletionBackend,
   type GatewayStreamEvent,
 } from '../src/app.js';
-import { GatewayStreamEventSchema, type BackendStreamEvent } from '../src/schemas.js';
+import {
+  GatewayStreamEventSchema,
+  LocalAgentCompletionRequestSchema,
+  type BackendStreamEvent,
+} from '../src/schemas.js';
 import { loadModelsConfig } from '../src/models.js';
 import { createAnthropicAdapter } from '../src/providers/anthropic.js';
 import { createCompatibleAdapter } from '../src/providers/compatible.js';
@@ -107,7 +111,10 @@ function adversarialBackend(events: readonly unknown[]) {
   };
 }
 
-function appFor(completion: CompletionBackend, logger: Parameters<typeof buildApp>[0]['logger'] = false) {
+function appFor(
+  completion: CompletionBackend,
+  logger: Parameters<typeof buildApp>[0]['logger'] = false,
+) {
   const app = buildApp({ serviceTokens, completion, logger });
   openApps.push(app);
   return app;
@@ -294,6 +301,16 @@ describe('strict request schemas', () => {
   ])('rejects %s', (_name, input) => {
     expect(CompleteRequestSchema.safeParse(input).success).toBe(false);
   });
+
+  it('admits only the strict internal legacy accounting replay marker', () => {
+    const accountingReplay = { version: 1, requestFingerprint: 'f'.repeat(64) } as const;
+    expect(CompleteRequestSchema.safeParse({ ...validRequest, accountingReplay }).success).toBe(
+      true,
+    );
+    expect(
+      LocalAgentCompletionRequestSchema.safeParse({ ...validRequest, accountingReplay }).success,
+    ).toBe(false);
+  });
 });
 
 describe('strict gateway stream event schema', () => {
@@ -362,6 +379,31 @@ describe('POST /internal/v1/complete authorization and validation', () => {
       expect(completion.stream).toHaveBeenCalledOnce();
     },
   );
+
+  it('admits legacy replay only from the worker and removes it before provider dispatch', async () => {
+    const accountingReplay = { version: 1, requestFingerprint: 'f'.repeat(64) } as const;
+    const controlPlane = await appFor(backend()).inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: { 'x-zapp-service-token': await token('control-api') },
+      payload: { ...validRequest, accountingReplay },
+    });
+    expect(controlPlane.statusCode).toBe(403);
+
+    const completion = backend([{ type: 'text-delta', text: 'replayed' }]);
+    const worker = await appFor(completion).inject({
+      method: 'POST',
+      url: '/internal/v1/complete',
+      headers: await authorizedHeaders(),
+      payload: { ...validRequest, accountingReplay },
+    });
+    expect(worker.statusCode).toBe(200);
+    expect(completion.stream).toHaveBeenCalledWith(
+      expect.not.objectContaining({ accountingReplay }),
+      expect.any(AbortSignal),
+      accountingReplay,
+    );
+  });
 
   it.each([
     ['a missing service token', () => Promise.resolve({})],
@@ -701,9 +743,9 @@ describe('neutral SSE stream', () => {
       expect(response.payload).not.toContain(postTerminalMarker);
       expect({ nextCalls, returnCalls }).toEqual({ nextCalls: 1, returnCalls: 1 });
       expect(providerSignal?.aborted).toBe(true);
-      expect(providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort')).toEqual(
-        [],
-      );
+      expect(
+        providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort'),
+      ).toEqual([]);
     });
 
     it('aborts the provider before a safe error frame waits for drain', async () => {
@@ -786,9 +828,9 @@ describe('neutral SSE stream', () => {
       expect(providerSignal?.aborted).toBe(true);
       expect(returnCallsBeforeNextSettled).toBe(1);
       expect(returnCalls).toBe(1);
-      expect(providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort')).toEqual(
-        [],
-      );
+      expect(
+        providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort'),
+      ).toEqual([]);
       expect(raw.listenerCount('drain')).toBe(0);
       expect(raw.listenerCount('close')).toBeLessThanOrEqual(initialCloseListeners);
     });
@@ -845,9 +887,9 @@ describe('neutral SSE stream', () => {
       expect(writesBeforeDisconnect).toBe(1);
       expect(returnCalls).toBe(1);
       expect(providerSignal?.aborted).toBe(true);
-      expect(providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort')).toEqual(
-        [],
-      );
+      expect(
+        providerSignal === undefined ? [] : getEventListeners(providerSignal, 'abort'),
+      ).toEqual([]);
       expect(raw.listenerCount('drain')).toBe(0);
       expect(raw.listenerCount('close')).toBeLessThanOrEqual(initialCloseListeners);
     });
@@ -1002,7 +1044,9 @@ describe('neutral SSE stream', () => {
     await Promise.race([
       providerSawAbort.promise,
       new Promise<never>((_resolve, reject) =>
-        setTimeout(() => { reject(new Error('provider did not observe client abort')); }, 1_000),
+        setTimeout(() => {
+          reject(new Error('provider did not observe client abort'));
+        }, 1_000),
       ),
     ]);
   });
@@ -1404,7 +1448,7 @@ describe('AI SDK provider adapters', () => {
     const adapter = createAnthropicAdapter({
       apiKey: 'configured-in-test',
       dependencies: {
-        createProvider: () => (() => ({ provider: 'anthropic', modelId: 'test' }) as never),
+        createProvider: () => () => ({ provider: 'anthropic', modelId: 'test' }) as never,
         streamText: () => ({
           totalUsage: Promise.resolve({
             inputTokens: 12,
@@ -1486,7 +1530,7 @@ describe('AI SDK provider adapters', () => {
       const adapter = createAnthropicAdapter({
         apiKey: 'configured-in-test',
         dependencies: {
-          createProvider: () => (() => ({ provider: 'anthropic', modelId: 'test' }) as never),
+          createProvider: () => () => ({ provider: 'anthropic', modelId: 'test' }) as never,
           streamText: () => ({
             totalUsage: Promise.resolve({
               inputTokens: 12,
@@ -1552,7 +1596,7 @@ describe('AI SDK provider adapters', () => {
     const adapter = createAnthropicAdapter({
       apiKey: 'configured-in-test',
       dependencies: {
-        createProvider: () => (() => ({ provider: 'anthropic', modelId: 'test' }) as never),
+        createProvider: () => () => ({ provider: 'anthropic', modelId: 'test' }) as never,
         streamText: () => ({
           totalUsage: Promise.resolve({
             inputTokens: 12,
@@ -1603,7 +1647,7 @@ describe('AI SDK provider adapters', () => {
     const adapter = createOpenAIAdapter({
       apiKey: 'configured-in-test',
       dependencies: {
-        createProvider: () => (() => ({ provider: 'openai', modelId: 'test' }) as never),
+        createProvider: () => () => ({ provider: 'openai', modelId: 'test' }) as never,
         streamText: () => ({
           totalUsage: Promise.resolve({
             inputTokens: 0,

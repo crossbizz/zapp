@@ -16,6 +16,7 @@ import {
   CompleteRequestSchema,
   GatewayStreamEventSchema,
   type BackendStreamEvent,
+  type AccountingReplay,
   type CompleteRequest,
   type GatewayStreamEvent,
 } from './schemas.js';
@@ -71,6 +72,7 @@ export interface CompletionBackend {
   readonly stream: (
     request: CompleteRequest,
     signal: AbortSignal,
+    accountingReplay?: AccountingReplay,
   ) => AsyncIterable<BackendStreamEvent>;
 }
 
@@ -281,6 +283,20 @@ export function buildApp(options: BuildAppOptions) {
           });
           return reply;
         }
+        if (
+          request.body.accountingReplay !== undefined &&
+          verdict.claims.service !== 'orchestrator-worker'
+        ) {
+          request.log.warn(
+            { errorCode: 'service_not_allowed', service: verdict.claims.service },
+            'service is not allowed to recover a legacy completion',
+          );
+          await reply.status(403).send({
+            code: 'service_not_allowed',
+            message: 'Only the orchestrator worker may recover a legacy completion.',
+          });
+          return reply;
+        }
       },
     },
     async (request, reply) => {
@@ -312,7 +328,12 @@ export function buildApp(options: BuildAppOptions) {
       if ('flushHeaders' in reply.raw) reply.raw.flushHeaders();
 
       try {
-        const stream = options.completion.stream(request.body, providerAbortController.signal);
+        const { accountingReplay, ...providerRequest } = request.body;
+        const stream = options.completion.stream(
+          providerRequest,
+          providerAbortController.signal,
+          accountingReplay,
+        );
         iterator = stream[Symbol.asyncIterator]();
         for (;;) {
           const result = await nextWhileConnected(iterator, responseAbortController.signal);

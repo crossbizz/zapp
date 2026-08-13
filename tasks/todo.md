@@ -270,6 +270,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] OPS-11 Incident → Fix run closed loop
 - [x] OPS-12 Security suites complete (isolation/redaction/abuse)
 - [x] OPS-12-FIX-1 Runtime enforcement evidence reconciliation
+- [x] OPS-12-FIX-2 Legacy completion replay redaction
 - [x] OPS-13 Injection evals + policy scans blocking
 - [x] OPS-14 Retention archival + rehydration
 - [x] OPS-17 Support/admin console

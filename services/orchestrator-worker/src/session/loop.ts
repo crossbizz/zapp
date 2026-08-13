@@ -823,15 +823,19 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                 1,
                 Math.floor(remainingOutputBudget / remainingTurnSlots),
               );
-              request = {
-                ...requestBase,
-                maxInputTokens: requestTokens,
-                maxOutputTokens: outputTokenAllowance,
-              };
+              request = redactOutboundRequest(
+                {
+                  ...requestBase,
+                  maxInputTokens: requestTokens,
+                  maxOutputTokens: outputTokenAllowance,
+                },
+                dependencies.redact,
+              );
               reservedTurnTokens = requestTokens + outputTokenAllowance;
               transcript.tokensUsed += reservedTurnTokens;
               transcript.inFlightCompletion = {
                 completionId,
+                requestVersion: 2,
                 requestFingerprint: requestFingerprint(request),
                 requestTokens,
                 reservedTokens: reservedTurnTokens,
@@ -864,7 +868,16 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               'zapp.task.id': taskId,
             });
             try {
-              const outboundRequest = redactOutboundRequest(request, dependencies.redact);
+              const outboundRequest =
+                transcript.inFlightCompletion.requestVersion === 1
+                  ? {
+                      ...redactOutboundRequest(request, dependencies.redact),
+                      accountingReplay: {
+                        version: 1 as const,
+                        requestFingerprint: transcript.inFlightCompletion.requestFingerprint,
+                      },
+                    }
+                  : request;
               iterator = dependencies.gateway
                 .stream(outboundRequest, controller.signal)
                 [Symbol.asyncIterator]();

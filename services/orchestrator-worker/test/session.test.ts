@@ -311,7 +311,6 @@ describe('agent session loop', () => {
     });
   });
 
-
   it('keeps a foreign completion lease retryable with the durable request intact', async () => {
     const { registry } = await memoryRegistry();
     const transcripts = new MemoryTranscriptStore();
@@ -827,7 +826,13 @@ describe('agent session loop', () => {
           toolName: 'write_file',
           input: { path: 'over-budget.txt', content: 'must not be written' },
         };
-        yield { type: 'usage', ...USAGE_ATTRIBUTION, inputTokens: 8, outputTokens: 8, totalTokens: 1 };
+        yield {
+          type: 'usage',
+          ...USAGE_ATTRIBUTION,
+          inputTokens: 8,
+          outputTokens: 8,
+          totalTokens: 1,
+        };
         yield {
           type: 'usage.recorded',
           completionId: request.completionId,
@@ -1517,16 +1522,15 @@ describe('agent session loop', () => {
     const { registry } = await memoryRegistry();
     const durable = new MemoryTranscriptStore();
     let interrupted = false;
+    let gatewayClaimed = false;
     const store: TranscriptStore = {
       load: (key) => durable.load(key),
       async save(expectedVersion, value) {
-        const saved = await durable.save(expectedVersion, value);
-        const inFlightCompletion = saved.inFlightCompletion;
-        if (!interrupted && inFlightCompletion !== null) {
+        if (!interrupted && gatewayClaimed) {
           interrupted = true;
-          throw new Error('simulated worker loss after durable reservation');
+          throw new Error('simulated worker loss after gateway accounting claim');
         }
-        return saved;
+        return durable.save(expectedVersion, value);
       },
     };
     let tokenCounts = 0;
@@ -1541,6 +1545,11 @@ describe('agent session loop', () => {
           const current = await durable.load({ runId: 'run-test', taskId: 'task-test' });
           reservedSnapshots.push(current?.tokensUsed ?? -1);
           if (gatewayCalls === 1) {
+            gatewayClaimed = true;
+            yield { type: 'done' };
+            return;
+          }
+          if (gatewayCalls === 2) {
             yield {
               type: 'tool-call',
               toolCallId: 'call-write-replayed',
@@ -1574,9 +1583,10 @@ describe('agent session loop', () => {
     });
 
     await expect(session.run(input())).rejects.toThrow(
-      'simulated worker loss after durable reservation',
+      'simulated worker loss after gateway accounting claim',
     );
-    expect(gatewayCalls).toBe(0);
+    expect(interrupted).toBe(true);
+    expect(gatewayCalls).toBe(1);
     const checkpoint = (await durable.load({
       runId: 'run-test',
       taskId: 'task-test',
@@ -1584,31 +1594,44 @@ describe('agent session loop', () => {
     expect(checkpoint.inFlightCompletion).not.toBeNull();
     const firstCompletion = structuredClone(checkpoint.inFlightCompletion);
     if (firstCompletion === null) throw new Error('Expected durable completion reservation');
+    expect(firstCompletion.requestVersion).toBe(2);
     const legacyRequest = structuredClone(firstCompletion.request);
     legacyRequest.messages[0] = {
       role: 'system',
       content: 'legacy durable transcript registered-secret',
     };
+    const { requestVersion, ...legacyCompletion } = firstCompletion;
+    expect(requestVersion).toBe(2);
     const { version: checkpointVersion, ...checkpointDraft } = checkpoint;
     await durable.save(checkpointVersion, {
       ...checkpointDraft,
       messages: legacyRequest.messages,
       inFlightCompletion: {
-        ...firstCompletion,
+        ...legacyCompletion,
         request: legacyRequest,
-        requestFingerprint: createHash('sha256').update(JSON.stringify(legacyRequest)).digest('hex'),
+        requestFingerprint: createHash('sha256')
+          .update(JSON.stringify(legacyRequest))
+          .digest('hex'),
       },
     });
 
     const result = await session.run(input());
 
     expect(result.status).toBe('completed');
-    expect(requests).toHaveLength(2);
-    expect(JSON.stringify(requests[0])).not.toContain('registered-secret');
-    expect(requests[0]?.completionId).toBe(firstCompletion.completionId);
-    expect(requests[0]?.maxOutputTokens).toBe(firstCompletion.request.maxOutputTokens);
+    expect(requests).toHaveLength(3);
+    expect(JSON.stringify(requests[1])).not.toContain('registered-secret');
+    expect(requests[1]?.completionId).toBe(firstCompletion.completionId);
+    expect(requests[1]).toMatchObject({
+      accountingReplay: {
+        version: 1,
+        requestFingerprint: createHash('sha256')
+          .update(JSON.stringify(legacyRequest))
+          .digest('hex'),
+      },
+    });
+    expect(requests[1]?.maxOutputTokens).toBe(firstCompletion.request.maxOutputTokens);
     expect(firstCompletion.requestFingerprint).toMatch(/^[a-f0-9]{64}$/u);
-    expect(requests[1]?.completionId).not.toBe(requests[0]?.completionId);
+    expect(requests[2]?.completionId).not.toBe(requests[1]?.completionId);
     expect(tokenCounts).toBe(2);
     expect(reservedSnapshots[0]).toBe(checkpoint.tokensUsed);
     expect((await durable.load(checkpoint.key))?.inFlightCompletion).toBeNull();
