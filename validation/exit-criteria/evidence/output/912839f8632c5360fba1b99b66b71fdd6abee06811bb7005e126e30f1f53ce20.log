@@ -1,0 +1,15 @@
+zapp-exit-evidence-v2
+baseline: da42a617d426571b88a653a02ac2ffdfddeb7dda
+capturedAt: 2026-08-13T16:52:46.000Z
+command: pnpm --filter @zapp/release-service exec vitest run test/integration/deploy-workflow.test.ts --no-file-parallelism
+---
+
+
+ RUN  v3.2.7 /Users/manishmaheshwari/Projects/zapp/services/release-service
+
+ ✓ test/integration/deploy-workflow.test.ts (4 tests) 6ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  09:52:56
+   Duration  466ms (transform 100ms, setup 0ms, collect 245ms, tests 6ms, environment 0ms, prepare 66ms)
