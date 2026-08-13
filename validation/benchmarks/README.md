@@ -26,3 +26,27 @@ part of the catalog or materialized fixtures.
 V-1 only defines and validates the corpus. V-2 owns execution of all fifty
 repeat changes and their recorded results after the required platform
 milestones are integrated.
+
+## V-2 public API preflight
+
+V-2 uses only the public versioned API. Before any paid or mutating operation,
+provide an operator-issued session and explicit tenant selection, then run:
+
+```sh
+ZAPP_BENCHMARK_API_BASE_URL=https://api.example.test \
+ZAPP_BENCHMARK_BEARER_TOKEN=... \
+ZAPP_BENCHMARK_ORGANIZATION_ID=org_... \
+node validation/benchmarks/repeat-change.mjs
+```
+
+The preflight calls `GET /v1/me` with the bearer credential and
+`x-organization-id`, and refuses to start if the identity lacks an active
+membership. It never creates result evidence: a preflight is not a benchmark
+execution. The result validator recomputes the checked-in manifest's byte
+SHA-256 and accepts only exact one-to-one coverage of its 10 app IDs and five
+indexed feature changes. Every execution prompt must equal its mapped manifest
+feature change. Every referenced evidence file resolves inside this repository
+to a regular file and has its raw-byte SHA-256 verified. Each passed artifact
+also needs one passed, hash-verified rollback result for every app. Unknown
+evidence fields, duplicate mappings/run IDs, partial evidence, and contradictory
+timing cannot be reported as successful.

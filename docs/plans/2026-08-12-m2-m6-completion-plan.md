@@ -386,3 +386,18 @@ tracker.
 - Populate all eight measurements from V-2, both required evidence artifacts, agency review,
   and all invalidation decisions; run fail-closed evaluator and record the decision.
 - Commit only when complete: `docs(validation): record P0 go-no-go decision`
+
+### Task 40: V-2 evidence-contract hardening
+
+**Files:** `validation/benchmarks/*`, this completion plan, master-plan execution log.
+
+- RED: reject correct manifest labels paired with noncanonical prompts, missing or digest-mismatched
+  repository evidence, and a passed artifact without one verified rollback per benchmark app.
+- GREEN: bind each execution input to its exact manifest feature change, resolve every evidence
+  reference inside the repository and verify its bytes, and require ten hash-verified rollbacks.
+- Keep V-2 blocked and do not create a live result artifact.
+- Commit: `test(validation): harden repeat-change evidence contract`
+
+## Execution log
+
+- 2026-08-12 Task 40 done — Bound every repeat-change input and evidence reference to the fixed corpus, and required ten verified rollbacks; V-2 remains blocked with no live result artifact.
