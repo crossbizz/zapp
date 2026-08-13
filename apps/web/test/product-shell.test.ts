@@ -15,6 +15,7 @@ import {
   decodeThumbnail,
   revokeThumbnail,
 } from '../src/components/projects/project-thumbnail.js';
+import { INTEGRATION_CATALOG } from '../src/components/settings/integration-catalog.js';
 
 const memberships = [
   {
@@ -191,5 +192,59 @@ void describe('project thumbnail lifecycle', () => {
     const revoked: string[] = [];
     revokeThumbnail('blob:preview-1', (url) => revoked.push(url));
     assert.deepEqual(revoked, ['blob:preview-1']);
+  });
+});
+
+void describe('project settings integration catalog', () => {
+  void it('contains only the five supported P0 providers in product order', () => {
+    assert.deepEqual(INTEGRATION_CATALOG.map(({ provider, category }) => ({ provider, category })), [
+      { category: 'source', provider: 'github' },
+      { category: 'data', provider: 'supabase' },
+      { category: 'data', provider: 'neon' },
+      { category: 'payments', provider: 'stripe' },
+      { category: 'deployment', provider: 'vercel' },
+    ]);
+  });
+
+  void it('keeps credential fields typed and provider-specific', () => {
+    assert.deepEqual(
+      INTEGRATION_CATALOG.map(({ provider, fields }) => ({
+        provider,
+        fields: fields.map(({ id, secret }) => ({ id, secret })),
+      })),
+      [
+        { fields: [], provider: 'github' },
+        {
+          fields: [
+            { id: 'accessToken', secret: true },
+            { id: 'projectRef', secret: false },
+          ],
+          provider: 'supabase',
+        },
+        {
+          fields: [
+            { id: 'apiKey', secret: true },
+            { id: 'projectId', secret: false },
+            { id: 'databaseName', secret: false },
+          ],
+          provider: 'neon',
+        },
+        {
+          fields: [
+            { id: 'apiKey', secret: true },
+            { id: 'accountId', secret: false },
+          ],
+          provider: 'stripe',
+        },
+        {
+          fields: [
+            { id: 'accessToken', secret: true },
+            { id: 'projectId', secret: false },
+            { id: 'projectName', secret: false },
+          ],
+          provider: 'vercel',
+        },
+      ],
+    );
   });
 });

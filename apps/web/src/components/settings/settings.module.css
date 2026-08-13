@@ -1,0 +1,350 @@
+.settings {
+  min-height: 100%;
+  padding: 2rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-canvas);
+  font-family: var(--zapp-font-sans);
+}
+
+.embedded {
+  padding: 1.25rem;
+  background: var(--zapp-surface-raised);
+}
+
+.settingsHeader {
+  max-width: 74rem;
+  margin: 0 auto 1.5rem;
+}
+
+.settingsHeader > a {
+  display: inline-block;
+  margin-bottom: 1.5rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+  text-decoration: none;
+}
+
+.settingsHeader h1,
+.section h2,
+.section h3,
+.integrationCard h3,
+.accountBillingCallout h3 {
+  margin: 0;
+}
+
+.settingsHeader h1 {
+  font-size: var(--zapp-text-32);
+  letter-spacing: -0.035em;
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 680;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settingsBody {
+  display: grid;
+  max-width: 74rem;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 2rem;
+  margin: 0 auto;
+}
+
+.settingsNavigation {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+}
+
+.settingsNavigation a,
+.settingsNavigation button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  color: var(--zapp-text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--zapp-text-14);
+  font-weight: 570;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.settingsNavigation [aria-current='page'] {
+  color: var(--zapp-text-primary);
+  background: var(--zapp-shell-nav-active);
+  font-weight: 680;
+}
+
+.settingsNavigation a:hover,
+.settingsNavigation a:focus-visible,
+.settingsNavigation button:hover,
+.settingsNavigation button:focus-visible {
+  color: var(--zapp-text-primary);
+  background: var(--zapp-shell-nav-hover);
+}
+
+.settingsContent {
+  min-width: 0;
+}
+
+.status {
+  min-height: 1.25rem;
+  margin: 0 0 0.75rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+}
+
+.section {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.section > div:first-child > p,
+.integrationIdentity p,
+.accountBillingCallout p {
+  margin: 0.375rem 0 0;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+  line-height: 1.5;
+}
+
+.details {
+  display: grid;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  margin: 0;
+  overflow: hidden;
+  background: var(--zapp-surface-raised);
+}
+
+.details > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.4fr) 1fr;
+  gap: 1rem;
+  border-bottom: 1px solid var(--zapp-border);
+  padding: 0.875rem 1rem;
+}
+
+.details > div:last-child {
+  border-bottom: 0;
+}
+
+.details dt {
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-14);
+}
+
+.details dd {
+  margin: 0;
+  font-size: var(--zapp-text-14);
+  font-weight: 620;
+}
+
+.formGrid,
+.connectForm {
+  display: grid;
+  gap: 1rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  padding: 1rem;
+  background: var(--zapp-surface-raised);
+}
+
+.formGrid label,
+.connectForm label,
+.dangerZone label,
+.inlineForm label {
+  display: grid;
+  gap: 0.375rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+  font-weight: 620;
+}
+
+.formGrid input,
+.formGrid select,
+.connectForm input,
+.dangerZone input,
+.inlineForm input,
+.inlineForm select,
+.itemList select {
+  min-height: 2.5rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  font-weight: 450;
+}
+
+.formGrid > button,
+.connectForm > button {
+  justify-self: start;
+}
+
+.inlineForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.625rem;
+}
+
+.itemList {
+  display: grid;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.itemList li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  padding: 0.875rem 1rem;
+  background: var(--zapp-surface-raised);
+}
+
+.itemList li > div:first-child {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.itemList small {
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+}
+
+.readOnly {
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  margin: 0;
+  padding: 1rem;
+  color: var(--zapp-text-secondary);
+  background: var(--zapp-surface-subtle);
+}
+
+.dangerZone {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  border: 1px solid var(--zapp-status-danger);
+  border-radius: var(--zapp-radius-panel);
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--zapp-danger-surface);
+}
+
+.integrationGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.875rem;
+}
+
+.integrationCard {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-card);
+  padding: 1rem;
+  background: var(--zapp-surface-raised);
+}
+
+.integrationCard > button {
+  justify-self: start;
+  margin-top: auto;
+}
+
+.integrationIdentity {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.integrationMark {
+  display: inline-grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 0.75rem;
+  color: var(--zapp-text-inverse);
+  background: var(--zapp-brand-gradient);
+  font-weight: 780;
+}
+
+.connectionStatus {
+  margin: 0;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 680;
+}
+
+.connectionStatus[data-connected='true'] {
+  color: var(--zapp-status-success);
+}
+
+.paymentStack {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.accountBillingCallout {
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-card);
+  padding: 1rem;
+  background: var(--zapp-surface-subtle);
+}
+
+.accountBillingCallout a {
+  display: inline-block;
+  margin-top: 0.75rem;
+  color: var(--zapp-accent);
+  font-size: var(--zapp-text-14);
+  font-weight: 680;
+}
+
+.checkboxLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--zapp-text-14);
+}
+
+@media (max-width: 52rem) {
+  .settings {
+    padding: 1rem;
+  }
+
+  .settingsBody {
+    grid-template-columns: 1fr;
+  }
+
+  .settingsNavigation {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .settingsNavigation a,
+  .settingsNavigation button {
+    width: auto;
+    white-space: nowrap;
+  }
+
+  .integrationGrid {
+    grid-template-columns: 1fr;
+  }
+}
