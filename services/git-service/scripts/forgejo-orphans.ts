@@ -1,22 +1,19 @@
 import { createDb, repositories } from '@zapp/db';
 import { parseInternalRepoRef } from '@zapp/contracts';
-import { eq, sql } from 'drizzle-orm';
 
 import { createForgejoClient } from '../src/forgejo/client.js';
 import {
+  assertNoOrphanInventoryArguments,
   assertLocalForgejoUrl,
   assertLocalDevDatabaseUrl,
+  LOCAL_DEV_FORGEJO_URL,
   selectOrphanedRepositories,
   type ForgejoRepositoryInventoryRow,
 } from '../src/forgejo/orphan-inventory.js';
 
-const APPLY = '--apply';
-const args = process.argv.slice(2);
-if (args.length > 1 || (args.length === 1 && args[0] !== APPLY)) {
-  throw new Error('usage: pnpm --filter @zapp/git-service forgejo:orphans [--apply]');
-}
+assertNoOrphanInventoryArguments(process.argv.slice(2));
 
-const forgejoUrl = process.env['FORGEJO_URL'] ?? '';
+const forgejoUrl = LOCAL_DEV_FORGEJO_URL;
 const adminToken = process.env['FORGEJO_ADMIN_TOKEN'] ?? '';
 const databaseUrl = process.env['DATABASE_URL'] ?? '';
 if (adminToken === '' || databaseUrl === '') {
@@ -88,32 +85,6 @@ async function databaseRefs(): Promise<Set<string>> {
   }
 }
 
-async function deleteIfStillOrphan(ref: string): Promise<void> {
-  const database = createDb(databaseUrl);
-  try {
-    await database.db.transaction(async (transaction) => {
-      // This excludes a concurrent repositories insert while the external
-      // deletion is in flight; the immediate re-read is therefore current.
-      await transaction.execute(sql`LOCK TABLE repositories IN SHARE ROW EXCLUSIVE MODE`);
-      const backed = await transaction
-        .select({ internalRepoRef: repositories.internalRepoRef })
-        .from(repositories)
-        .where(eq(repositories.internalRepoRef, ref));
-      if (backed.length > 0) {
-        throw new Error(`refusing DB-backed Forgejo repository: ${ref}`);
-      }
-      const { owner, name } = parseInternalRepoRef(ref);
-      await client.send({ method: 'DELETE', path: `/repos/${owner}/${name}`, allow: [404] });
-      const remaining = await client.send({ method: 'GET', path: `/repos/${owner}/${name}`, allow: [404] });
-      if (remaining.status !== 404) {
-        throw new Error(`Forgejo orphan cleanup failed: ${ref} still exists`);
-      }
-    });
-  } finally {
-    await database.close();
-  }
-}
-
 async function inventory(): Promise<ReturnType<typeof selectOrphanedRepositories>> {
   const [forgejoRepositories, controlPlaneRefs] = await Promise.all([
     listForgejoRepositories(),
@@ -130,15 +101,4 @@ for (const ref of before.candidates) {
   // Exact candidate inventory is intentionally visible, while credentials never
   // enter output or URLs.
   console.log(`candidate ${ref}`);
-}
-
-if (args[0] === APPLY) {
-  for (const ref of before.candidates) {
-    await deleteIfStillOrphan(ref);
-  }
-  const after = await inventory();
-  console.log(`Forgejo orphan post-cleanup candidates=${String(after.candidates.length)}`);
-  if (after.candidates.length !== 0) {
-    throw new Error('Forgejo orphan cleanup failed: candidates remain after deletion');
-  }
 }

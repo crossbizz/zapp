@@ -10,6 +10,15 @@ export interface OrphanInventory {
   readonly excluded: Readonly<{ dbBacked: number; nonCanonical: number; nonPrivate: number }>;
 }
 
+export const LOCAL_DEV_FORGEJO_URL = 'http://localhost:3300';
+
+/** This inventory is intentionally argument-free; it has no mutation mode. */
+export function assertNoOrphanInventoryArguments(args: readonly string[]): void {
+  if (args.length !== 0) {
+    throw new Error('Forgejo orphan inventory does not accept arguments');
+  }
+}
+
 /** Refuses anything other than the local root URL written by `scripts/dev-up.sh`. */
 export function assertLocalForgejoUrl(value: string): URL {
   let url: URL;
@@ -19,8 +28,10 @@ export function assertLocalForgejoUrl(value: string): URL {
     throw new Error('refusing non-local dev Forgejo URL');
   }
   if (
+    value !== LOCAL_DEV_FORGEJO_URL ||
     url.protocol !== 'http:' ||
-    !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+    url.hostname !== 'localhost' ||
+    url.port !== '3300' ||
     url.pathname !== '/' ||
     url.search !== '' ||
     url.hash !== '' ||
@@ -42,7 +53,7 @@ export function assertLocalDevDatabaseUrl(value: string): URL {
   }
   if (
     !['postgres:', 'postgresql:'].includes(url.protocol) ||
-    !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+    url.hostname !== 'localhost' ||
     url.port !== '5432' ||
     url.pathname !== '/zapp' ||
     url.search !== '' ||

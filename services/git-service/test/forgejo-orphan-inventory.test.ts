@@ -2,6 +2,7 @@ import { internalRepoRef, newId } from '@zapp/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertNoOrphanInventoryArguments,
   assertLocalDevDatabaseUrl,
   assertLocalForgejoUrl,
   selectOrphanedRepositories,
@@ -12,6 +13,23 @@ function ref(): string {
 }
 
 describe('Forgejo orphan inventory', () => {
+  it('rejects every command argument so inventory has no destructive mode', () => {
+    expect(() => {
+      assertNoOrphanInventoryArguments([]);
+    }).not.toThrow();
+    expect(() => {
+      assertNoOrphanInventoryArguments(['--apply']);
+    }).toThrow(/does not accept arguments/i);
+    expect(() => {
+      assertNoOrphanInventoryArguments(['--help']);
+    }).toThrow(/does not accept arguments/i);
+    expect(() => {
+      assertNoOrphanInventoryArguments(['--apply', '--force']);
+    }).toThrow(
+      /does not accept arguments/i,
+    );
+  });
+
   it('selects only private canonical refs that are absent from the control-plane repository table', () => {
     const orphan = ref();
     const dbBacked = ref();
@@ -29,9 +47,15 @@ describe('Forgejo orphan inventory', () => {
     expect(inventory.excluded).toEqual({ dbBacked: 1, nonCanonical: 1, nonPrivate: 1 });
   });
 
-  it('refuses a non-loopback or non-root Forgejo URL before inventory or deletion', () => {
+  it('requires the exact generated local Forgejo root identity', () => {
     expect(() => assertLocalForgejoUrl('https://forgejo.example.com')).toThrow(/local dev/i);
     expect(() => assertLocalForgejoUrl('http://localhost:3300/forgejo')).toThrow(/local dev/i);
+    expect(() => assertLocalForgejoUrl('http://127.0.0.1:3300')).toThrow(/local dev/i);
+    expect(() => assertLocalForgejoUrl('http://[::1]:3300')).toThrow(/local dev/i);
+    expect(() => assertLocalForgejoUrl('http://localhost:3301')).toThrow(/local dev/i);
+    expect(() => assertLocalForgejoUrl('http://user:password@localhost:3300')).toThrow(/local dev/i);
+    expect(() => assertLocalForgejoUrl('http://localhost:3300?target=other')).toThrow(/local dev/i);
+    expect(() => assertLocalForgejoUrl('http://localhost:3300#other')).toThrow(/local dev/i);
     expect(() => assertLocalForgejoUrl('http://localhost:3300')).not.toThrow();
   });
 
@@ -41,6 +65,12 @@ describe('Forgejo orphan inventory', () => {
       /control-plane/i,
     );
     expect(() => assertLocalDevDatabaseUrl('postgres://zapp:zapp@localhost:5433/zapp')).toThrow(
+      /control-plane/i,
+    );
+    expect(() => assertLocalDevDatabaseUrl('postgres://zapp:zapp@127.0.0.1:5432/zapp')).toThrow(
+      /control-plane/i,
+    );
+    expect(() => assertLocalDevDatabaseUrl('postgres://zapp:zapp@[::1]:5432/zapp')).toThrow(
       /control-plane/i,
     );
   });

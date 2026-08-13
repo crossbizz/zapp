@@ -417,8 +417,19 @@ tracker.
   only structurally identified dev test repositories after an exact inventory.
 - Commit: `test(git-service): prevent orphaned Forgejo repositories`
 
+### Task 43: Forgejo orphan inventory safety
+
+**Files:** git-service orphan inventory script/tests, completion plan, master log.
+
+- RED: prove the maintenance command cannot delete through the create-before-database-insert race
+  and cannot target a different loopback Forgejo instance or shell-overridden URL.
+- GREEN: remove destructive maintenance mode after the one-time zero-candidate cleanup, retain
+  read-only drift detection, and require the exact dev-stack Forgejo root identity.
+- Commit: `fix(git-service): make Forgejo orphan inventory read-only`
+
 ## Execution log
 
 - 2026-08-12 Task 41 done — Re-enabled pull-request desktop unit and complete Playwright coverage with four bounded no-retry shards; release packaging stays signed/tag-or-manual and failure reports upload.
 - 2026-08-12 Task 40 done — Bound every repeat-change input and evidence reference to the fixed corpus, and required ten verified rollbacks; V-2 remains blocked with no live result artifact.
 - 2026-08-12 Task 42 done — Registered Forgejo fixture refs before creation, made cleanup fail closed and idempotent with absence verification, and removed 53 exact local private canonical DB-orphan candidates; the post-cleanup inventory is zero.
+- 2026-08-12 Task 43 done — Removed the one-time destructive orphan-cleanup mode and its lock/delete path; the inventory now rejects all arguments, pins the exact local Forgejo root and database identity, and reports zero candidates even when `FORGEJO_URL` is shell-overridden.
