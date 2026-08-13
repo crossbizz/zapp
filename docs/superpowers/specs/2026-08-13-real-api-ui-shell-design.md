@@ -94,8 +94,8 @@ The existing summary projection has no browser-safe thumbnail. Add an optional `
 ```ts
 interface ProjectPreviewThumbnail {
   artifactId: string;
+  contentHash: string;
   capturedAt: string;
-  commitSha: string;
   alt: string;
 }
 ```

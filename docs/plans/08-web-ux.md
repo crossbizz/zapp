@@ -257,6 +257,27 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Binding behavior: Usage: credits balance, burn-down by project/run/category (ledger aggregates), budget alerts config; Billing: plan card, seats, payment method (Stripe portal link), top-up credits (OPS-5 checkout); Audit: filterable table (Owner only); a11y: axe clean on home/dashboard/builder/deploy (CI gate), full keyboard e2e for prompt→preview→deploy path; activation analytics (PostHog via OPS-6): `signup, project_created, first_preview_ready, first_change_applied, plan_approved, first_deploy_succeeded` fired from event stream (client-side, org-scoped).
 - [x] Commit: `feat(web): usage/billing/audit + accessibility gate + activation funnel`
 
+### Task WEB-18 [M6]: Reference-quality real API product shell and builder Manage
+
+**Design:** `docs/superpowers/specs/2026-08-13-real-api-ui-shell-design.md`
+**Binding execution expansion:** `docs/superpowers/plans/2026-08-13-real-api-ui-shell.md`
+**Files:** The exact Create/Modify/Test lists in Tasks 1 through 8 of the binding execution expansion. No desktop files are in scope.
+**Effort:** XL, split into the eight independently verified commits prescribed by the execution expansion.
+
+**Interfaces consumed:** Existing Stytch control-plane redirect/cookie session, `/v1/me`, project/project-summary/run/conversation/preview/file/code/log/test/release/health/settings/integration/billing APIs, generated `@zapp/api-client`, and structured `AgentEvent` SSE.
+
+**Interfaces produced:** Optional `previewThumbnail` on `GET /v1/projects/summaries`; tenant-scoped `GET /v1/projects/:projectId/preview-thumbnail/:artifactId`; shared authenticated `AppShell`; typed shell/provider/builder navigation models; shared route/embedded `ProjectSettingsPanel`; builder `Preview | Manage` composition.
+
+- [ ] Task 1: Add the tenant-scoped project thumbnail projection, bytes route, generated SDK operation, and isolation coverage test-first.
+- [ ] Task 2: Add the responsive authenticated product shell and branded Stytch-backed login without changing identity transport.
+- [ ] Task 3: Compose the prompt dashboard with real recent projects and optional authenticated thumbnails.
+- [ ] Task 4: Restyle the full projects workspace while preserving pagination, organization races, and GitHub import identities.
+- [ ] Task 5: Extract settings into typed API-backed modules and render only GitHub, Supabase, Neon, Stripe, and Vercel.
+- [ ] Task 6: Add the builder Preview/Manage composition while preserving conversation, pane resizing, Mission Control, and deployment behavior.
+- [ ] Task 7: Apply the shell and page hierarchy to account, template, release, and health routes without changing their public contracts.
+- [ ] Task 8: Close two local review rounds, accessibility/responsive acceptance, the full local gate, one connected E1 run, and one credential-gated Stytch check.
+- [ ] Commit sequence and verification commands match the binding execution expansion; final closure commit: `feat(web): complete real API product shell`.
+
 ---
 
 ## Testing strategy
