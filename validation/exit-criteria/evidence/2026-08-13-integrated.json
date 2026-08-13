@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 1,
-  "baseline": "103fba4bc152",
-  "capturedAt": "2026-08-13T14:46:29.000Z",
+  "schemaVersion": 2,
+  "baseline": "ac4bf2b51c92e1160833130d9521aa986efa50dd",
+  "capturedAt": "2026-08-13T15:00:32.000Z",
   "environment": {
     "platform": "darwin-arm64",
     "node": "22.23.1",
@@ -15,14 +15,18 @@
       "outcome": "passed",
       "commands": [
         {
-          "command": "control-api run action contract suite",
+          "command": "pnpm --filter @zapp/control-api test -- runs.test.ts",
           "exitCode": 0,
-          "summary": "46/46 passed, including pause/resume/redirect/cancel"
+          "summary": "46/46 passed, including pause/resume/redirect/cancel",
+          "outputArtifact": "validation/exit-criteria/evidence/output/6a5794b44d714d5695258e02ea73e622fabafc0434ae6596bd63a2fc02a403ba.log",
+          "outputSha256": "sha256:6a5794b44d714d5695258e02ea73e622fabafc0434ae6596bd63a2fc02a403ba"
         },
         {
-          "command": "web Mission Control and cancellation browser paths",
+          "command": "pnpm --filter @zapp/web exec playwright test e2e/conversation.spec.ts --grep 'runs every Mission Control lifecycle action'",
           "exitCode": 0,
-          "summary": "2/2 passed"
+          "summary": "1/1 passed through Mission Control",
+          "outputArtifact": "validation/exit-criteria/evidence/output/d4a22e63e51a65e71186c8ed1059f3ebe081f911d0c3a800337014467b30bafd.log",
+          "outputSha256": "sha256:d4a22e63e51a65e71186c8ed1059f3ebe081f911d0c3a800337014467b30bafd"
         }
       ]
     }

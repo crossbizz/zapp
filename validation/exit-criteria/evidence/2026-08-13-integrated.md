@@ -1,13 +1,14 @@
 # P0 integrated evidence — 2026-08-13
 
-Baseline: `103fba4bc152`, after the M2–M6 implementation chain was merged onto
-`main` and the Storybook test-discovery boundary was repaired.
+Baseline: `ac4bf2b51c92e1160833130d9521aa986efa50dd`, with the exact Mission Control
+browser journey and content-bound evidence validator committed while E8 remained candidate.
 
 ## Green evidence
 
 - Run action contract: 46/46 tests passed, including pause, resume, redirect,
   and cancel.
-- Mission Control pause and active-run cancellation browser paths: 2/2 passed.
+- Mission Control structured progress plus pause, resume, redirect, and cancel browser path:
+  1/1 passed through the public APIs.
 - Web project and authenticated-preview journeys: 21/21 Playwright tests passed.
 - Autonomous interview, approval, and execution workflow: 10/10 tests passed.
 - Release deployment workflow: 4/4 tests passed.

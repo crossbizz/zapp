@@ -1,0 +1,18 @@
+zapp-exit-evidence-v2
+baseline: ac4bf2b51c92e1160833130d9521aa986efa50dd
+capturedAt: 2026-08-13T15:00:32.000Z
+command: pnpm --filter @zapp/control-api test -- runs.test.ts
+---
+
+> @zapp/control-api@0.0.0 test /Users/manishmaheshwari/Projects/zapp/services/control-api
+> vitest run "runs.test.ts"
+
+
+ RUN  v3.2.7 /Users/manishmaheshwari/Projects/zapp/services/control-api
+
+ ✓ test/runs.test.ts (46 tests) 493ms
+
+ Test Files  1 passed (1)
+      Tests  46 passed (46)
+   Start at  08:00:09
+   Duration  3.16s (transform 772ms, setup 0ms, collect 2.42s, tests 493ms, environment 0ms, prepare 78ms)
