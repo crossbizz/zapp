@@ -164,7 +164,11 @@ describe('generated API types', () => {
     expect(paths['/v1/releases/{releaseId}/deployment-preview']?.['get']).toBeDefined();
     expect(paths['/v1/releases/{releaseId}/readiness-actions']?.['post']).toBeDefined();
     expect(paths['/v1/deployments/{deploymentId}']?.['get']).toBeDefined();
-    expect(paths['/v1/deployments/{deploymentId}/events']?.['get']?.responses?.['200']?.content?.['text/event-stream']).toBeDefined();
+    expect(
+      paths['/v1/deployments/{deploymentId}/events']?.['get']?.responses?.['200']?.content?.[
+        'text/event-stream'
+      ],
+    ).toBeDefined();
     expect(paths['/v1/deployments/{deploymentId}/actions']?.['post']).toBeDefined();
     expect(paths['/v1/projects/{projectId}/domains']?.['get']).toBeDefined();
     expect(paths['/v1/projects/{projectId}/domains']?.['post']).toBeDefined();
@@ -175,9 +179,10 @@ describe('generated API types', () => {
     expect(response.statusCode).toBe(200);
     const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
     expect(paths['/v1/projects/{projectId}/production']?.['get']?.responses?.['200']).toBeDefined();
-    expect(paths['/v1/releases/{releaseId}/rollback-preview']?.['get']?.responses?.['200']).toBeDefined();
+    expect(
+      paths['/v1/releases/{releaseId}/rollback-preview']?.['get']?.responses?.['200'],
+    ).toBeDefined();
   });
-
 
   it('publishes the versioned incident list/report APIs and Fix seed', async () => {
     const app = documentedHarness().app;
@@ -286,6 +291,7 @@ describe('generated API types', () => {
 
     expect(paths['/v1/notification-preferences']?.['get']?.responses?.['200']).toBeDefined();
     expect(paths['/v1/notification-preferences/{type}']?.['put']?.requestBody).toBeDefined();
+    expect(paths['/v1/desktop-notifications']?.['get']?.responses?.['200']).toBeDefined();
   });
 
   it('publishes the versioned usage summary read model', async () => {
@@ -307,12 +313,10 @@ describe('generated API types', () => {
     const response = await documentedApp().inject({ method: 'GET', url: '/v1/openapi.json' });
     const { paths } = response.json<{ paths: Record<string, Record<string, OpenApiOperation>> }>();
     const supportSession = paths['/v1/admin/support-sessions']?.['post'];
-    const overview =
-      paths['/v1/admin/organizations/{organizationId}/overview']?.['get'];
+    const overview = paths['/v1/admin/organizations/{organizationId}/overview']?.['get'];
     const terminateRun =
       paths['/v1/admin/organizations/{organizationId}/runs/{runId}/terminate']?.['post'];
-    const terminateAll =
-      paths['/v1/admin/organizations/{organizationId}/terminate-all']?.['post'];
+    const terminateAll = paths['/v1/admin/organizations/{organizationId}/terminate-all']?.['post'];
 
     expect(supportSession?.requestBody?.required).toBe(true);
     expect(supportSession?.parameters).toEqual(

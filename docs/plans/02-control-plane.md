@@ -355,8 +355,8 @@ Execution expansion (2026-08-12):
 **Files:** Modify notification routes/store/composition, DB where required, OpenAPI/SDK and tests.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Binding behavior: authenticated per-user/device cursor replay and per-type preferences for approval, run, and deployment notifications; bounded reconnect; tenant isolation and secret-safe payloads.
-- [ ] Commit: `feat(control-api): desktop notification delivery API`
+- [x] Binding behavior: authenticated per-user/device cursor replay and per-type preferences for approval, run, and deployment notifications; bounded reconnect; tenant isolation and secret-safe payloads.
+- [x] Commit: `feat(control-api): desktop notification delivery API`
 
 ---
 
@@ -435,3 +435,4 @@ Execution expansion (2026-08-12):
 - 2026-08-12 CP-22 done — Added server-derived builder eligibility, keyed retry/skip routes, typed stored-kind approvals, deterministic SDK output, and rollout-compatible budget decisions; no provider call.
 - 2026-08-12 CP-23 done — Added keyed typed card responses, run-scoped specification/plan projections, SHA-verified 64-KiB artifact reads, and deterministic SDK routes; no provider call.
 - 2026-08-12 CP-25 done — Added presentation-only template APIs and exact-slug Remix creation with server-owned seeding and idempotent replay; no provider call.
+- 2026-08-12 CP-27 done — Added bounded authenticated desktop-notification cursor replay over the existing strict projection and preference boundary, with atomic Redis cursor append, per-user/tenant isolation, reconnect guidance, and regenerated SDK; no provider call.

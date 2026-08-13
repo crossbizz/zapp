@@ -172,7 +172,9 @@ const verificationServiceUrl = loadVerificationServiceUrl();
 const releaseServiceUrl = loadReleaseServiceUrl();
 const pricing = await loadPricingFile(new URL('../../../config/pricing.json', import.meta.url));
 const planLimits = await loadPlanLimitsFile(new URL('../../../config/plans.json', import.meta.url));
-const templates = await loadTemplateRegistryFile(new URL('../../../config/templates.json', import.meta.url));
+const templates = await loadTemplateRegistryFile(
+  new URL('../../../config/templates.json', import.meta.url),
+);
 const usageQueueConfig = loadUsageQueueEnv();
 const notificationConfig = loadNotificationEnv();
 const flexpriceConfig = requireFlexpriceForEnvironment(env, loadFlexpriceEnv());
@@ -212,7 +214,7 @@ const notificationWorker = createNotificationWorker({
   state: notificationState,
   directory: createDatabaseNotificationDirectory(database.db),
   email: notificationEmail,
-  projections: createRedisNotificationProjection(redis),
+  projections: createRedisNotificationProjection(redis, notificationState),
   fanout: notificationFanout,
   webBaseUrl: new URL(auth.config.appBaseUrl),
 });

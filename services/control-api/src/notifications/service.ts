@@ -136,6 +136,13 @@ export interface NotificationStatePort {
     readonly leaseMs: number;
   }): Promise<string | undefined>;
   releaseEmailWindow(key: string, claim: string): Promise<void>;
+  appendProjection(projection: NotificationProjection): Promise<number>;
+  listProjections(input: {
+    readonly organizationId: string;
+    readonly userId: string;
+    readonly after: number;
+    readonly limit: number;
+  }): Promise<readonly DesktopNotification[]>;
 }
 
 export interface NotificationEmailPort {
@@ -174,6 +181,11 @@ export const NotificationProjectionSchema = z
   })
   .strict();
 
+export const DesktopNotificationSchema = NotificationProjectionSchema.extend({
+  cursor: z.number().int().positive(),
+}).strict();
+export type DesktopNotification = z.infer<typeof DesktopNotificationSchema>;
+
 export interface NotificationProjectionPort {
   publish(projection: NotificationProjection): Promise<void>;
 }
@@ -194,6 +206,7 @@ export function createInMemoryNotificationState(): NotificationStatePort & {
   const preferences = new Map<string, NotificationPreference>();
   const deliveries = new Map<string, MemoryClaim>();
   const windows = new Map<string, { readonly expiresAt: number; readonly token: string }>();
+  const projections = new Map<string, DesktopNotification[]>();
   const preferenceKey = (input: {
     readonly organizationId: string;
     readonly userId: string;
@@ -260,6 +273,26 @@ export function createInMemoryNotificationState(): NotificationStatePort & {
     releaseEmailWindow(key, claim) {
       if (windows.get(key)?.token === claim) windows.delete(key);
       return Promise.resolve();
+    },
+    appendProjection(value) {
+      const projection = NotificationProjectionSchema.parse(value);
+      const key = `${projection.organizationId}:${projection.userId}`;
+      const current = projections.get(key) ?? [];
+      const existing = current.find(
+        (item) => item.channel === projection.channel && item.triggerId === projection.triggerId,
+      );
+      if (existing !== undefined) return Promise.resolve(existing.cursor);
+      const cursor = (current.at(-1)?.cursor ?? 0) + 1;
+      projections.set(key, [...current, { ...projection, cursor }].slice(-1_000));
+      return Promise.resolve(cursor);
+    },
+    listProjections(input) {
+      const key = `${input.organizationId}:${input.userId}`;
+      return Promise.resolve(
+        (projections.get(key) ?? [])
+          .filter((item) => item.cursor > input.after)
+          .slice(0, input.limit),
+      );
     },
     preferences: () => [...preferences.values()],
   };
@@ -564,6 +597,25 @@ const RELEASE_CLAIM = `
   if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
   return redis.call('DEL', KEYS[1])
 `;
+const APPEND_PROJECTION = `
+  local items = {}
+  local current = redis.call('GET', KEYS[1])
+  if current then items = cjson.decode(current) end
+  local projection = cjson.decode(ARGV[1])
+  for _, item in ipairs(items) do
+    if item.channel == projection.channel and item.triggerId == projection.triggerId then
+      return item.cursor
+    end
+  end
+  local cursor = 1
+  if #items > 0 then cursor = items[#items].cursor + 1 end
+  projection.cursor = cursor
+  table.insert(items, projection)
+  while #items > 1000 do table.remove(items, 1) end
+  redis.call('SET', KEYS[1], cjson.encode(items), 'PX', ARGV[2])
+  return cursor
+`;
+const PROJECTION_TTL_MS = 15 * 24 * 60 * 60 * 1_000;
 
 function preferenceRedisKey(input: {
   readonly organizationId: string;
@@ -571,6 +623,10 @@ function preferenceRedisKey(input: {
   readonly type: NotificationType;
 }): string {
   return `${REDIS_NOTIFICATION_PREFIX}:preference:${input.organizationId}:${input.userId}:${input.type}`;
+}
+
+function projectionRedisKey(input: { organizationId: string; userId: string }): string {
+  return `${REDIS_NOTIFICATION_PREFIX}:projection:${input.organizationId}:${input.userId}`;
 }
 
 /** Upstash/Redis implementation shared by every control-api replica. */
@@ -628,6 +684,25 @@ export function createRedisNotificationState(redis: RedisCommands): Notification
     releaseEmailWindow(key, token) {
       return release(windowKey(key), token);
     },
+    async appendProjection(value) {
+      const projection = NotificationProjectionSchema.parse(value);
+      return Number(
+        await redis.eval(
+          APPEND_PROJECTION,
+          [projectionRedisKey(projection)],
+          [JSON.stringify(projection), PROJECTION_TTL_MS],
+        ),
+      );
+    },
+    async listProjections(input) {
+      const stored = await redis.get(projectionRedisKey(input));
+      if (stored === null) return [];
+      return z
+        .array(DesktopNotificationSchema)
+        .parse(JSON.parse(stored) as unknown)
+        .filter((item) => item.cursor > input.after)
+        .slice(0, input.limit);
+    },
   };
 }
 
@@ -670,10 +745,12 @@ export function createDatabaseNotificationDirectory(database: Database): Notific
 /** Emits the delivery projection MAC-11 and the web in-app client consume. */
 export function createRedisNotificationProjection(
   redis: RedisPublisher,
+  state?: Pick<NotificationStatePort, 'appendProjection'>,
 ): NotificationProjectionPort {
   return {
     async publish(value) {
       const projection = NotificationProjectionSchema.parse(value);
+      if (projection.channel === 'desktop_push') await state?.appendProjection(projection);
       await redis.publish(
         `${REDIS_NOTIFICATION_PREFIX}:events:${projection.organizationId}:${projection.userId}`,
         JSON.stringify(projection),
@@ -690,9 +767,51 @@ const PreferenceListResponseSchema = z
   .object({ preferences: z.array(NotificationPreferenceSchema).length(NOTIFICATION_TYPES.length) })
   .strict();
 const PreferenceResponseSchema = z.object({ preference: NotificationPreferenceSchema }).strict();
+const DesktopNotificationQuerySchema = z
+  .object({
+    deviceId: z.string().trim().min(1).max(128),
+    after: z.coerce.number().int().nonnegative().default(0),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+const DesktopNotificationResponseSchema = z
+  .object({
+    notifications: z.array(DesktopNotificationSchema).max(100),
+    nextCursor: z.number().int().nonnegative(),
+    reconnectAfterMs: z.number().int().min(500).max(30_000),
+  })
+  .strict();
 
 /** Versioned public API for the per-user part of notification delivery. */
 export function registerNotificationRoutes(app: AppInstance, state: NotificationStatePort): void {
+  app.get(
+    '/v1/desktop-notifications',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: {
+        querystring: DesktopNotificationQuerySchema,
+        response: { 200: DesktopNotificationResponseSchema },
+      },
+    },
+    async (request) => {
+      const organizationId = tenantOf(request).organizationId;
+      const userId = actorOf(request);
+      const notifications = [
+        ...(await state.listProjections({
+          organizationId,
+          userId,
+          after: request.query.after,
+          limit: request.query.limit,
+        })),
+      ];
+      return {
+        notifications,
+        nextCursor: notifications.at(-1)?.cursor ?? request.query.after,
+        reconnectAfterMs: 1_000,
+      };
+    },
+  );
+
   app.get(
     '/v1/notification-preferences',
     {

@@ -2180,6 +2180,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/desktop-notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    after?: number;
+                    deviceId: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            nextCursor: number;
+                            notifications: {
+                                /** @enum {string} */
+                                channel: "in_app" | "desktop_push";
+                                cursor: number;
+                                /** Format: uri */
+                                desktopUrl: string;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                organizationId: string;
+                                subject: string;
+                                text: string;
+                                triggerId: string;
+                                /** @enum {string} */
+                                type: "approval_requested" | "run_completed" | "run_failed" | "budget_50" | "budget_80" | "budget_100" | "synthetic_check_failed" | "production_incident" | "deploy_succeeded" | "deploy_failed" | "payment_failed" | "member_invited";
+                                userId: string;
+                                /** Format: uri */
+                                webUrl: string;
+                            }[];
+                            reconnectAfterMs: number;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/feature-flags": {
         parameters: {
             query?: never;

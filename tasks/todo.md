@@ -258,7 +258,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M5 — SaaS hardening (Weeks 20–26)
 
-- [ ] CP-27 Public desktop notification projection
+- [x] CP-27 Public desktop notification projection
 
 - [x] OPS-4 Stripe platform billing
 - [x] OPS-4-FIX-1 Stripe fixture secret-scan repair

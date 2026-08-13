@@ -507,6 +507,27 @@ export const PUBLIC_API_OPERATIONS = {
       }
     }
   },
+  "/v1/desktop-notifications": {
+    "get": {
+      "security": [
+        {
+          "bearerAuth": []
+        },
+        {
+          "sessionCookie": []
+        }
+      ],
+      "successResponses": {
+        "200": {
+          "body": "required",
+          "mediaTypes": [
+            "application/json"
+          ],
+          "requiredHeaders": []
+        }
+      }
+    }
+  },
   "/v1/feature-flags": {
     "get": {
       "security": [

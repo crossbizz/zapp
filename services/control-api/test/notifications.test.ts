@@ -282,5 +282,43 @@ describe('OPS-7 notification service', () => {
         .json<{ preferences: NotificationPreference[] }>()
         .preferences.find((preference) => preference.type === 'run_failed'),
     ).toMatchObject({ email: false, inApp: true, desktopPush: false });
+
+    await state.appendProjection({
+      channel: 'desktop_push',
+      triggerId: 'trigger_desktop_1',
+      type: 'approval_requested',
+      organizationId,
+      userId: owner.userId,
+      occurredAt: '2026-08-12T18:00:00.000Z',
+      subject: 'Approval requested',
+      text: 'Review the pending approval.',
+      webUrl: 'https://app.zapp.build/runs/run_1',
+      desktopUrl: 'zapp://runs/run_1',
+    });
+    await state.appendProjection({
+      channel: 'desktop_push',
+      triggerId: 'trigger_desktop_1',
+      type: 'approval_requested',
+      organizationId,
+      userId: owner.userId,
+      occurredAt: '2026-08-12T18:00:00.000Z',
+      subject: 'Approval requested',
+      text: 'Review the pending approval.',
+      webUrl: 'https://app.zapp.build/runs/run_1',
+      desktopUrl: 'zapp://runs/run_1',
+    });
+    const replayed = await built.app.inject({
+      method: 'GET',
+      url: '/v1/desktop-notifications?deviceId=device_1&after=0&limit=10',
+      headers,
+    });
+    expect(replayed.statusCode, replayed.body).toBe(200);
+    expect(replayed.json()).toMatchObject({
+      nextCursor: 1,
+      reconnectAfterMs: 1_000,
+      notifications: [{ cursor: 1, type: 'approval_requested' }],
+    });
+    expect(replayed.json<{ notifications: unknown[] }>().notifications).toHaveLength(1);
+    expect(replayed.body).not.toContain('token');
   });
 });
