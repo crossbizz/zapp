@@ -1098,17 +1098,6 @@ export function registerWorkspaceRoutes(
       if (!(await deps.rows.projectOwnedBy(scope.projectId, scope.organizationId))) {
         throw Object.assign(new Error('Workspace was not found.'), { statusCode: 404 });
       }
-      await deps.networkPolicies.record(
-        NetworkPolicyRecordSchema.parse({
-          operationKey: body.operationKey,
-          organizationId: scope.organizationId,
-          projectId: scope.projectId,
-          workspaceId: body.workspace.id,
-          policy: resolveNetworkPolicy(body.networkProfile, body.integrationDomains),
-          providerEnforced: true,
-          recordedAt: deps.now(),
-        }),
-      );
       const key = WorkspaceRowIdempotencyKeySchema.parse({
         runId: body.runId,
         taskId: body.taskId,
@@ -1196,6 +1185,17 @@ export function registerWorkspaceRoutes(
               profile: body.networkProfile,
               allowedDomains: body.integrationDomains,
             });
+            await deps.networkPolicies.record(
+              NetworkPolicyRecordSchema.parse({
+                operationKey: body.operationKey,
+                organizationId: scope.organizationId,
+                projectId: scope.projectId,
+                workspaceId: body.workspace.id,
+                policy: resolveNetworkPolicy(body.networkProfile, body.integrationDomains),
+                providerEnforced: true,
+                recordedAt: deps.now(),
+              }),
+            );
           },
         );
       } catch (error) {

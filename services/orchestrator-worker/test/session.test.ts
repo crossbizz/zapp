@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1160,7 +1161,7 @@ describe('agent session loop', () => {
     expect(saved?.terminalStatus).toBe('failed');
   });
 
-  it('redacts model text, tool-input values, and tool-input keys before persistence', async () => {
+  it('redacts model requests, control input, model text, and tool input before persistence', async () => {
     const { registry } = await memoryRegistry();
     const transcripts = new MemoryTranscriptStore();
     const scripted = scriptedGateway([
@@ -1192,7 +1193,7 @@ describe('agent session loop', () => {
       events: { emit: () => undefined },
       approvals: { status: () => Promise.resolve('pending') },
       prompts: {
-        builder: 'builder',
+        builder: 'builder registered-secret',
         planner: 'planner',
         verifier: 'verifier',
         summarizer: 'summary',
@@ -1201,12 +1202,48 @@ describe('agent session loop', () => {
       countRequestTokens,
     });
 
-    const result = await session.run({ ...input(), mode: 'ask' });
+    const result = await session.run({
+      ...input(),
+      mode: 'ask',
+      modeInstructions: 'mode registered-secret',
+      context: {
+        ...context(),
+        sections: [
+          {
+            kind: 'currentTask',
+            content: 'context registered-secret',
+            tokenCount: 8,
+            sourceArtifactIds: ['artifact-plan'],
+            sourceEventIds: [],
+          },
+        ],
+      },
+      control: {
+        yieldAfterTool: false,
+        redirect: {
+          operationKey: `op_${'a'.repeat(64)}`,
+          instruction: 'redirect registered-secret',
+        },
+        message: {
+          operationKey: `op_${'b'.repeat(64)}`,
+          message: {
+            messageId: 'msg_01J00000000000000000000002',
+            content: 'conversation registered-secret',
+            attachments: [],
+            source: 'api',
+          },
+        },
+      },
+    });
 
     expect(result.summary).toBe('[REDACTED] final');
     const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
     expect(JSON.stringify(saved)).not.toContain('registered-secret');
     expect(JSON.stringify(saved)).toContain('[REDACTED]-key');
+    expect(JSON.stringify(scripted.requests)).not.toContain('registered-secret');
+    expect(JSON.stringify(scripted.requests)).toContain('context [REDACTED]');
+    expect(JSON.stringify(scripted.requests)).toContain('redirect [REDACTED]');
+    expect(JSON.stringify(scripted.requests)).toContain('conversation [REDACTED]');
   });
 
   it('uses a fenced execution lease before declaring an active mutation abandoned', async () => {
@@ -1529,7 +1566,7 @@ describe('agent session loop', () => {
         verifier: 'verifier',
         summarizer: 'summary',
       },
-      redact: (value) => value,
+      redact: (value) => value.replaceAll('registered-secret', '[REDACTED]'),
       countRequestTokens: () => {
         tokenCounts += 1;
         return 5;
@@ -1546,15 +1583,31 @@ describe('agent session loop', () => {
     })) as SessionTranscript;
     expect(checkpoint.inFlightCompletion).not.toBeNull();
     const firstCompletion = structuredClone(checkpoint.inFlightCompletion);
+    if (firstCompletion === null) throw new Error('Expected durable completion reservation');
+    const legacyRequest = structuredClone(firstCompletion.request);
+    legacyRequest.messages[0] = {
+      role: 'system',
+      content: 'legacy durable transcript registered-secret',
+    };
+    const { version: checkpointVersion, ...checkpointDraft } = checkpoint;
+    await durable.save(checkpointVersion, {
+      ...checkpointDraft,
+      messages: legacyRequest.messages,
+      inFlightCompletion: {
+        ...firstCompletion,
+        request: legacyRequest,
+        requestFingerprint: createHash('sha256').update(JSON.stringify(legacyRequest)).digest('hex'),
+      },
+    });
 
     const result = await session.run(input());
 
     expect(result.status).toBe('completed');
     expect(requests).toHaveLength(2);
-    expect(requests[0]).toEqual(firstCompletion?.request);
-    expect(requests[0]?.completionId).toBe(firstCompletion?.completionId);
-    expect(requests[0]?.maxOutputTokens).toBe(firstCompletion?.request.maxOutputTokens);
-    expect(firstCompletion?.requestFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(JSON.stringify(requests[0])).not.toContain('registered-secret');
+    expect(requests[0]?.completionId).toBe(firstCompletion.completionId);
+    expect(requests[0]?.maxOutputTokens).toBe(firstCompletion.request.maxOutputTokens);
+    expect(firstCompletion.requestFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(requests[1]?.completionId).not.toBe(requests[0]?.completionId);
     expect(tokenCounts).toBe(2);
     expect(reservedSnapshots[0]).toBe(checkpoint.tokensUsed);

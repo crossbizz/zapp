@@ -22,6 +22,7 @@ import {
 import {
   GatewayStreamEventSchema,
   InputJsonSchema,
+  ChatMessageSchema,
   type ChatMessage,
   type CompleteRequest,
   type GatewayStreamEvent,
@@ -267,14 +268,18 @@ const UNTRUSTED_CONTEXT_KINDS = new Set<AssembledContext['sections'][number]['ki
   'evidence',
 ]);
 
-function initialMessages(input: SessionInput): {
+function initialMessages(
+  input: SessionInput,
+  redact: (value: string) => string,
+): {
   messages: ChatMessage[];
   provenance: ContentProvenance[];
 } {
   const provenance: ContentProvenance[] = [];
   const sections = input.context.sections.map((section) => {
-    if (!UNTRUSTED_CONTEXT_KINDS.has(section.kind)) return `[${section.kind}]\n${section.content}`;
-    const wrapped = wrapUntrusted(section.content, `context:${section.kind}`);
+    const content = redact(section.content);
+    if (!UNTRUSTED_CONTEXT_KINDS.has(section.kind)) return `[${section.kind}]\n${content}`;
+    const wrapped = wrapUntrusted(content, `context:${section.kind}`);
     provenance.push(wrapped.provenance);
     return `[${section.kind}]\n${wrapped.content}`;
   });
@@ -305,6 +310,18 @@ function redactJson(value: unknown, redact: (value: string) => string): JsonValu
     return Object.fromEntries(entries);
   }
   throw new Error('Tool output is not JSON serializable');
+}
+
+function redactOutboundRequest(
+  request: CompleteRequest,
+  redact: (value: string) => string,
+): CompleteRequest {
+  return {
+    ...request,
+    messages: request.messages.map((message) =>
+      ChatMessageSchema.parse(redactJson(message, redact)),
+    ),
+  };
 }
 
 function visibleToolOutput(
@@ -471,13 +488,15 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       const rawInputs = new Map<string, Readonly<Record<string, JsonValue>>>();
       let transcript: SessionTranscript;
       if (loaded === undefined) {
-        const initial = initialMessages(input);
+        const initial = initialMessages(input, dependencies.redact);
         provenance = initial.provenance;
         initial.messages[0] = {
           role: 'system',
-          content: [dependencies.prompts[input.role], input.modeInstructions]
-            .filter((part): part is string => part !== undefined)
-            .join('\n\n'),
+          content: dependencies.redact(
+            [dependencies.prompts[input.role], input.modeInstructions]
+              .filter((part): part is string => part !== undefined)
+              .join('\n\n'),
+          ),
         };
         transcript = await dependencies.transcripts.save(null, {
           key,
@@ -532,7 +551,10 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
           transcript.activeToolCallId === null &&
           (transcript.terminalStatus === null || transcript.terminalStatus === 'completed')
         ) {
-          transcript.messages.push({ role: 'user', content: redirect.instruction });
+          transcript.messages.push({
+            role: 'user',
+            content: dependencies.redact(redirect.instruction),
+          });
           transcript.appliedRedirectOperationKeys.push(redirect.operationKey);
           transcript.terminalStatus = null;
           transcript.terminalErrorCode = null;
@@ -557,7 +579,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
         ) {
           transcript.messages.push({
             role: 'user',
-            content: conversationMessageContent(conversationMessage.message),
+            content: dependencies.redact(conversationMessageContent(conversationMessage.message)),
           });
           transcript.appliedMessageOperationKeys.push(conversationMessage.operationKey);
           transcript.terminalStatus = null;
@@ -842,8 +864,9 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               'zapp.task.id': taskId,
             });
             try {
+              const outboundRequest = redactOutboundRequest(request, dependencies.redact);
               iterator = dependencies.gateway
-                .stream(request, controller.signal)
+                .stream(outboundRequest, controller.signal)
                 [Symbol.asyncIterator]();
               for (;;) {
                 const next = await raceWithAbort(iterator.next(), controller.signal);

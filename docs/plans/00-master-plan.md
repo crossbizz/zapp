@@ -374,6 +374,7 @@ North star (PRD §37.1): **verified production releases per active org per month
 - 2026-08-07: M1-GATE-6 done — raised only the workspace-runtime real-Git fixture's aggregate envelope to 60 seconds after cold-gate contention exceeded 15 seconds; individually enforced 5-second fixture and 30-second production Git deadlines remain authoritative, the package passed 35/35 locally, and GitHub Actions remains unverified because billing prevents job startup.
 - 2026-08-12 GATE-7 done — Forgejo integration fixtures now register each canonical private ref before provider creation, clean every owned ref idempotently with post-delete verification, and fail teardown on any error; the explicit local-only inventory removed 53 canonical private DB-orphaned refs (0 database-backed) and rechecked zero candidates.
 - 2026-08-12 GATE-7 follow-up done — The orphan command is now read-only: it rejects every argument, has no delete or locking path, ignores shell-overridden Forgejo URLs in favor of the exact generated local root, and the live inventory remains at zero candidates.
+- 2026-08-13 OPS-12-FIX-1 done — Provider-enforced network-policy evidence now follows a successful provider update, model-bound session input is redacted at the boundary, and the credential-gated Modal abuse proof requires descendant termination plus kernel cgroup OOM evidence; the real Modal check skipped visibly without credentials.
 
 ## M0 gate sign-off — 2026-08-04
 

@@ -43,7 +43,7 @@ describe('OPS-12 permanent redaction gate', () => {
     const output = await runGate(
       '@zapp/orchestrator-worker',
       'test/session.test.ts',
-      'redacts model text, tool-input values, and tool-input keys before persistence',
+      'redacts model requests, control input, model text, and tool input before persistence',
     );
     expect(output).toContain('1 passed');
   }, 60_000);

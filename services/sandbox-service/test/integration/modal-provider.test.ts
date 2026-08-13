@@ -2843,12 +2843,15 @@ describe('create status terminate and idempotency', () => {
     await blocked.ready();
     const blockedResponse = await blocked.inject(request);
     expect(blockedResponse.statusCode).toBe(500);
-    expect(blockedSdk.creates).toHaveLength(0);
-    expect(blockedRows.transitions).toHaveLength(0);
+    expect(blockedSdk.creates).toHaveLength(1);
+    expect(blockedSdk.sandbox.networkPolicyUpdates).toHaveLength(1);
+    expect(blockedSdk.sandbox.terminateCalls).toBe(1);
+    expect(blockedRows.transitions.at(-1)).toMatchObject({ status: 'terminated' });
 
     const enforcementSdk = new FakeModalWorkspaceSdk();
     enforcementSdk.sandbox.networkPolicyError = new Error('provider policy unavailable');
     const enforcementRows = new MemoryWorkspaceRows();
+    const enforcementRecord = vi.fn(() => Promise.resolve());
     const enforcement = buildTestApp({
       provider: createModalSandboxProvider({
         environment: 'dev',
@@ -2859,13 +2862,14 @@ describe('create status terminate and idempotency', () => {
       rows: enforcementRows,
       workspaceGit: WORKSPACE_GIT_FIXTURE,
       serviceTokens,
-      networkPolicies: NOOP_NETWORK_POLICIES,
+      networkPolicies: { record: enforcementRecord },
       now: () => NOW,
     });
     apps.push(enforcement);
     await enforcement.ready();
     const enforcementResponse = await enforcement.inject(request);
     expect(enforcementResponse.statusCode).toBe(500);
+    expect(enforcementRecord).not.toHaveBeenCalled();
     expect(enforcementSdk.sandbox.terminateCalls).toBe(1);
     expect(enforcementRows.transitions.at(-1)).toMatchObject({ status: 'terminated' });
   });

@@ -439,6 +439,24 @@ tracker.
 - Keep V-2 blocked and do not create a live result artifact.
 - Commit: `test(validation): bind repeat-change evidence contents`
 
+### Task 45: OPS-12 runtime security hardening reconciliation
+
+**Files:** sandbox-service provider/routes/integration tests, orchestrator session loop/tests,
+security gates, Plan 10, master plan, tracker.
+
+- [x] **RED:** prove a provider-enforced policy record is absent when the provider update fails;
+  prove prompts, assembled context, redirects, and messages reach neither model requests nor
+  transcripts unredacted; strengthen the credential-gated Modal containment proof to check an
+  escaped descendant marker and the cgroup `oom_kill` counter.
+- [x] **GREEN:** apply and record policy only after provider enforcement succeeds; redact all
+  model-bound text at the session boundary; retain the creation-time no-egress sentinel because
+  Modal interprets an empty creation allowlist as open and rejects later updates.
+- [x] **Verify:** focused policy and session regressions pass; sandbox injection/lifecycle/source
+  boundaries, workspace-agent descendant/cgroup tests, touched lint/typecheck, and model-provider
+  architecture gates pass. The credential-gated Modal containment test skips visibly without
+  `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET`.
+- [x] **Commit:** `fix(security): close runtime enforcement gaps`
+
 ## Execution log
 
 - 2026-08-12 Task 41 done — Re-enabled pull-request desktop unit and complete Playwright coverage with four bounded no-retry shards; release packaging stays signed/tag-or-manual and failure reports upload.
@@ -446,3 +464,4 @@ tracker.
 - 2026-08-12 Task 42 done — Registered Forgejo fixture refs before creation, made cleanup fail closed and idempotent with absence verification, and removed 53 exact local private canonical DB-orphan candidates; the post-cleanup inventory is zero.
 - 2026-08-12 Task 43 done — Removed the one-time destructive orphan-cleanup mode and its lock/delete path; the inventory now rejects all arguments, pins the exact local Forgejo root and database identity, and reports zero candidates even when `FORGEJO_URL` is shell-overridden.
 - 2026-08-12 Task 44 done — Rejected unrelated or wrong-kind evidence and bound five typed result envelopes to each exact execution, app, run, and claimed outcome; V-2 remains blocked with no live artifact.
+- 2026-08-13 Task 45 done — Moved policy evidence after provider enforcement, redacted all model-bound session input, and upgraded the credential-gated Modal containment proof to descendant and kernel `oom_kill` evidence; live Modal remained visibly skipped without credentials.
