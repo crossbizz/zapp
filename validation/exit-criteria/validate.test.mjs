@@ -21,7 +21,7 @@ test('V-3 matrix covers E1 through E22 exactly once with repository evidence', a
       failed: result.failed,
       blocked: result.blocked,
     },
-    { verified: 15, candidate: 3, failed: 0, blocked: 4 },
+    { verified: 15, candidate: 6, failed: 0, blocked: 1 },
   );
 });
 
@@ -64,8 +64,8 @@ test('V-3 binds criterion prose and readiness state to the PRD and task tracker'
   await assert.rejects(validateExitCriteriaManifest(proseDrift, root), /must match PRD §39/u);
 
   const falseCandidate = structuredClone(await loadExitCriteriaManifest(root));
-  falseCandidate.criteria[0].state = 'candidate';
-  delete falseCandidate.criteria[0].blocker;
+  falseCandidate.criteria[21].state = 'candidate';
+  delete falseCandidate.criteria[21].blocker;
   await assert.rejects(
     validateExitCriteriaManifest(falseCandidate, root),
     /candidate criteria require all tasks checked/u,

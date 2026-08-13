@@ -5,7 +5,7 @@
     {
       "id": "E1",
       "criterion": "A first-time nontechnical user can move from one initial prompt through clarification, build, preview, iteration, readiness check, and deployment without leaving the unified builder or opening a terminal.",
-      "state": "blocked",
+      "state": "candidate",
       "requiredTasks": ["WEB-10", "WEB-14"],
       "sourceEvidence": [
         "apps/web/e2e/projects.spec.ts",
@@ -17,13 +17,12 @@
         "pnpm --filter @zapp/orchestrator-worker test:integration -- autonomous.test.ts",
         "pnpm --filter @zapp/release-service test -- test/integration/deploy-workflow.test.ts"
       ],
-      "evidenceArtifacts": [],
-      "blocker": "The plan approval and deployment UI tasks are not integrated."
+      "evidenceArtifacts": []
     },
     {
       "id": "E2",
       "criterion": "Conversation, preview, Mission Control, and deployment status remain synchronized across web and macOS.",
-      "state": "blocked",
+      "state": "candidate",
       "requiredTasks": ["WEB-9", "WEB-14", "MAC-8"],
       "sourceEvidence": [
         "services/control-api/test/mission-control.test.ts",
@@ -34,8 +33,7 @@
         "pnpm --filter @zapp/control-api test -- mission-control.test.ts",
         "pnpm --filter @zapp/web exec playwright test e2e/preview-panel.spec.ts"
       ],
-      "evidenceArtifacts": [],
-      "blocker": "Mission Control, deployment UI, and macOS cloud-builder parity remain incomplete."
+      "evidenceArtifacts": []
     },
     {
       "id": "E3",
@@ -116,15 +114,14 @@
     {
       "id": "E8",
       "criterion": "Mission Control shows structured progress and allows pause, resume, redirect, and cancel.",
-      "state": "blocked",
+      "state": "candidate",
       "requiredTasks": ["CP-16", "WEB-9"],
       "sourceEvidence": [
         "services/control-api/test/mission-control.test.ts",
         "services/control-api/src/routes/mission-control.ts"
       ],
       "verifyCommands": ["pnpm --filter @zapp/control-api test -- mission-control.test.ts"],
-      "evidenceArtifacts": [],
-      "blocker": "The public control API exists, but the WEB-9 Mission Control surface remains incomplete."
+      "evidenceArtifacts": []
     },
     {
       "id": "E9",
@@ -317,7 +314,7 @@
       "sourceEvidence": ["validation/benchmarks/manifest.json"],
       "verifyCommands": ["pnpm validation:benchmarks"],
       "evidenceArtifacts": [],
-      "blocker": "V-2 cannot run until the incomplete M2–M5 product surfaces are integrated."
+      "blocker": "V-2's fifty real repeat-change executions and immutable result artifact are not yet complete."
     }
   ]
 }

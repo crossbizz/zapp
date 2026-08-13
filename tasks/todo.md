@@ -282,7 +282,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 - [x] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures
 - [ ] V-2 Run repeat-change protocol ×5 per app (PRD §40.3), record metrics *(10-app/50-change corpus validated; execution waits for the blocked product paths)*
-- [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links *(evidence refreshed in `441259b`: 15 verified, 3 candidates, 4 blocked, 0 failed)*
+- [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links *(matrix is structurally green: 15 verified, 6 candidates, 1 V-2-blocked, 0 failed; live evidence still required for candidates)*
 - [ ] V-4 Measure §37.6 thresholds; go/no-go review; log invalidation signals (PRD §40.4) *(fail-closed evaluator is green; real measurements and V-2/V-5 evidence remain absent)*
 - [ ] V-5 Beta onboarding: 3–5 agencies, support rotation, feedback loop into tasks/ *(tooling is green; real agencies, support assignment, and task-linked feedback remain absent)*
 
