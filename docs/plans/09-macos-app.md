@@ -177,8 +177,8 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 **Files:** Create: `apps/desktop/src/zapp/sync/promote.ts`
 **Effort:** M
 
-- [ ] Binding behavior (PRD §10.4): wizard: create cloud project → push local repo to internal Git → capability scan → cloud workspace boots → local project marked "linked" (subsequent work choice: local or cloud, synced per MAC-9); interrupted promotion resumable (idempotent by project fingerprint).
-- [ ] Commit: `feat(desktop): local→cloud promotion wizard`
+- [x] Binding behavior (PRD §10.4): wizard: create cloud project → push local repo to internal Git → capability scan → cloud workspace boots → local project marked "linked" (subsequent work choice: local or cloud, synced per MAC-9); interrupted promotion resumable (idempotent by project fingerprint).
+- [x] Commit: `feat(desktop): local→cloud promotion wizard`
 
 ### Task MAC-11 [M5]: Notifications + auto-update
 
@@ -233,5 +233,6 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-11 MAC-9 BLOCKED — API-first audit found no public session-authenticated internal-Git credential or sync API in the generated SDK; the only git-service credentials are internal service/repository-scoped boundaries. Without the prescribed user-scoped token, desktop cannot safely fetch/push or exercise the divergence/merge contract, so the task remains unchecked and no alternate credential path was introduced.
 - 2026-08-12 MAC-9 done — Added commit-boundary synchronization over GIT-7 leases: dirty work requires Commit/Stash/Discard, ancestry selects fast-forward or push, divergence requires an explicit parent-checked merge commit, and credentials remain ephemeral Git environment configuration; focused acceptance passed 4/4.
 - 2026-08-11 MAC-10 BLOCKED — Promotion depends on MAC-9's missing authenticated Git push path: project creation and capability scan APIs exist, but the desktop cannot push the local repository to the new internal repository through any public SDK operation. The task remains unchecked; no direct git-service backdoor or local-only linked marker was added.
+- 2026-08-12 MAC-10 done — Added the fingerprint-keyed durable promotion state machine across project create, MAC-9 repository push, capability scan, workspace boot, and linked completion; restart acceptance checkpoints every phase and passed 1/1.
 - 2026-08-12 MAC-11 BLOCKED — Commit `5fc6741` added schema-validated, deduplicated approval/run/deployment native-notification projection with server-backed per-type desktop preferences, stale-delivery rejection, and deep-link validation; it also replaced the legacy public-update host with failure-isolated signed Squirrel static feeds at `desktop-updates/{stable|beta}`. Focused acceptance is 26/26 with desktop lint/typecheck green; final production run attachment remains blocked on MAC-8, and the full desktop suite retains eight unrelated current-main failures in M4 chat-stream/compaction tests, so the tracker stays unchecked.
 - 2026-08-12 MAC-12 BLOCKED — Commit `1155e94` added direct-child Dyad project detection, keyed copy/adopt and Git/registration boundaries, a bounded symlink-safe read-only transcript archive, and an optional cloud-promotion handoff. Focused acceptance is 9/9 with desktop main-process typecheck and file-scoped lint/format checks green; user-facing composition and promotion remain blocked on MAC-10/M4, so the tracker stays unchecked.
