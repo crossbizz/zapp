@@ -253,7 +253,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-15 Production health + guarded rollback UI
 - [x] MAC-7 Docker runtime mode
 - [x] MAC-8 Cloud builder + Mission Control parity
-- [ ] MAC-9 Commit-boundary sync + guided merge
+- [x] MAC-9 Commit-boundary sync + guided merge
 - [ ] MAC-10 Local→cloud promotion
 
 ## M5 — SaaS hardening (Weeks 20–26)
