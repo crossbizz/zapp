@@ -91,7 +91,7 @@ jobs:
     steps:
       # persist-credentials: false -- this job runs repo code and package
       # postinstall scripts, so no push-capable token is left in .git/config.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
