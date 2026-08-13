@@ -60,7 +60,6 @@ export function TopBar({
         <Link href="/projects">Projects</Link>
         <div className="zapp-builder-project-title">
           <h1 className="zapp-builder-project-name">{projectName}</h1>
-          <span className="zapp-builder-save-state">Last saved version</span>
         </div>
         <SupportLevelBadge level={supportLevel} />
         <EnvBadge environment="preview" />

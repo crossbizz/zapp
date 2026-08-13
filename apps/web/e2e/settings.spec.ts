@@ -163,6 +163,68 @@ test('renders the exact supported catalog, deep links, and clears failed credent
   expect(analyticsBodies.join('\n')).not.toContain(secret);
 });
 
+test('keeps embedded Manage integration mutations on the public API and clears credentials', async ({
+  page,
+}) => {
+  const secret = 'embedded-supabase-secret';
+  let idempotencyKey = '';
+  await routeProject(page);
+  await page.route(`${apiBaseUrl}/v1/integrations`, (route) => (
+    apiResponse(route, { connections: [] })
+  ));
+  await page.route(`${apiBaseUrl}/v1/integrations/supabase/connect`, async (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      accessToken: secret,
+      configuration: { projectRef: 'embedded-ref' },
+      projectId: project.id,
+    });
+    idempotencyKey = route.request().headers()['idempotency-key'] ?? '';
+    await apiResponse(route, {
+      error: {
+        code: 'provider_unavailable',
+        message: 'The provider is unavailable.',
+        requestId: 'req_embedded_settings_failure',
+      },
+    }, 503);
+  });
+
+  await signIn(page);
+  await page.goto(
+    `/projects/${project.id}?mode=manage&view=preview&section=integrations&pane=workspace`,
+  );
+  await expect(page.getByRole('heading', { name: 'Alpha Settings settings' })).toBeVisible();
+  await integrationCard(page, 'Supabase').getByRole('button', { name: 'Connect' }).click();
+  const accessToken = page.getByLabel('supabase access token');
+  await accessToken.fill(secret);
+  await page.getByLabel('supabase project ref').fill('embedded-ref');
+  await page.getByRole('button', { name: 'Connect Supabase' }).click();
+
+  await expect(page.getByText('The change could not be saved.')).toBeVisible();
+  await expect(accessToken).toHaveValue('');
+  await expect(page.getByText(secret, { exact: false })).toHaveCount(0);
+  await expect(page).toHaveURL(
+    new RegExp(`/projects/${project.id}\\?mode=manage&section=integrations&pane=workspace$`, 'u'),
+  );
+  expect(idempotencyKey).not.toBe('');
+});
+
+test('keeps embedded Manage settings read-only for viewers', async ({ page }) => {
+  await page.route(`${apiBaseUrl}/v1/me`, (route) => apiResponse(route, {
+    user: { id: 'user-viewer', email: 'viewer@example.test', displayName: 'Vera Viewer', avatarUrl: null },
+    memberships: [{ allowedModels: [], organization: { id: organizationId, name: 'Viewer Org', slug: 'viewer' }, role: 'viewer', status: 'active' }],
+  }));
+  await routeProject(page);
+
+  await signIn(page);
+  await page.goto(
+    `/projects/${project.id}?mode=manage&view=preview&section=general&pane=workspace`,
+  );
+
+  await expect(page.getByText('Viewer access is read-only.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Archive project' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Members', exact: true })).toHaveCount(0);
+});
+
 test('connects and disconnects through public integration APIs without retaining credentials', async ({
   page,
 }) => {

@@ -134,6 +134,7 @@ test('loads an organization-scoped shell with truthful header actions and surfac
   await expect(page.getByRole('region', { name: 'Conversation' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();
   await expect(page.getByText('Compatible')).toBeVisible();
+  await expect(page.getByText('Last saved version', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Preview', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Preview' })).toBeVisible();
   await expect(page.getByRole('link', { name: /GitHub Unavailable/u })).toHaveAttribute(
@@ -158,6 +159,20 @@ test('loads an organization-scoped shell with truthful header actions and surfac
   for (const tab of ['Files', 'Code', 'More']) {
     await expect(page.getByRole('tab', { name: tab })).toBeVisible();
   }
+  await page.getByRole('tab', { name: 'Preview' }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Files' })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('region', { name: 'Files workspace' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Code changes' })).toHaveCount(0);
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Code' })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Code' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('region', { name: 'Code changes' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Files workspace' })).toHaveCount(0);
+  await page.keyboard.press('Home');
+  await expect(page.getByRole('tab', { name: 'Preview' })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'More' }).click();
   for (const tab of ['Logs', 'Tests', 'Releases', 'Health']) {
     await expect(page.getByRole('tab', { name: tab })).toBeVisible();

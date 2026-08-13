@@ -1,7 +1,7 @@
 'use client';
 
 import type { BuilderPreviewEvent } from '@zapp/api-client';
-import { useEffect, useRef, type ReactElement } from 'react';
+import { useEffect, useRef, type KeyboardEvent, type ReactElement } from 'react';
 
 import type { BuilderRun } from '../../lib/api';
 import { CodeView } from '../code/CodeView';
@@ -60,6 +60,24 @@ export function SurfaceTabs({
   const tabsRef = useRef<HTMLDivElement>(null);
   const moreActive = moreValues.has(value);
 
+  const moveTabFocus = (event: KeyboardEvent<HTMLButtonElement>): void => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const tabs = [
+      ...(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(':scope > [role="tab"]') ?? []),
+    ];
+    const currentIndex = tabs.indexOf(event.currentTarget);
+    if (currentIndex < 0 || tabs.length === 0) return;
+    event.preventDefault();
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? tabs.length - 1
+        : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    const next = tabs[nextIndex];
+    next?.focus();
+    next?.click();
+  };
+
   useEffect(() => {
     if (focusPreviewRequest === 0) return;
     const preview = [
@@ -84,15 +102,10 @@ export function SurfaceTabs({
       );
       break;
     case 'files':
-      content = (
-        <div aria-label="Files view" className={styles.filesView}>
-          <p>Browse the current sandbox files and open one to inspect it.</p>
-          <CodeView organizationId={organizationId} projectId={projectId} />
-        </div>
-      );
+      content = <CodeView organizationId={organizationId} projectId={projectId} view="files" />;
       break;
     case 'code':
-      content = <CodeView organizationId={organizationId} projectId={projectId} />;
+      content = <CodeView organizationId={organizationId} projectId={projectId} view="changes" />;
       break;
     case 'logs':
       content = <LogView organizationId={organizationId} projectId={projectId} />;
@@ -127,7 +140,9 @@ export function SurfaceTabs({
             onClick={() => {
               onValueChange(tab);
             }}
+            onKeyDown={moveTabFocus}
             role="tab"
+            tabIndex={value === tab ? 0 : -1}
             type="button"
           >
             {label}
@@ -140,7 +155,9 @@ export function SurfaceTabs({
           onClick={() => {
             onValueChange(moreActive ? value : 'logs');
           }}
+          onKeyDown={moveTabFocus}
           role="tab"
+          tabIndex={moreActive ? 0 : -1}
           type="button"
         >
           More
@@ -157,7 +174,9 @@ export function SurfaceTabs({
               onClick={() => {
                 onValueChange(tab);
               }}
+              onKeyDown={moveTabFocus}
               role="tab"
+              tabIndex={value === tab ? 0 : -1}
               type="button"
             >
               {label}

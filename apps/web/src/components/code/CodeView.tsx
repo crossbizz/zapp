@@ -16,7 +16,7 @@ function encodeBase64(value: string): string {
   return btoa(binary);
 }
 
-export function CodeView({ organizationId, projectId }: { readonly organizationId: string; readonly projectId: string }): ReactElement {
+export function CodeView({ organizationId, projectId, view }: { readonly organizationId: string; readonly projectId: string; readonly view: 'files' | 'changes' }): ReactElement {
   const client = createControlPlaneClient(organizationId);
   const [workspaceId, setWorkspaceId] = useState<string>();
   const [entries, setEntries] = useState<WorkspaceFilesData['entries']>([]);
@@ -37,7 +37,7 @@ export function CodeView({ organizationId, projectId }: { readonly organizationI
       setEntries(listed.entries); setStatus('');
     }).catch(() => { if (!controller.signal.aborted) setStatus('Files could not be loaded.'); });
     return () => { controller.abort(); };
-  }, [organizationId, projectId]);
+  }, [organizationId, projectId, view]);
   const open = async (path: string): Promise<void> => {
     if (workspaceId === undefined) return;
     try { const loaded = await client.readWorkspaceFile(workspaceId, path); setFile(loaded); setContent(decodeBase64(loaded.dataBase64)); setEditing(false); setStatus(''); }
@@ -48,8 +48,9 @@ export function CodeView({ organizationId, projectId }: { readonly organizationI
     try { const saved = await client.editWorkspaceFile(workspaceId, { path: file.path, dataBase64: encodeBase64(content), expectedCompareToken: file.compareToken }); setFile({ ...file, dataBase64: encodeBase64(content), compareToken: saved.compareToken, byteSize: new TextEncoder().encode(content).byteLength }); setEditing(false); setStatus(`Saved in ${saved.commitRef}`); }
     catch { setStatus('The file changed or could not be saved. Reload and retry.'); }
   };
-  return <section aria-label="Code workspace"><FileTree entries={entries} onOpen={(path) => { void open(path); }} />
+  return <section aria-label={view === 'changes' ? 'Code changes' : 'Files workspace'}><FileTree entries={entries} onOpen={(path) => { void open(path); }} />
     {file === undefined ? null : <article><h3>{file.path}</h3>{editing ? <textarea aria-label="File editor" onChange={(event) => { setContent(event.target.value); }} value={content} /> : <pre>{content}</pre>}{canEdit ? <button onClick={() => { if (editing) void save(); else setEditing(true); }} type="button">{editing ? 'Save edit' : 'Edit file'}</button> : null}</article>}
-    <p aria-live="polite">{status}</p><DiffView organizationId={organizationId} projectId={projectId} />
+    <p aria-live="polite">{status}</p>
+    {view === 'changes' ? <DiffView organizationId={organizationId} projectId={projectId} /> : null}
   </section>;
 }
