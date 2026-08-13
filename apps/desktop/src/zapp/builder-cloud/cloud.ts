@@ -19,6 +19,11 @@ export interface NativeCloudBuilderShell {
   setBadge(value: string): void;
 }
 
+export interface DesktopNotificationLifecycle {
+  close(): void;
+  start(): void;
+}
+
 export class CloudBuilderController {
   private events: readonly BuilderEvent[] = [];
   private subscription: { close(): void } | undefined;
@@ -27,10 +32,12 @@ export class CloudBuilderController {
     private readonly runId: string,
     private readonly transport: CloudBuilderTransport,
     private readonly native: NativeCloudBuilderShell,
+    private readonly notifications?: DesktopNotificationLifecycle,
   ) {}
 
   connect(): void {
     this.subscription?.close();
+    this.notifications?.start();
     this.subscription = this.transport.subscribe(this.runId, (event) => {
       this.events = mergeBuilderEvent(this.events, event);
       this.native.setBadge(String(this.snapshot().approvalIds.length || ""));
@@ -39,6 +46,7 @@ export class CloudBuilderController {
 
   close(): void {
     this.subscription?.close();
+    this.notifications?.close();
     this.subscription = undefined;
     this.native.setBadge("");
   }

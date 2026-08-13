@@ -33,6 +33,24 @@ describe("createNativeNotificationDisplay", () => {
     expect(openDeepLink).toHaveBeenCalledWith(notification.deepLink);
   });
 
+  it("accepts the tenant/project/run deep links emitted by the public notification API", async () => {
+    const create = vi.fn(() => ({ onclick: null }));
+    const display = createNativeNotificationDisplay({
+      create,
+      openDeepLink: vi.fn(),
+      permission: () => "granted",
+    });
+
+    await expect(
+      display({
+        ...notification,
+        deepLink:
+          "zapp://organizations/org_01ARZ3NDEKTSV4RRFFQ69G5FAV/projects/proj_01ARZ3NDEKTSV4RRFFQ69G5FAV/runs/run_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      }),
+    ).resolves.toBe(true);
+    expect(create).toHaveBeenCalledOnce();
+  });
+
   it("does nothing without permission or for an invalid deep link", async () => {
     const create = vi.fn();
     const display = createNativeNotificationDisplay({

@@ -12,12 +12,20 @@ export interface NativeNotificationHandle {
 function validProjectDeepLink(value: string): boolean {
   try {
     const parsed = new URL(value);
+    if (
+      parsed.protocol !== "zapp:" ||
+      parsed.search !== "" ||
+      parsed.hash !== ""
+    )
+      return false;
+    if (parsed.hostname === "project") {
+      return /^\/proj_[0-9A-HJKMNP-TV-Z]{26}$/u.test(parsed.pathname);
+    }
     return (
-      parsed.protocol === "zapp:" &&
-      parsed.hostname === "project" &&
-      /^\/proj_[0-9A-HJKMNP-TV-Z]{26}$/u.test(parsed.pathname) &&
-      parsed.search === "" &&
-      parsed.hash === ""
+      parsed.hostname === "organizations" &&
+      /^\/org_[0-9A-HJKMNP-TV-Z]{26}\/projects\/proj_[0-9A-HJKMNP-TV-Z]{26}(?:\/runs\/run_[0-9A-HJKMNP-TV-Z]{26})?$/u.test(
+        parsed.pathname,
+      )
     );
   } catch {
     return false;

@@ -275,7 +275,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-17 Retention & deletion pipeline
 - [x] CP-18 Export APIs
 - [x] WEB-16 Usage/billing/audit UI + a11y gate + activation funnel
-- [ ] MAC-11 Notifications + auto-update *(phased implementation landed in `5fc6741`; production attachment remains blocked on MAC-8)*
+- [x] MAC-11 Notifications + auto-update
 - [ ] MAC-12 Dyad project migration *(phased implementation landed in `1155e94`; user-facing promotion remains blocked on MAC-10)*
 
 ## M6 — Private beta validation (Weeks 26–30)

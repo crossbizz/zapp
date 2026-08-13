@@ -185,7 +185,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 **Files:** Create: `apps/desktop/src/zapp/{notifications,updater}/*`
 **Effort:** M
 
-- [ ] Binding behavior: native notifications for `approval.requested`, `run.completed`, `deployment.updated(go_live|failed)` (opt-out per type in settings); auto-update: Squirrel feed from R2 (`desktop-updates/{channel}/`), channels stable/beta, signed updates only, release notes dialog; update failure never blocks launch. *(Phased implementation is complete; production run attachment remains blocked on MAC-8.)*
+- [x] Binding behavior: native notifications for `approval.requested`, `run.completed`, `deployment.updated(go_live|failed)` (opt-out per type in settings); auto-update: Squirrel feed from R2 (`desktop-updates/{channel}/`), channels stable/beta, signed updates only, release notes dialog; update failure never blocks launch.
 - [x] Commit: `feat(desktop): approval/run notifications + auto-update channel` (`5fc6741`)
 
 ### Task MAC-12 [M5]: Dyad local project migration
@@ -209,6 +209,8 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - Tokens in safeStorage only; local runtime enforces the same path guard + command policy (AR-5 policies bundled); local mode never receives other-tenant data (api-client org scoping identical to web); deep links validated (project id membership check before open).
 
 ## Execution log
+
+- 2026-08-12 MAC-11 done — Attached the phased native-notification/update work to MAC-8 through CP-27's bounded tenant-scoped cursor API, accepted only the public organization/project/run deep-link grammar, and passed notification/updater 29/29, attachment 3/3, desktop main-process typecheck, lint, and formatting; no provider call was required.
 - 2026-08-03: MAC-1 done (0fdefcc + fix 090c01a, audit fully Approved; dyad v1.9.0 @ 282591c, license boundary byte-verified, 2344 files reconciled to zero unexplained). 13 local_agent_* tests = MAC-6 behavioral spec; 51-file integration triage deferred (tracked in todo); pnpm-store ABI hazard → MAC-3.
 - 2026-08-04: MAC-2 done (5190737 + fix 52df7a2, review fully Approved). Identity CI-asserted every build; updater neutralized until ZAPP_UPDATE_FEED (MAC-11 owns feed); signing env-gated (UNVERIFIED pending Developer ID cert — first real cert run is first execution). HANDOFFS: MAC-4 must re-host supabase/neon/pro OAuth returns (dead since dyad:// removal) + owns 5 of 6 remaining api.dyad.sh runtime endpoints; MAC-12: ~/dyad-apps is SHARED with any Dyad install (collision risk), not orphaned. Gatekeeper verify pending certs.
 - 2026-08-04: MAC-3 done pending fix round (e050b01, review Approved; 7 specs all judged REAL). Suite location e2e-tests/ (plan path would have been collected by NOTHING — playwright testDir). CONTROLLER DECISION: wiring test:preserve into desktop.yml as an e2e-preserve job (an inert net earns no trust). Follow-ups: upstream monaco helper broken (replaceEditorContent targets aria-hidden ime-text-area) — blocks edit_code/editor_commit_menu specs, needs an upstream-facing fix task.

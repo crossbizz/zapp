@@ -62,4 +62,25 @@ describe("CloudBuilderController", () => {
     expect(transport.pause).toHaveBeenCalledWith("run_1");
     expect(transport.resume).toHaveBeenCalledWith("run_1");
   });
+
+  it("attaches and closes the public desktop notification lifecycle", () => {
+    const notifications = { close: vi.fn(), start: vi.fn() };
+    const controller = new CloudBuilderController(
+      "run_1",
+      {
+        subscribe: vi.fn(() => ({ close: vi.fn() })),
+        pause: vi.fn(),
+        resume: vi.fn(),
+        previewUrl: vi.fn(async () => "https://preview.zapp.build/p/ws_1"),
+      },
+      { setBadge: vi.fn() },
+      notifications,
+    );
+
+    controller.connect();
+    controller.close();
+
+    expect(notifications.start).toHaveBeenCalledOnce();
+    expect(notifications.close).toHaveBeenCalledOnce();
+  });
 });
