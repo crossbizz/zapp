@@ -113,6 +113,18 @@ const NON_PRD_TABLES = new Map([
     'artifact_retention',
     'the closed expirable-artifact classification required by ADR-0031 and plan 02 CP-17 so release evidence cannot be selected by a name heuristic',
   ],
+  [
+    'deployment_events',
+    'the append-only eight-stage replay and terminal-success projection required by plan 07 DEP-14',
+  ],
+  [
+    'deployment_action_requests',
+    'the durable idempotency claim for safe readiness and deployment actions required by plan 07 DEP-14',
+  ],
+  [
+    'environment_domains',
+    'the provider-neutral DNS and managed-SSL verification state required by plan 07 DEP-10 and exposed by DEP-14',
+  ],
 ]);
 
 /**

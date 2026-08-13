@@ -1,6 +1,15 @@
 import type { ProductAnalytics } from '@zapp/config';
 import { CommitShaSchema, idSchema, RunModeSchema } from '@zapp/contracts';
 import { EvidenceManifestSchema } from '@zapp/verification-engine';
+import {
+  DeploymentConfirmationSummarySchema,
+  createDeploymentConfirmationSummary,
+} from '@zapp/release-service';
+import {
+  DeploymentProgressSchema,
+  type DeploymentActionInput,
+} from '@zapp/release-service/deployment-progress';
+import { DomainResultSchema } from '@zapp/release-service/domain-store';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -18,6 +27,9 @@ const ReleaseHistoryQuery = z
   .object({ cursor: idSchema('rel').optional(), limit: z.coerce.number().int().min(1).max(50).default(20) })
   .strict();
 const ReleaseParams = z.object({ releaseId: idSchema('rel') }).strict();
+const DeploymentParams = z.object({ deploymentId: idSchema('dep') }).strict();
+const DomainParams = z.object({ projectId: idSchema('proj'), hostname: z.string().min(1).max(253) }).strict();
+const PreviewQuery = z.object({ retarget: z.coerce.boolean().default(false) }).strict();
 const CommitCreatedPayloadSchema = z
   .object({
     commitSha: CommitShaSchema,
@@ -59,6 +71,14 @@ const RollbackBody = z
   })
   .strict();
 const ForkBody = z.object({ startFixRun: z.boolean().default(false) }).strict();
+const ReadinessActionBody = z
+  .object({ findingId: z.string().min(1).max(255), action: z.enum(['fix', 'review', 'waive']), reason: z.string().min(1).max(2_000).optional() })
+  .strict();
+const DeploymentActionBody = z
+  .object({ action: z.enum(['retry', 'fix', 'ask']), stage: z.string().min(1).max(100).optional(), prompt: z.string().min(1).max(2_000).optional() })
+  .strict();
+const DomainBody = z.object({ environmentId: idSchema('env'), hostname: z.string().min(1).max(253) }).strict();
+const DomainPollBody = z.object({ environmentId: idSchema('env') }).strict();
 export const ForkReleaseResultSchema = z
   .object({
     releaseId: idSchema('rel'),
@@ -182,6 +202,11 @@ export interface ReleasePort {
   rollback(input: RollbackReleaseMutationInput): Promise<DeploymentResult>;
   getEvidence(input: ReleaseLookupInput): Promise<EvidenceManifest>;
   listProjectHistory?(input: ReleaseHistoryInput): Promise<PublicReleaseHistoryPage>;
+  getDeploymentProgress?(input: { organizationId: string; deploymentId: string }): Promise<z.infer<typeof DeploymentProgressSchema> | undefined>;
+  act?(input: DeploymentActionInput): Promise<{ status: 'dispatched' }>;
+  listDomains?(input: { organizationId: string; projectId: string; environmentId?: string }): Promise<z.infer<typeof DomainResultSchema>[]>;
+  configureDomain?(input: { organizationId: string; projectId: string; environmentId: string; hostname: string; operationKey: string }): Promise<z.infer<typeof DomainResultSchema>>;
+  pollDomain?(input: { organizationId: string; projectId: string; environmentId: string; hostname: string; operationKey: string }): Promise<z.infer<typeof DomainResultSchema>>;
 }
 
 export interface ReleaseForkPort {
@@ -241,6 +266,163 @@ export function registerReleaseRoutes(app: AppInstance, deps: ReleaseRoutesDeps)
       );
       if (page.items.some((item) => item.projectId !== project.id)) throw releaseServiceFailed();
       return page;
+    },
+  );
+
+  app.get(
+    '/v1/releases/:releaseId/deployment-preview',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: { params: ReleaseParams, querystring: PreviewQuery, response: { 200: DeploymentConfirmationSummarySchema } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const release = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(ctx, 'view_project');
+      const history = deps.port.listProjectHistory === undefined
+        ? undefined
+        : await deps.port.listProjectHistory({ organizationId: ctx.organizationId, projectId: release.projectId, cursor: null, limit: 50 });
+      const prior = history?.items.flatMap((item) => item.environmentId === release.environmentId ? item.deployments : []) ?? [];
+      const deploymentType = prior.length === 0 ? 'first_deploy' : request.query.retarget ? 'replace_deployment' : 'redeploy';
+      return createDeploymentConfirmationSummary({
+        deploymentType,
+        dataDisposition: null,
+        migration: { count: 0, reversibility: 'reversible' },
+        secretChanges: { addedNames: [], changedNames: [], removedNames: [] },
+        urlEffect: deploymentType === 'first_deploy' ? 'created' : deploymentType === 'replace_deployment' ? 'changed' : 'preserved',
+        activeUserEffect: 'zero_downtime',
+      });
+    },
+  );
+
+  app.post(
+    '/v1/releases/:releaseId/readiness-actions',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: { params: ReleaseParams, body: ReadinessActionBody, response: { 200: z.object({ status: z.literal('dispatched') }).strict() } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const release = await releaseFor(deps.port, ctx.organizationId, request.params.releaseId);
+      authorize(ctx, request.body.action === 'waive' ? 'approve_production_deploy' : 'edit_code', await permissionContext(deps, ctx.organizationId));
+      if (deps.port.act === undefined) throw releaseServiceFailed();
+      return await deps.port.act({
+        organizationId: ctx.organizationId,
+        resourceType: 'release',
+        resourceId: release.id,
+        action: request.body.action,
+        actor: { id: actorOf(request), organizationId: ctx.organizationId },
+        operationKey: operationOf(request),
+        payload: { findingId: request.body.findingId, ...(request.body.reason === undefined ? {} : { reason: request.body.reason }) },
+      });
+    },
+  );
+
+  app.get(
+    '/v1/deployments/:deploymentId',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: { params: DeploymentParams, response: { 200: DeploymentProgressSchema } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      authorize(ctx, 'view_project');
+      if (deps.port.getDeploymentProgress === undefined) throw releaseServiceFailed();
+      const progress = await deps.port.getDeploymentProgress({ organizationId: ctx.organizationId, deploymentId: request.params.deploymentId });
+      if (progress === undefined) throw releaseNotFound();
+      return DeploymentProgressSchema.parse(progress);
+    },
+  );
+
+  app.get(
+    '/v1/deployments/:deploymentId/events',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: { params: DeploymentParams },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      authorize(ctx, 'view_project');
+      if (deps.port.getDeploymentProgress === undefined) throw releaseServiceFailed();
+      const progress = await deps.port.getDeploymentProgress({ organizationId: ctx.organizationId, deploymentId: DeploymentParams.parse(request.params).deploymentId });
+      if (progress === undefined) throw releaseNotFound();
+      reply.hijack();
+      reply.raw.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'close' });
+      for (const event of progress.events) reply.raw.write(`id: ${String(event.sequence)}\nevent: deployment.updated\ndata: ${JSON.stringify(event)}\n\n`);
+      reply.raw.end();
+    },
+  );
+
+  app.post(
+    '/v1/deployments/:deploymentId/actions',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: { params: DeploymentParams, body: DeploymentActionBody, response: { 200: z.object({ status: z.literal('dispatched') }).strict() } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      authorize(ctx, 'edit_code');
+      if (deps.port.getDeploymentProgress === undefined || deps.port.act === undefined) throw releaseServiceFailed();
+      const progress = await deps.port.getDeploymentProgress({ organizationId: ctx.organizationId, deploymentId: request.params.deploymentId });
+      if (progress === undefined) throw releaseNotFound();
+      return await deps.port.act({
+        organizationId: ctx.organizationId,
+        resourceType: 'deployment',
+        resourceId: progress.deploymentId,
+        action: request.body.action,
+        actor: { id: actorOf(request), organizationId: ctx.organizationId },
+        operationKey: operationOf(request),
+        payload: { ...(request.body.stage === undefined ? {} : { stage: request.body.stage }), ...(request.body.prompt === undefined ? {} : { prompt: request.body.prompt }) },
+      });
+    },
+  );
+
+  app.get(
+    '/v1/projects/:projectId/domains',
+    {
+      preHandler: [app.requireSession, app.requireTenant],
+      schema: { params: ProjectParams, response: { 200: z.object({ domains: z.array(DomainResultSchema).max(100) }).strict() } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const project = await ctx.db.projects.getById(request.params.projectId);
+      if (project === undefined) throw projectNotFound();
+      authorize(ctx, 'view_project');
+      if (deps.port.listDomains === undefined) throw releaseServiceFailed();
+      return { domains: await deps.port.listDomains({ organizationId: ctx.organizationId, projectId: project.id }) };
+    },
+  );
+
+  app.post(
+    '/v1/projects/:projectId/domains',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: { params: ProjectParams, body: DomainBody, response: { 201: z.object({ domain: DomainResultSchema }).strict() } },
+    },
+    async (request, reply) => {
+      const ctx = tenantOf(request);
+      const project = await ctx.db.projects.getById(request.params.projectId);
+      if (project === undefined || await ctx.db.environments.getForProject(project.id, request.body.environmentId) === undefined) throw projectNotFound();
+      authorize(ctx, 'manage_organization');
+      if (deps.port.configureDomain === undefined) throw releaseServiceFailed();
+      const domain = await deps.port.configureDomain({ organizationId: ctx.organizationId, projectId: project.id, ...request.body, operationKey: operationOf(request) });
+      return await reply.status(201).send({ domain });
+    },
+  );
+
+  app.post(
+    '/v1/projects/:projectId/domains/:hostname/poll',
+    {
+      preHandler: [app.requireSession, app.requireCsrf, app.requireTenant],
+      schema: { params: DomainParams, body: DomainPollBody, response: { 200: z.object({ domain: DomainResultSchema }).strict() } },
+    },
+    async (request) => {
+      const ctx = tenantOf(request);
+      const project = await ctx.db.projects.getById(request.params.projectId);
+      if (project === undefined || await ctx.db.environments.getForProject(project.id, request.body.environmentId) === undefined) throw projectNotFound();
+      authorize(ctx, 'manage_organization');
+      if (deps.port.pollDomain === undefined) throw releaseServiceFailed();
+      return { domain: await deps.port.pollDomain({ organizationId: ctx.organizationId, projectId: project.id, environmentId: request.body.environmentId, hostname: request.params.hostname, operationKey: operationOf(request) }) };
     },
   );
 

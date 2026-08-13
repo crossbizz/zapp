@@ -54,6 +54,8 @@ class RecordingReleasePort implements ReleasePort {
   readonly approvals: ApproveReleaseMutationInput[] = [];
   readonly deploys: DeployReleaseMutationInput[] = [];
   readonly rollbacks: RollbackReleaseMutationInput[] = [];
+  readonly actions: Parameters<NonNullable<ReleasePort['act']>>[0][] = [];
+  readonly deploymentId = newId('dep');
   fail = false;
   invalid = false;
   createResultOverride: Partial<ReleaseRow> | undefined;
@@ -184,6 +186,31 @@ class RecordingReleasePort implements ReleasePort {
         })),
       rollbackTargets: [], nextCursor: null,
     });
+  }
+  getDeploymentProgress(input: { organizationId: string; deploymentId: string }) {
+    const release = [...this.releases.values()].find((row) => row.organizationId === input.organizationId);
+    return Promise.resolve(release === undefined || input.deploymentId !== this.deploymentId ? undefined : {
+      deploymentId: this.deploymentId, releaseId: release.id, projectId: release.projectId,
+      environmentId: release.environmentId, status: 'healthy', url: 'https://app.example.test',
+      events: [{ sequence: 0, stage: 'readiness_check' as const, status: 'passed' as const,
+        elapsedMs: 2, summary: 'Ready', evidenceArtifactId: null,
+        occurredAt: '2026-08-12T18:00:00.000Z' }], terminalSuccess: null,
+    });
+  }
+  act(input: Parameters<NonNullable<ReleasePort['act']>>[0]) {
+    this.actions.push(input);
+    return Promise.resolve({ status: 'dispatched' as const });
+  }
+  listDomains() { return Promise.resolve([this.domain()]); }
+  configureDomain() { return Promise.resolve(this.domain()); }
+  pollDomain() { return Promise.resolve(this.domain()); }
+  private domain() {
+    return {
+      hostname: 'app.example.com', environmentId: 'env_01J00000000000000000000000', status: 'pending_dns' as const,
+      dnsInstructions: [{ type: 'CNAME' as const, name: 'app.example.com', value: 'target.example.net' }],
+      routing: { kind: 'subdomain' as const, apexHostname: 'example.com', wwwHostname: 'www.example.com', recommendation: 'Use this hostname.' },
+      ssl: { managed: true as const, status: 'pending' as const },
+    };
   }
   seed(row: ReleaseRow): void {
     this.releases.set(row.id, row);
@@ -338,6 +365,30 @@ function seedCompletedRunForCommit(
 }
 
 describe('release route shells', () => {
+  it('bridges deployment confirmation, actions, progress SSE, and domains through public APIs', async () => {
+    const wired = await wire();
+    const created = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/releases`, headers: mutationHeaders(wired, wired.owner, 'dep14-release'), payload: candidateBody(wired) });
+    const releaseId = created.json<{ release: { id: string } }>().release.id;
+    const preview = await wired.built.app.inject({ method: 'GET', url: `/v1/releases/${releaseId}/deployment-preview`, headers: wired.as(wired.owner) });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json()).toMatchObject({ deploymentType: 'first_deploy', title: 'First deploy' });
+    const readinessAction = await wired.built.app.inject({ method: 'POST', url: `/v1/releases/${releaseId}/readiness-actions`, headers: mutationHeaders(wired, wired.owner, 'dep14-fix'), payload: { findingId: 'build', action: 'fix' } });
+    expect(readinessAction.statusCode, readinessAction.body).toBe(200);
+    const progress = await wired.built.app.inject({ method: 'GET', url: `/v1/deployments/${wired.releases.deploymentId}`, headers: wired.as(wired.owner) });
+    expect(progress.statusCode, progress.body).toBe(200);
+    expect(progress.json()).toMatchObject({ events: [{ stage: 'readiness_check' }] });
+    const events = await wired.built.app.inject({ method: 'GET', url: `/v1/deployments/${wired.releases.deploymentId}/events`, headers: wired.as(wired.owner) });
+    expect(events.statusCode, events.body).toBe(200);
+    expect(events.headers['content-type']).toContain('text/event-stream');
+    expect(events.body).toContain('event: deployment.updated');
+    const retry = await wired.built.app.inject({ method: 'POST', url: `/v1/deployments/${wired.releases.deploymentId}/actions`, headers: mutationHeaders(wired, wired.owner, 'dep14-retry'), payload: { action: 'retry', stage: 'go_live' } });
+    expect(retry.statusCode, retry.body).toBe(200);
+    const configured = await wired.built.app.inject({ method: 'POST', url: `/v1/projects/${wired.projectId}/domains`, headers: mutationHeaders(wired, wired.owner, 'dep14-domain'), payload: { environmentId: wired.environmentId, hostname: 'app.example.com' } });
+    expect(configured.statusCode, configured.body).toBe(201);
+    expect(configured.json()).toMatchObject({ domain: { hostname: 'app.example.com', ssl: { managed: true } } });
+    expect(wired.releases.actions.map(({ action }) => action)).toEqual(['fix', 'retry']);
+  });
+
   it('lists paginated project release history with public evidence links', async () => {
     const wired = await wire();
     const created = await wired.built.app.inject({

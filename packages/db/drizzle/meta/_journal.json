@@ -232,6 +232,13 @@
       "when": 1786553278441,
       "tag": "0032_lush_juggernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786578986317,
+      "tag": "0033_supreme_dreadnoughts",
+      "breakpoints": true
     }
   ]
 }

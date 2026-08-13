@@ -13,6 +13,9 @@ import {
 } from './internal/service-auth.js';
 import type { ReleaseLifecycleService } from './lifecycle.js';
 import type { ReleaseHistoryPort } from './history.js';
+import type { DeploymentProgressPort } from './deployment-progress.js';
+import { DomainServiceError } from './domains/service.js';
+import type { DomainPort } from './domain-store.js';
 import { ReleaseServiceError, type ReleaseRecordService } from './release/create.js';
 import { registerReleaseRoutes } from './routes.js';
 
@@ -22,6 +25,8 @@ export interface AppDependencies {
   readonly records: ReleaseRecordService;
   readonly lifecycle: ReleaseLifecycleService;
   readonly history?: ReleaseHistoryPort;
+  readonly progress?: DeploymentProgressPort;
+  readonly domains?: DomainPort;
   readonly signer: ServiceTokenSigner;
   readonly now?: () => Date;
   readonly logger?: LoggerConfig;
@@ -40,7 +45,11 @@ export function buildApp(dependencies: AppDependencies) {
   app.setSerializerCompiler(serializerCompiler);
   app.setErrorHandler((error, request, reply) => {
     reply.serializer((payload: unknown) => JSON.stringify(payload));
-    if (error instanceof ServiceAccessError || error instanceof ReleaseServiceError) {
+    if (
+      error instanceof ServiceAccessError ||
+      error instanceof ReleaseServiceError ||
+      error instanceof DomainServiceError
+    ) {
       void reply.status(error.statusCode).send({
         error: { code: error.code, message: error.message, requestId: request.id },
       });
@@ -85,6 +94,8 @@ export function buildApp(dependencies: AppDependencies) {
     records: dependencies.records,
     lifecycle: dependencies.lifecycle,
     ...(dependencies.history === undefined ? {} : { history: dependencies.history }),
+    ...(dependencies.progress === undefined ? {} : { progress: dependencies.progress }),
+    ...(dependencies.domains === undefined ? {} : { domains: dependencies.domains }),
     requireService: createControlApiServiceAuth({
       signer: dependencies.signer,
       ...(dependencies.now === undefined ? {} : { now: dependencies.now }),

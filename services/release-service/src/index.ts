@@ -4,6 +4,8 @@ export * from './compose.js';
 export * from './annotations/grafana.js';
 export * from './annotations/posthog.js';
 export * from './domains/service.js';
+export * from './domain-store.js';
+export * from './deployment-progress.js';
 export * from './env.js';
 export * from './release/create.js';
 export * from './release/health.js';

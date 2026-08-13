@@ -10,6 +10,8 @@ import {
 } from '@zapp/release-service/lifecycle';
 import { ReleaseSchema as InternalReleaseSchema } from '@zapp/release-service/records';
 import { ReleaseHistoryPageSchema as InternalReleaseHistoryPageSchema } from '@zapp/release-service/history';
+import { DeploymentProgressSchema, DeploymentActionInputSchema } from '@zapp/release-service/deployment-progress';
+import { DomainResultSchema } from '@zapp/release-service/domain-store';
 import { z } from 'zod';
 
 import {
@@ -254,6 +256,41 @@ export function createReleaseServiceClient(
           ),
         );
       return response.evidence;
+    },
+    async getDeploymentProgress(rawInput) {
+      const input = z.object({ organizationId: z.string().min(1), deploymentId: z.string().min(1) }).strict().parse(rawInput);
+      try {
+        const response = z.object({ progress: DeploymentProgressSchema }).strict().parse(
+          await request(`/internal/deployments/${input.deploymentId}?organizationId=${input.organizationId}`),
+        );
+        return response.progress;
+      } catch (error) {
+        if (error instanceof ReleaseServiceClientError && error.message.includes('(404)')) return undefined;
+        throw error;
+      }
+    },
+    async act(rawInput) {
+      const input = DeploymentActionInputSchema.parse(rawInput);
+      const path = input.resourceType === 'release'
+        ? `/internal/releases/${input.resourceId}/actions`
+        : `/internal/deployments/${input.resourceId}/actions`;
+      return z.object({ status: z.literal('dispatched') }).strict().parse(await request(path, {
+        method: 'POST', operationKey: input.operationKey,
+        body: JSON.stringify({ organizationId: input.organizationId, action: input.action, actor: input.actor, operationKey: input.operationKey, payload: input.payload }),
+      }));
+    },
+    async listDomains(rawInput) {
+      const input = z.object({ organizationId: z.string().min(1), projectId: z.string().min(1), environmentId: z.string().optional() }).strict().parse(rawInput);
+      const query = new URLSearchParams({ organizationId: input.organizationId, ...(input.environmentId === undefined ? {} : { environmentId: input.environmentId }) });
+      return z.object({ domains: z.array(DomainResultSchema).max(100) }).strict().parse(await request(`/internal/projects/${input.projectId}/domains?${query.toString()}`)).domains;
+    },
+    async configureDomain(rawInput) {
+      const input = z.object({ organizationId: z.string(), projectId: z.string(), environmentId: z.string(), hostname: z.string(), operationKey: z.string() }).strict().parse(rawInput);
+      return z.object({ domain: DomainResultSchema }).strict().parse(await request(`/internal/projects/${input.projectId}/domains`, { method: 'POST', operationKey: input.operationKey, body: JSON.stringify({ organizationId: input.organizationId, environmentId: input.environmentId, hostname: input.hostname, operationKey: input.operationKey }) })).domain;
+    },
+    async pollDomain(rawInput) {
+      const input = z.object({ organizationId: z.string(), projectId: z.string(), environmentId: z.string(), hostname: z.string(), operationKey: z.string() }).strict().parse(rawInput);
+      return z.object({ domain: DomainResultSchema }).strict().parse(await request(`/internal/projects/${input.projectId}/domains/${encodeURIComponent(input.hostname)}/poll`, { method: 'POST', operationKey: input.operationKey, body: JSON.stringify({ organizationId: input.organizationId, environmentId: input.environmentId, operationKey: input.operationKey }) })).domain;
     },
   };
 

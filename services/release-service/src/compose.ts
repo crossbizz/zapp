@@ -9,6 +9,9 @@ import {
 } from '@zapp/verification-engine';
 import { z } from 'zod';
 
+import { createPostgresDeploymentProgress, type DeploymentActionDispatcher } from './deployment-progress.js';
+import { createPostgresDomainPort } from './domain-store.js';
+import type { DomainDependencies } from './domains/service.js';
 import { createPostgresReleaseHistory } from './history.js';
 
 import { buildApp, type LoggerConfig } from './app.js';
@@ -50,6 +53,8 @@ export interface ReleaseServiceRuntime {
   readonly git: ReleaseGitPort;
   readonly context?: ReleaseContextPort;
   readonly lifecycle: Omit<ReleaseLifecycleDependencies, 'records'>;
+  readonly deploymentActions?: DeploymentActionDispatcher;
+  readonly domains?: Pick<DomainDependencies, 'dns' | 'provider'>;
   readonly now?: () => Date;
   readonly logger?: LoggerConfig;
 }
@@ -74,6 +79,8 @@ const FixRunSchema = z.object({ runId: ForkReleaseResultSchema.shape.fixRunId.un
  * VF-15 assembler, DEP-9 rollback state machine, and DEP-11 scheduler/runner.
  */
 export interface ReleaseProductionBindings {
+  readonly actions: DeploymentActionDispatcher;
+  readonly domains: Pick<DomainDependencies, 'dns' | 'provider'>;
   readonly readiness: { load(release: Release): Promise<unknown> };
   readonly deployment: {
     prepare(release: Release, input: DeployReleaseInput): Promise<unknown>;
@@ -330,6 +337,12 @@ export function composeApp(runtime: ReleaseServiceRuntime) {
     records,
     lifecycle,
     history: createPostgresReleaseHistory(runtime.database),
+    ...(runtime.deploymentActions === undefined
+      ? {}
+      : { progress: createPostgresDeploymentProgress(runtime.database, runtime.deploymentActions) }),
+    ...(runtime.domains === undefined
+      ? {}
+      : { domains: createPostgresDomainPort(runtime.database, runtime.domains) }),
     signer: createServiceTokenSigner(runtime.serviceTokens),
     ...(runtime.now === undefined ? {} : { now: runtime.now }),
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
@@ -352,6 +365,8 @@ export function composeProductionApp(runtime: ProductionReleaseServiceRuntime) {
     records,
     lifecycle,
     history: createPostgresReleaseHistory(runtime.database),
+    progress: createPostgresDeploymentProgress(runtime.database, runtime.production.actions),
+    domains: createPostgresDomainPort(runtime.database, runtime.production.domains),
     signer: createServiceTokenSigner(runtime.serviceTokens),
     ...(runtime.now === undefined ? {} : { now: runtime.now }),
     ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),

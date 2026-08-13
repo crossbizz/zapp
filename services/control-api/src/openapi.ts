@@ -5,6 +5,7 @@ import {
   BuilderPreviewEventSchema,
 } from '@zapp/contracts';
 import { jsonSchemaTransform } from 'fastify-type-provider-zod';
+import { DeploymentProgressEventSchema } from '@zapp/release-service/deployment-progress';
 import { z } from 'zod';
 
 import {
@@ -219,6 +220,7 @@ function hasPreHandler(value: unknown, expected: unknown): boolean {
 function isEventStreamRoute(url: string): boolean {
   return (
     url === '/v1/runs/:runId/events' ||
+    url === '/v1/deployments/:deploymentId/events' ||
     url === '/v1/local-agent/sessions/:sessionId/completions' ||
     url === '/v1/workspaces/:workspaceId/preview/events'
   );
@@ -226,6 +228,7 @@ function isEventStreamRoute(url: string): boolean {
 
 function eventStreamSchema(url: string): z.ZodTypeAny | undefined {
   if (url === '/v1/workspaces/:workspaceId/preview/events') return BuilderPreviewEventSchema;
+  if (url === '/v1/deployments/:deploymentId/events') return DeploymentProgressEventSchema;
   return isEventStreamRoute(url) ? AgentEventSchema : undefined;
 }
 

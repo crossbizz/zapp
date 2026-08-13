@@ -3,6 +3,9 @@ import { assembleEvidenceManifest, buildCriteriaCompletionReport, GATE_IDS } fro
 import { describe, expect, it } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import type { DeploymentProgressPort } from '../src/deployment-progress.js';
+import type { DomainPort } from '../src/domain-store.js';
+import { DEPLOYMENT_STAGES } from '../src/workflows/deploy.js';
 import type { Release, ReleaseRecordService } from '../src/release/create.js';
 import type { ReleaseLifecycleService } from '../src/lifecycle.js';
 import type { ReleaseHistoryPort } from '../src/history.js';
@@ -14,6 +17,8 @@ const ENVIRONMENT_ID = `env_${ULID}`;
 const SPECIFICATION_ID = `spec_${ULID}`;
 const USER_ID = `user_${ULID}`;
 const RELEASE_ID = `rel_${ULID}`;
+const DEPLOYMENT_ID = `dep_${ULID}`;
+const OPERATION_KEY = `op_${'a'.repeat(64)}`;
 const COMMIT_SHA = 'a'.repeat(40);
 const SECRET = 'release-service-test-secret-value-0000000000000000';
 
@@ -188,6 +193,60 @@ describe('release-service application', () => {
       expect(response.json()).toMatchObject({
         page: { items: [{ id: RELEASE_ID, activeProduction: true, supportLevel: 'managed' }], nextCursor: null },
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('exposes keyed actions, eight-stage replay, and durable domain projections', async () => {
+    const signer = createServiceTokenSigner({ secret: SECRET });
+    const actionCalls: string[] = [];
+    const progress: DeploymentProgressPort = {
+      append: () => Promise.reject(new Error('not used')),
+      get: ({ organizationId, deploymentId }) => Promise.resolve(
+        organizationId === ORGANIZATION_ID && deploymentId === DEPLOYMENT_ID
+          ? {
+              deploymentId: DEPLOYMENT_ID,
+              releaseId: RELEASE_ID,
+              projectId: PROJECT_ID,
+              environmentId: ENVIRONMENT_ID,
+              status: 'healthy',
+              url: 'https://app.example.test',
+              events: DEPLOYMENT_STAGES.map((stage, sequence) => ({
+                sequence, stage, status: 'passed' as const, elapsedMs: sequence + 1,
+                summary: `${stage} passed`, evidenceArtifactId: null,
+                occurredAt: `2026-08-12T18:00:0${String(sequence)}.000Z`,
+              })),
+              terminalSuccess: null,
+            }
+          : undefined,
+      ),
+      act: (input) => { actionCalls.push(`${input.resourceType}:${input.action}`); return Promise.resolve({ status: 'dispatched' }); },
+    };
+    const domain = {
+      hostname: 'app.example.com', environmentId: ENVIRONMENT_ID, status: 'pending_dns' as const,
+      dnsInstructions: [{ type: 'CNAME' as const, name: 'app.example.com', value: 'target.example.net' }],
+      routing: { kind: 'subdomain' as const, apexHostname: 'example.com', wwwHostname: 'www.example.com', recommendation: 'Use this hostname.' },
+      ssl: { managed: true as const, status: 'pending' as const },
+    };
+    const domains: DomainPort = {
+      configure: () => Promise.resolve(domain),
+      poll: () => Promise.resolve(domain),
+      list: () => Promise.resolve([domain]),
+    };
+    const app = buildApp({ logger: false, records, lifecycle, history, progress, domains, signer });
+    const valid = await signer.signServiceToken({ service: 'control-api', aud: 'release-service' });
+    const headers = { 'x-zapp-service-token': valid.token, 'idempotency-key': OPERATION_KEY };
+    try {
+      const replay = await app.inject({ method: 'GET', url: `/internal/deployments/${DEPLOYMENT_ID}?organizationId=${ORGANIZATION_ID}`, headers });
+      expect(replay.statusCode, replay.body).toBe(200);
+      expect(replay.json<{ progress: { events: { stage: string }[] } }>().progress.events.map(({ stage }) => stage)).toEqual(DEPLOYMENT_STAGES);
+      const action = await app.inject({ method: 'POST', url: `/internal/deployments/${DEPLOYMENT_ID}/actions`, headers, payload: { organizationId: ORGANIZATION_ID, action: 'retry', actor: { id: USER_ID, organizationId: ORGANIZATION_ID }, operationKey: OPERATION_KEY, payload: { stage: 'go_live' } } });
+      expect(action.statusCode, action.body).toBe(200);
+      const listed = await app.inject({ method: 'GET', url: `/internal/projects/${PROJECT_ID}/domains?organizationId=${ORGANIZATION_ID}`, headers });
+      expect(listed.statusCode, listed.body).toBe(200);
+      expect(listed.json()).toMatchObject({ domains: [{ hostname: 'app.example.com' }] });
+      expect(actionCalls).toEqual(['deployment:retry']);
     } finally {
       await app.close();
     }

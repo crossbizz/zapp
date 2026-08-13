@@ -3,6 +3,8 @@ import { newId } from '@zapp/contracts';
 import { buildApp as buildReleaseApp } from '@zapp/release-service/app';
 import type { ReleaseLifecycleService } from '@zapp/release-service/lifecycle';
 import type { Release, ReleaseRecordService } from '@zapp/release-service/records';
+import type { DeploymentProgressPort } from '@zapp/release-service/deployment-progress';
+import type { DomainPort } from '@zapp/release-service/domain-store';
 import {
   assembleEvidenceManifest,
   buildCriteriaCompletionReport,
@@ -125,10 +127,54 @@ function harness() {
       });
     },
   };
+  const progress: DeploymentProgressPort = {
+    append: () => Promise.reject(new Error('not used')),
+    get: () =>
+      Promise.resolve({
+        deploymentId: DEPLOYMENT_ID,
+        releaseId: RELEASE_ID,
+        projectId: PROJECT_ID,
+        environmentId: ENVIRONMENT_ID,
+        status: 'healthy',
+        url: 'https://app.example.test',
+        events: [],
+        terminalSuccess: null,
+      }),
+    act: (input) => {
+      calls.push(`action:${input.action}`);
+      return Promise.resolve({ status: 'dispatched' });
+    },
+  };
+  const domain = {
+    hostname: 'app.example.com',
+    environmentId: ENVIRONMENT_ID,
+    status: 'active' as const,
+    dnsInstructions: [],
+    routing: {
+      kind: 'subdomain' as const,
+      apexHostname: 'example.com',
+      wwwHostname: 'www.example.com',
+      recommendation: 'Use this hostname.',
+    },
+    ssl: { managed: true as const, status: 'active' as const },
+  };
+  const domains: DomainPort = {
+    configure: () => {
+      calls.push('domain:configure');
+      return Promise.resolve(domain);
+    },
+    poll: () => {
+      calls.push('domain:poll');
+      return Promise.resolve(domain);
+    },
+    list: () => Promise.resolve([domain]),
+  };
   const app = buildReleaseApp({
     logger: false,
     records,
     lifecycle,
+    progress,
+    domains,
     signer: createServiceTokenSigner(SERVICE_TOKENS),
   });
   const fetch = async (input: string, init: RequestInit): Promise<Response> => {
@@ -195,6 +241,34 @@ describe('release service client', () => {
         toDeploymentId: null,
         reason: 'Restore prior healthy content.',
       });
+      await clients.release.getDeploymentProgress?.({
+        organizationId: ORGANIZATION_ID,
+        deploymentId: DEPLOYMENT_ID,
+      });
+      await clients.release.act?.({
+        organizationId: ORGANIZATION_ID,
+        resourceType: 'deployment',
+        resourceId: DEPLOYMENT_ID,
+        action: 'retry',
+        actor: { id: USER_ID, organizationId: ORGANIZATION_ID },
+        operationKey: OPERATION_KEY,
+        payload: { stage: 'go_live' },
+      });
+      await clients.release.listDomains?.({ organizationId: ORGANIZATION_ID, projectId: PROJECT_ID });
+      await clients.release.configureDomain?.({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        environmentId: ENVIRONMENT_ID,
+        hostname: 'app.example.com',
+        operationKey: OPERATION_KEY,
+      });
+      await clients.release.pollDomain?.({
+        organizationId: ORGANIZATION_ID,
+        projectId: PROJECT_ID,
+        environmentId: ENVIRONMENT_ID,
+        hostname: 'app.example.com',
+        operationKey: OPERATION_KEY,
+      });
       const fork = await clients.fork.forkRelease({
         organizationId: ORGANIZATION_ID,
         releaseId: RELEASE_ID,
@@ -212,6 +286,9 @@ describe('release service client', () => {
         'get', 'deploy',
         'get', 'evidence',
         'get', 'rollback',
+        'action:retry',
+        'domain:configure',
+        'domain:poll',
         'get', 'fork',
       ]);
     } finally {

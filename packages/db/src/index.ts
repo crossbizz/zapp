@@ -134,11 +134,18 @@ export {
 
 // PRD §23.5 — release state.
 export {
+  deploymentActionRequests,
+  deploymentEvents,
   deployments,
+  environmentDomains,
   releases,
   syntheticChecks,
+  type DeploymentActionRequest,
   type Deployment,
+  type DeploymentEvent,
+  type EnvironmentDomain,
   type NewDeployment,
+  type NewDeploymentEvent,
   type NewRelease,
   type NewSyntheticCheck,
   type Release,

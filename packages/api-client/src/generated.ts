@@ -1870,6 +1870,316 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/deployments/{deploymentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    deploymentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            deploymentId: string;
+                            environmentId: string;
+                            events: {
+                                elapsedMs: number;
+                                evidenceArtifactId: string | null;
+                                /** Format: date-time */
+                                occurredAt: string;
+                                sequence: number;
+                                /** @enum {string} */
+                                stage: "readiness_check" | "build_artifact" | "configure_secrets" | "apply_migrations" | "provision_runtime" | "start_services" | "production_health_check" | "go_live";
+                                /** @enum {string} */
+                                status: "running" | "passed" | "failed";
+                                summary: string;
+                            }[];
+                            projectId: string;
+                            releaseId: string;
+                            status: string;
+                            terminalSuccess: {
+                                customDomainAction: {
+                                    href: string;
+                                    /** @enum {string} */
+                                    method: "POST";
+                                };
+                                evidence: {
+                                    statusLink: string;
+                                };
+                                monitoring: {
+                                    /** Format: uri */
+                                    faroAppLink: string;
+                                    grafanaDashboardLinks: string[];
+                                    /** Format: uri */
+                                    posthogAnnotationLink: string;
+                                };
+                                /** Format: uri */
+                                permanentUrl: string;
+                                previewChanges: {
+                                    /** @enum {string} */
+                                    note: "Preview changes require a new release and redeploy before they reach production.";
+                                    /** @enum {boolean} */
+                                    requireRedeploy: true;
+                                };
+                                previousHealthyRelease: {
+                                    commitSha: string;
+                                    deploymentId: string;
+                                    releaseId: string;
+                                    rollbackAction: {
+                                        body: {
+                                            toDeploymentId: string;
+                                        };
+                                        href: string;
+                                        /** @enum {string} */
+                                        method: "POST";
+                                    };
+                                } | null;
+                                productionHealth: {
+                                    /** @enum {string} */
+                                    status: "healthy";
+                                };
+                                release: {
+                                    commitSha: string;
+                                    id: string;
+                                };
+                                /** @enum {string} */
+                                status: "succeeded";
+                            } | null;
+                            /** Format: uri */
+                            url: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/deployments/{deploymentId}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    deploymentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        action: "retry" | "fix" | "ask";
+                        prompt?: string;
+                        stage?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            status: "dispatched";
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/deployments/{deploymentId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    deploymentId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": {
+                            elapsedMs: number;
+                            evidenceArtifactId: string | null;
+                            /** Format: date-time */
+                            occurredAt: string;
+                            sequence: number;
+                            /** @enum {string} */
+                            stage: "readiness_check" | "build_artifact" | "configure_secrets" | "apply_migrations" | "provision_runtime" | "start_services" | "production_health_check" | "go_live";
+                            /** @enum {string} */
+                            status: "running" | "passed" | "failed";
+                            summary: string;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/feature-flags": {
         parameters: {
             query?: never;
@@ -5868,6 +6178,304 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            domains: {
+                                detail?: string;
+                                dnsInstructions: {
+                                    name: string;
+                                    /** @enum {string} */
+                                    type: "A" | "CNAME" | "TXT";
+                                    value: string;
+                                }[];
+                                environmentId: string;
+                                hostname: string;
+                                routing: {
+                                    apexHostname: string;
+                                    /** @enum {string} */
+                                    kind: "apex" | "www" | "subdomain";
+                                    recommendation: string;
+                                    wwwHostname: string;
+                                };
+                                ssl: {
+                                    /** @enum {boolean} */
+                                    managed: true;
+                                    /** @enum {string} */
+                                    status: "pending" | "active" | "failed";
+                                };
+                                /** @enum {string} */
+                                status: "pending_dns" | "verifying" | "active" | "failed";
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        environmentId: string;
+                        hostname: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            domain: {
+                                detail?: string;
+                                dnsInstructions: {
+                                    name: string;
+                                    /** @enum {string} */
+                                    type: "A" | "CNAME" | "TXT";
+                                    value: string;
+                                }[];
+                                environmentId: string;
+                                hostname: string;
+                                routing: {
+                                    apexHostname: string;
+                                    /** @enum {string} */
+                                    kind: "apex" | "www" | "subdomain";
+                                    recommendation: string;
+                                    wwwHostname: string;
+                                };
+                                ssl: {
+                                    /** @enum {boolean} */
+                                    managed: true;
+                                    /** @enum {string} */
+                                    status: "pending" | "active" | "failed";
+                                };
+                                /** @enum {string} */
+                                status: "pending_dns" | "verifying" | "active" | "failed";
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/domains/{hostname}/poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    hostname: string;
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        environmentId: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            domain: {
+                                detail?: string;
+                                dnsInstructions: {
+                                    name: string;
+                                    /** @enum {string} */
+                                    type: "A" | "CNAME" | "TXT";
+                                    value: string;
+                                }[];
+                                environmentId: string;
+                                hostname: string;
+                                routing: {
+                                    apexHostname: string;
+                                    /** @enum {string} */
+                                    kind: "apex" | "www" | "subdomain";
+                                    recommendation: string;
+                                    wwwHostname: string;
+                                };
+                                ssl: {
+                                    /** @enum {boolean} */
+                                    managed: true;
+                                    /** @enum {string} */
+                                    status: "pending" | "active" | "failed";
+                                };
+                                /** @enum {string} */
+                                status: "pending_dns" | "verifying" | "active" | "failed";
+                            };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/export": {
         parameters: {
             query?: never;
@@ -8691,6 +9299,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/releases/{releaseId}/deployment-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    retarget?: boolean;
+                };
+                header?: never;
+                path: {
+                    releaseId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            deploymentType: "first_deploy" | "redeploy" | "replace_deployment";
+                            effects: {
+                                activeUsers: string;
+                                productionData: string;
+                                secrets: string;
+                                url: string;
+                            };
+                            requiresExplicitDataDisposition: boolean;
+                            /** @enum {string} */
+                            title: "First deploy" | "Redeploy" | "Replace deployment";
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/releases/{releaseId}/evidence": {
         parameters: {
             query?: never;
@@ -9092,6 +9787,91 @@ export interface paths {
                                 fixRunId: string | null;
                                 releaseId: string;
                             };
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/releases/{releaseId}/readiness-actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    releaseId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        action: "fix" | "review" | "waive";
+                        findingId: string;
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @enum {string} */
+                            status: "dispatched";
                         };
                     };
                 };

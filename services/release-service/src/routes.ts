@@ -2,6 +2,18 @@ import type { FastifyInstance, preHandlerAsyncHookHandler } from 'fastify';
 import { z } from 'zod';
 
 import {
+  AppendDeploymentEventSchema,
+  DeploymentActionBodySchema,
+  DeploymentProgressSchema,
+  type DeploymentProgressPort,
+} from './deployment-progress.js';
+import {
+  DomainListInputSchema,
+  type DomainPort,
+} from './domain-store.js';
+import { DomainRequestSchema, DomainResultSchema } from './domains/service.js';
+
+import {
   ReleaseHistoryInputSchema,
   ReleaseHistoryPageSchema,
   type ReleaseHistoryPort,
@@ -29,6 +41,10 @@ import {
 const ReleaseParamsSchema = z.object({ releaseId: z.string().min(1) }).strict();
 const OrganizationQuerySchema = z.object({ organizationId: z.string().min(1) }).strict();
 const ProjectParamsSchema = z.object({ projectId: z.string().min(1) }).strict();
+const DeploymentParamsSchema = z.object({ deploymentId: z.string().min(1) }).strict();
+const DomainParamsSchema = z
+  .object({ projectId: z.string().min(1), hostname: z.string().min(1) })
+  .strict();
 const HistoryQuerySchema = z
   .object({
     organizationId: z.string().min(1),
@@ -41,6 +57,12 @@ const ApproveBodySchema = z
     actor: ActorSchema,
     operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
   })
+  .strict();
+const AppendEventBodySchema = AppendDeploymentEventSchema.omit({ deploymentId: true }).strict();
+const ActionBodySchema = DeploymentActionBodySchema;
+const DomainBodySchema = DomainRequestSchema.omit({ projectId: true }).strict();
+const DomainListQuerySchema = z
+  .object({ organizationId: z.string().min(1), environmentId: z.string().min(1).optional() })
   .strict();
 
 function idempotencyKey(value: string | string[] | undefined): string {
@@ -70,6 +92,8 @@ export function registerReleaseRoutes(
     readonly records: ReleaseRecordService;
     readonly lifecycle?: ReleaseLifecycleService;
     readonly history?: ReleaseHistoryPort;
+    readonly progress?: DeploymentProgressPort;
+    readonly domains?: DomainPort;
     readonly requireService: preHandlerAsyncHookHandler;
   },
 ): void {
@@ -120,6 +144,117 @@ export function registerReleaseRoutes(
       }
     },
   );
+
+  if (dependencies.progress !== undefined) {
+    app.get(
+      '/internal/deployments/:deploymentId',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = DeploymentParamsSchema.parse(request.params);
+        const query = OrganizationQuerySchema.parse(request.query);
+        const progress = await dependencies.progress?.get({
+          organizationId: query.organizationId,
+          deploymentId: params.deploymentId,
+        });
+        if (progress === undefined) {
+          throw new ReleaseServiceError('release_not_found', 404, 'Deployment not found.');
+        }
+        return await reply.send({ progress: DeploymentProgressSchema.parse(progress) });
+      },
+    );
+    app.post(
+      '/internal/deployments/:deploymentId/events',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = DeploymentParamsSchema.parse(request.params);
+        const progress = await dependencies.progress?.append({
+          ...AppendEventBodySchema.parse(request.body),
+          deploymentId: params.deploymentId,
+        });
+        return await reply.status(201).send({ progress: DeploymentProgressSchema.parse(progress) });
+      },
+    );
+    app.post(
+      '/internal/deployments/:deploymentId/actions',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = DeploymentParamsSchema.parse(request.params);
+        const body = ActionBodySchema.parse(request.body);
+        assertHeaderMatchesBody(idempotencyKey(request.headers['idempotency-key']), body.operationKey);
+        const progress = await dependencies.progress?.get({
+          organizationId: body.organizationId,
+          deploymentId: params.deploymentId,
+        });
+        if (progress === undefined) throw new ReleaseServiceError('release_not_found', 404, 'Deployment not found.');
+        const result = await dependencies.progress?.act({
+          ...body,
+          resourceType: 'deployment',
+          resourceId: params.deploymentId,
+        });
+        return await reply.send(result);
+      },
+    );
+    app.post(
+      '/internal/releases/:releaseId/actions',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = ReleaseParamsSchema.parse(request.params);
+        const body = ActionBodySchema.parse(request.body);
+        assertHeaderMatchesBody(idempotencyKey(request.headers['idempotency-key']), body.operationKey);
+        await requireRelease(dependencies.records, {
+          organizationId: body.organizationId,
+          releaseId: params.releaseId,
+        });
+        const result = await dependencies.progress?.act({
+          ...body,
+          resourceType: 'release',
+          resourceId: params.releaseId,
+        });
+        return await reply.send(result);
+      },
+    );
+  }
+
+  if (dependencies.domains !== undefined) {
+    app.get(
+      '/internal/projects/:projectId/domains',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = ProjectParamsSchema.parse(request.params);
+        const query = DomainListQuerySchema.parse(request.query);
+        const domains = await dependencies.domains?.list(
+          DomainListInputSchema.parse({ ...query, projectId: params.projectId }),
+        );
+        return await reply.send({ domains: z.array(DomainResultSchema).max(100).parse(domains) });
+      },
+    );
+    app.post(
+      '/internal/projects/:projectId/domains',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = ProjectParamsSchema.parse(request.params);
+        const body = DomainBodySchema.parse(request.body);
+        assertHeaderMatchesBody(idempotencyKey(request.headers['idempotency-key']), body.operationKey);
+        const domain = await dependencies.domains?.configure({ ...body, projectId: params.projectId });
+        return await reply.status(201).send({ domain: DomainResultSchema.parse(domain) });
+      },
+    );
+    app.post(
+      '/internal/projects/:projectId/domains/:hostname/poll',
+      { preHandler: dependencies.requireService },
+      async (request, reply) => {
+        const params = DomainParamsSchema.parse(request.params);
+        const body = DomainBodySchema.omit({ hostname: true }).parse(request.body);
+        assertHeaderMatchesBody(idempotencyKey(request.headers['idempotency-key']), body.operationKey);
+        const domain = await dependencies.domains?.poll({
+          ...body,
+          projectId: params.projectId,
+          hostname: params.hostname,
+        });
+        return await reply.send({ domain: DomainResultSchema.parse(domain) });
+      },
+    );
+  }
 
   app.post('/internal/releases/:releaseId/approve', { preHandler: dependencies.requireService }, async (request, reply) => {
     try {

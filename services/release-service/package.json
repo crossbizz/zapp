@@ -20,6 +20,14 @@
       "types": "./dist/history.d.ts",
       "default": "./dist/history.js"
     },
+    "./deployment-progress": {
+      "types": "./dist/deployment-progress.d.ts",
+      "default": "./dist/deployment-progress.js"
+    },
+    "./domain-store": {
+      "types": "./dist/domain-store.d.ts",
+      "default": "./dist/domain-store.js"
+    },
     "./records": {
       "types": "./dist/release/create.d.ts",
       "default": "./dist/release/create.js"
