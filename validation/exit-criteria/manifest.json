@@ -114,7 +114,7 @@
     {
       "id": "E8",
       "criterion": "Mission Control shows structured progress and allows pause, resume, redirect, and cancel.",
-      "state": "verified",
+      "state": "candidate",
       "requiredTasks": ["CP-16", "WEB-9"],
       "sourceEvidence": [
         "services/control-api/test/mission-control.test.ts",
@@ -123,9 +123,10 @@
       ],
       "verifyCommands": [
         "pnpm --filter @zapp/control-api test -- runs.test.ts",
-        "pnpm --filter @zapp/web exec playwright test e2e/conversation.spec.ts --grep 'renders Mission Control state|stops the active run'"
+        "pnpm --filter @zapp/web exec playwright test e2e/conversation.spec.ts --grep 'runs every Mission Control lifecycle action'"
       ],
-      "evidenceArtifacts": ["validation/exit-criteria/evidence/2026-08-13-integrated.json"]
+      "requiredEvidenceSchemaVersion": 2,
+      "evidenceArtifacts": []
     },
     {
       "id": "E9",

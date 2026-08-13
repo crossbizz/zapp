@@ -126,9 +126,10 @@ test.beforeEach(async ({ page }) => {
   await page.request.get(`${apiBaseUrl}/__reset`);
 });
 
-test('renders Mission Control state and reconciles pause and approval actions', async ({ page }) => {
+test('runs every Mission Control lifecycle action through its exact public API', async ({ page }) => {
   let runStatus = 'running';
   let approvalStatus = 'pending';
+  const lifecycleRequests: Array<{ action: 'cancel' | 'pause' | 'redirect' | 'resume'; body: unknown; idempotencyKey: string | undefined; method: string }> = [];
   const mission = () => ({
     run: { ...activeRun, status: runStatus },
     currentPhase: { id: 'phase_build', sequence: 1, title: 'Build checkout', status: 'running' },
@@ -158,10 +159,15 @@ test('renders Mission Control state and reconciles pause and approval actions', 
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/mission-control`, async (route) => {
     await route.fulfill({ body: JSON.stringify(mission()), headers: corsHeaders(), status: 200 });
   });
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/pause`, async (route) => {
-    runStatus = 'paused';
-    await route.fulfill({ body: JSON.stringify({ run: { ...activeRun, status: runStatus } }), headers: corsHeaders(), status: 200 });
-  });
+  for (const action of ['pause', 'resume', 'redirect', 'cancel'] as const) {
+    await page.route(`${apiBaseUrl}/v1/runs/${runId}/${action}`, async (route) => {
+      lifecycleRequests.push({ action, body: route.request().postDataJSON(), idempotencyKey: route.request().headers()['idempotency-key'], method: route.request().method() });
+      if (action === 'pause') runStatus = 'paused';
+      if (action === 'resume' || action === 'redirect') runStatus = 'running';
+      if (action === 'cancel') runStatus = 'cancelled';
+      await route.fulfill({ body: JSON.stringify({ run: { ...activeRun, status: runStatus } }), headers: corsHeaders(), status: 200 });
+    });
+  }
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/approvals/appr_plan`, async (route) => {
     approvalStatus = 'approved';
     await route.fulfill({ body: JSON.stringify({ approval: { approvalId: 'appr_plan', kind: 'plan', status: 'approved' } }), headers: corsHeaders(), status: 200 });
@@ -178,6 +184,21 @@ test('renders Mission Control state and reconciles pause and approval actions', 
   await page.getByRole('button', { name: 'Pause' }).click();
   await page.getByRole('tab', { name: 'Overview' }).click();
   await expect(page.getByText('Run status: paused')).toBeVisible({ timeout: 5_000 });
+  await page.getByRole('button', { name: 'Resume' }).click();
+  await expect(page.getByText('Run status: running')).toBeVisible({ timeout: 5_000 });
+  await page.getByLabel('Redirect instructions').fill('Use the accessible checkout instead');
+  await page.getByRole('button', { name: 'Redirect', exact: true }).click();
+  await expect(page.getByText('Redirect applied.')).toBeVisible();
+  page.once('dialog', async (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByText('Run status: cancelled')).toBeVisible({ timeout: 5_000 });
+  expect(lifecycleRequests).toEqual([
+    { action: 'pause', body: null, idempotencyKey: expect.any(String), method: 'POST' },
+    { action: 'resume', body: null, idempotencyKey: expect.any(String), method: 'POST' },
+    { action: 'redirect', body: { prompt: 'Use the accessible checkout instead' }, idempotencyKey: expect.any(String), method: 'POST' },
+    { action: 'cancel', body: null, idempotencyKey: expect.any(String), method: 'POST' },
+  ]);
+  expect(new Set(lifecycleRequests.map(({ idempotencyKey }) => idempotencyKey)).size).toBe(4);
   await page.getByRole('tab', { name: 'Approvals' }).click();
   await page.getByRole('button', { name: 'Approve' }).click();
   await expect(page.getByText(/plan — approved/u)).toBeVisible();

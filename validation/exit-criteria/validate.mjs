@@ -1,6 +1,9 @@
 import { access, readFile, realpath } from 'node:fs/promises';
+import { execFile as execFileCallback } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 const STATES = new Set(['candidate', 'blocked', 'failed', 'verified']);
 const EXPECTED_IDS = Array.from({ length: 22 }, (_, index) => `E${index + 1}`);
@@ -28,6 +31,7 @@ const EXPECTED_CRITERIA = [
   'A production error can be converted into a Fix run.',
   'Five real applications complete at least five repeat changes each during internal validation.',
 ];
+const execFile = promisify(execFileCallback);
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -57,7 +61,7 @@ async function evidencePath(repositoryRoot, relativePath, field) {
   );
 }
 
-async function validateResultArtifact(repositoryRoot, relativePath, criterion, field) {
+export async function validateResultArtifact(repositoryRoot, relativePath, criterion, field) {
   await evidencePath(repositoryRoot, relativePath, field);
   let artifact;
   try {
@@ -65,10 +69,52 @@ async function validateResultArtifact(repositoryRoot, relativePath, criterion, f
   } catch {
     throw new Error(`${field} must be a JSON result artifact`);
   }
-  invariant(artifact?.schemaVersion === 1, `${field} evidence artifact schemaVersion must be 1`);
-  invariant(/^[0-9a-f]{7,40}$/u.test(artifact?.baseline), `${field}.baseline must be a Git SHA`);
   invariant(
-    !Number.isNaN(Date.parse(artifact?.capturedAt)),
+    artifact?.schemaVersion === (criterion.requiredEvidenceSchemaVersion ?? 1),
+    `${field} evidence artifact schemaVersion must be ${criterion.requiredEvidenceSchemaVersion ?? 1}`,
+  );
+  const boundEvidence = artifact.schemaVersion === 2;
+  invariant(
+    boundEvidence
+      ? /^[0-9a-f]{40}$/u.test(artifact?.baseline)
+      : /^[0-9a-f]{7,40}$/u.test(artifact?.baseline),
+    `${field}.baseline must be a ${boundEvidence ? 'full ' : ''}Git SHA`,
+  );
+  if (boundEvidence) {
+    let baselineType = '';
+    try {
+      baselineType = (
+        await execFile('git', ['-C', repositoryRoot, 'cat-file', '-t', artifact.baseline])
+      ).stdout.trim();
+    } catch {
+      // The invariant below reports the stable validation error.
+    }
+    invariant(baselineType === 'commit', `${field}.baseline must identify a repository commit`);
+    for (const source of criterion.sourceEvidence) {
+      let sourceType = '';
+      try {
+        sourceType = (
+          await execFile('git', [
+            '-C',
+            repositoryRoot,
+            'cat-file',
+            '-t',
+            `${artifact.baseline}:${source}`,
+          ])
+        ).stdout.trim();
+      } catch {
+        // The invariant below reports the stable validation error.
+      }
+      invariant(
+        sourceType === 'blob',
+        `${field}.sourceEvidence must be a regular file at baseline: ${source}`,
+      );
+    }
+  }
+  invariant(
+    typeof artifact?.capturedAt === 'string' &&
+      !Number.isNaN(Date.parse(artifact.capturedAt)) &&
+      (!boundEvidence || new Date(artifact.capturedAt).toISOString() === artifact.capturedAt),
     `${field}.capturedAt must be ISO-8601`,
   );
   invariant(Array.isArray(artifact?.results), `${field}.results must be an array`);
@@ -81,6 +127,13 @@ async function validateResultArtifact(repositoryRoot, relativePath, criterion, f
     Array.isArray(result.commands) && result.commands.length > 0,
     `${field} result commands must not be empty`,
   );
+  if (boundEvidence) {
+    invariant(
+      JSON.stringify(result.commands.map(({ command }) => command)) ===
+        JSON.stringify(criterion.verifyCommands),
+      `${field} commands must exactly match verifyCommands`,
+    );
+  }
   for (const [commandIndex, command] of result.commands.entries()) {
     nonEmptyString(command?.command, `${field}.commands[${commandIndex}].command`);
     invariant(
@@ -88,6 +141,40 @@ async function validateResultArtifact(repositoryRoot, relativePath, criterion, f
       `${field}.commands[${commandIndex}].exitCode must be non-negative`,
     );
     nonEmptyString(command?.summary, `${field}.commands[${commandIndex}].summary`);
+    if (boundEvidence) {
+      nonEmptyString(command?.outputArtifact, `${field}.commands[${commandIndex}].outputArtifact`);
+      invariant(
+        /^sha256:[0-9a-f]{64}$/u.test(command?.outputSha256),
+        `${field}.commands[${commandIndex}].outputSha256 must be SHA-256`,
+      );
+      await evidencePath(
+        repositoryRoot,
+        command.outputArtifact,
+        `${field}.commands[${commandIndex}].outputArtifact`,
+      );
+      const output = await readFile(path.resolve(repositoryRoot, command.outputArtifact));
+      const digest = createHash('sha256').update(output).digest('hex');
+      invariant(
+        command.outputSha256 === `sha256:${digest}`,
+        `${field}.commands[${commandIndex}].outputSha256 must match captured bytes`,
+      );
+      invariant(
+        path.basename(command.outputArtifact) === `${digest}.log`,
+        `${field}.commands[${commandIndex}].outputArtifact must be content-addressed`,
+      );
+      const header = [
+        'zapp-exit-evidence-v2',
+        `baseline: ${artifact.baseline}`,
+        `capturedAt: ${artifact.capturedAt}`,
+        `command: ${command.command}`,
+        '---',
+        '',
+      ].join('\n');
+      invariant(
+        output.subarray(0, Buffer.byteLength(header)).equals(Buffer.from(header)),
+        `${field}.commands[${commandIndex}] captured header must bind baseline, timestamp, and command`,
+      );
+    }
   }
   if (expectedOutcome === 'passed') {
     invariant(
@@ -168,6 +255,12 @@ export async function validateExitCriteriaManifest(manifest, repositoryRoot) {
     criterion.verifyCommands.forEach((command, commandIndex) =>
       nonEmptyString(command, `${prefix}.verifyCommands[${commandIndex}]`),
     );
+    if (criterion.requiredEvidenceSchemaVersion !== undefined) {
+      invariant(
+        criterion.requiredEvidenceSchemaVersion === 2,
+        `${prefix}.requiredEvidenceSchemaVersion must be 2`,
+      );
+    }
     invariant(
       Array.isArray(criterion.evidenceArtifacts),
       `${prefix}.evidenceArtifacts is required`,
