@@ -2,12 +2,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createServiceTokenSigner } from '@zapp/config';
 import { newId } from '@zapp/contracts';
 import {
+  artifacts,
+  deployments,
   environments,
   memberships,
   organizations,
   projects,
   releases,
   specifications,
+  syntheticChecks,
   users,
 } from '../../packages/db/src/index.js';
 import {
@@ -263,6 +266,7 @@ describe.skipIf(!hasDatabase)('DEP-12 production release lifecycle', () => {
     const rollbackDeploymentId = newId('dep');
     const branchId = newId('br');
     const fixRunId = newId('run');
+    const productionHealthArtifactId = newId('art');
     let activeReleaseId: string | undefined;
 
     const releaseApp = composeProductionApp({
@@ -317,6 +321,19 @@ describe.skipIf(!hasDatabase)('DEP-12 production release lifecycle', () => {
           async deploy(input) {
             const replay = deploymentReplays.get(input.operationKey);
             if (replay !== undefined) return replay;
+            await database.db
+              .insert(deployments)
+              .values({
+                id: input.deploymentId,
+                organizationId: input.organizationId,
+                releaseId: input.releaseId,
+                provider: 'fly',
+                providerDeploymentId: 'fly-app::candidate',
+                status: 'healthy',
+                url: PRODUCTION_URL,
+                completedAt: new Date('2026-08-12T20:00:00.000Z'),
+              })
+              .onConflictDoNothing();
             const result = await executeDeployWorkflow(input, {
               transitionDeploymentStatus: () => Promise.resolve(),
               emitDeploymentUpdated: () => Promise.resolve(),
@@ -452,12 +469,25 @@ describe.skipIf(!hasDatabase)('DEP-12 production release lifecycle', () => {
         synthetics: {
           scheduler: {
             store: {
-              claim(input) {
+              async claim(input) {
                 const replay = scheduleClaims.get(input.idempotencyKey);
-                if (replay !== undefined) return Promise.resolve(replay);
+                if (replay !== undefined) return replay;
                 const claimed = { row: input.row, binding: input.binding };
+                await database.db
+                  .insert(syntheticChecks)
+                  .values({
+                    id: input.row.id,
+                    organizationId: input.row.organizationId,
+                    projectId: input.row.projectId,
+                    environmentId: input.row.environmentId,
+                    name: input.row.name,
+                    schedule: input.row.schedule,
+                    status: input.row.status,
+                    lastRunAt: null,
+                  })
+                  .onConflictDoNothing();
                 scheduleClaims.set(input.idempotencyKey, claimed);
-                return Promise.resolve(claimed);
+                return claimed;
               },
             },
             temporal: {
@@ -503,6 +533,35 @@ describe.skipIf(!hasDatabase)('DEP-12 production release lifecycle', () => {
             fixes: { offer: () => Promise.reject(new Error('not expected')) },
             now: () => new Date('2026-08-12T20:00:00.000Z'),
           },
+        },
+        projection: {
+          loadHealth: () =>
+            Promise.resolve({
+              status: 'healthy',
+              evidenceArtifactId: productionHealthArtifactId,
+              automaticRollbackAttempted: false,
+              production: {
+                status: 'passed',
+                healthEndpoint: {
+                  status: 'passed',
+                  path: '/',
+                  intervalMs: 10_000,
+                  attempts: [{ statusCode: 200 }, { statusCode: 200 }, { statusCode: 200 }],
+                },
+                errorRate: {
+                  status: 'passed',
+                  windowMs: 120_000,
+                  burstDetected: false,
+                  evidenceArtifactIds: [],
+                },
+                smoke: {
+                  status: 'passed',
+                  flows: [{ flowId: 'home', status: 'passed' }],
+                  evidenceArtifactIds: [productionHealthArtifactId],
+                },
+              },
+            }),
+          loadAnnotations: () => Promise.resolve([]),
         },
       },
     });
@@ -592,6 +651,17 @@ describe.skipIf(!hasDatabase)('DEP-12 production release lifecycle', () => {
         sourceType: 'prompt',
         supportLevel: 'managed',
         createdBy: owner.userId,
+      });
+      await database.db.insert(artifacts).values({
+        id: productionHealthArtifactId,
+        organizationId,
+        projectId: project.project.id,
+        runId: null,
+        taskId: null,
+        type: 'production_health',
+        storageRef: `org/${organizationId}/project/${project.project.id}/production-health.json`,
+        contentHash: 'c'.repeat(64),
+        metadataJson: {},
       });
       await database.db.insert(environments).values({
         id: environmentId,
