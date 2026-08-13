@@ -16,6 +16,23 @@ const events = [
     type: "approval.requested",
     data: { sequence: 3, payload: { approvalId: "approval_1" } },
   },
+  {
+    id: "4",
+    type: "preview.ready",
+    data: { sequence: 4, payload: { workspaceId: "workspace_1" } },
+  },
+  {
+    id: "5",
+    type: "deployment.updated",
+    data: {
+      sequence: 5,
+      payload: {
+        stage: "go_live",
+        status: "passed",
+        summary: "Production is live",
+      },
+    },
+  },
 ] as const;
 
 describe("CloudBuilderController", () => {
@@ -37,7 +54,19 @@ describe("CloudBuilderController", () => {
     controller.connect();
     for (const event of events) onEvent?.(event);
 
-    expect(controller.snapshot()).toEqual(reduceBuilderEvents(events));
+    const webSnapshot = reduceBuilderEvents(events);
+    expect(controller.snapshot()).toEqual(webSnapshot);
+    expect(webSnapshot).toMatchObject({
+      approvalIds: ["approval_1"],
+      deployment: {
+        stage: "go_live",
+        status: "passed",
+        summary: "Production is live",
+      },
+      messages: [{ role: "user", content: "Build a store" }],
+      previewStatus: "ready",
+      runStatus: "running",
+    });
     expect(setBadge).toHaveBeenLastCalledWith("1");
     expect(
       controller.nativeMenuActions().map((action) => action.label),
