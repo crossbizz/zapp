@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { createTaskGraph, PlanSchema, type TaskGraphState } from '../src/graph.js';
+import { createTaskGraph, PlanPhaseSchema, PlanSchema, type TaskGraphState } from '../src/graph.js';
 
 const task = (
   id: string,
@@ -79,6 +79,8 @@ const state = (
 
 describe('PlanSchema', () => {
   test('defaults legacy phase metadata to required and preserves explicit optional phases', () => {
+    expect(PlanPhaseSchema.parse(appendixCPlan.phases[0]).optional).toBe(false);
+
     const parsed = PlanSchema.parse({
       ...appendixCPlan,
       phases: [appendixCPlan.phases[0], { ...appendixCPlan.phases[1], optional: true }],

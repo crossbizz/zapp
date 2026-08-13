@@ -1198,7 +1198,7 @@ async function prepareExecution(
       artifactType: 'implementation_plan',
       phases: planned.plan.phases.map((phase) => ({
         phaseId: phase.id,
-        optional: phase.optional ?? false,
+        optional: phase.optional,
       })),
       phaseCount: planned.plan.phases.length,
       taskCount: planned.plan.tasks.length,

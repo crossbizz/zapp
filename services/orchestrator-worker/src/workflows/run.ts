@@ -92,7 +92,7 @@ export const BuildModePlanSchema = PlanSchema.superRefine((plan, context) => {
   }
   const phase = plan.phases[0];
   if (phase === undefined) return;
-  if (phase.optional === true) {
+  if (phase.optional) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'build_phase_must_be_required',
@@ -1244,7 +1244,7 @@ async function executeRunWorkflow(
             artifactType: 'implementation_plan',
             phases: plan.phases.map((planPhase) => ({
               phaseId: planPhase.id,
-              optional: planPhase.optional ?? false,
+              optional: planPhase.optional,
             })),
             phaseCount: 1,
             taskCount: plan.tasks.length,

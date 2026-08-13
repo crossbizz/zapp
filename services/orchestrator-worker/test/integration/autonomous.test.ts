@@ -32,6 +32,7 @@ const PLAN = {
       title: 'Foundation',
       acceptanceCriteria: ['AC-1'],
       approvalAfter: false,
+      optional: false,
     },
     {
       id: 'phase_01J00000000000000000000002',
@@ -39,6 +40,7 @@ const PLAN = {
       title: 'Acceptance',
       acceptanceCriteria: ['AC-1'],
       approvalAfter: false,
+      optional: false,
     },
   ],
   tasks: [
