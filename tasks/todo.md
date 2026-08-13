@@ -258,6 +258,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] MAC-7 Docker runtime mode
 - [x] MAC-8 Cloud builder + Mission Control parity
 - [x] MAC-8-FIX-1 Complete cross-client builder state parity
+- [x] MAC-8-FIX-2 Cross-client builder projection contract
 - [x] MAC-9 Commit-boundary sync + guided merge
 - [x] MAC-10 Local→cloud promotion
 

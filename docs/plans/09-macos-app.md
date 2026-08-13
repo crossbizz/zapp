@@ -192,6 +192,15 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - [x] Verify: shared reducer 2/2, desktop cloud parity 3/3, affected lint/typecheck.
 - [x] Commit: `fix(desktop): complete cloud builder state parity`
 
+### Task MAC-8-FIX-2 [M6]: Cross-client builder projection contract
+
+**Files:** Create: `apps/desktop/src/zapp/builder-cloud/cross-client-projection.integration.test.tsx`; Modify: `tasks/todo.md`, `docs/plans/{00-master-plan,09-macos-app}.md`
+
+- [x] RED: one canonical event stream must expose matching conversation, approval/Mission Control, preview, and deployment projections to the web subscriber and desktop cloud controller.
+- [x] GREEN: drive both clients from the same typed stream and compare their complete projections, including preview-ready and deployment-stage state.
+- [x] Verify: focused integration plus desktop cloud unit suite, UI lint/typecheck, and desktop main typecheck.
+- [x] Commit: `test(clients): cover cross-platform builder projections`
+
 ### Task MAC-9 [M4]: Git-based local↔cloud sync + conflict policy
 
 **Files:** Create: `apps/desktop/src/zapp/sync/*`, `test/sync.spec.ts`
@@ -264,6 +273,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-11 MAC-8 BLOCKED — The binding parity source does not exist yet: WEB-7 and WEB-9 remain unchecked, the current web Mission Control renders only `MissionControlEmpty`, and neither `packages/ui` nor another shared package exports the web conversation/Mission Control components or a shared SSE event reducer. A desktop-only reducer or copied state protocol would violate the task and Global Constraint, so the task remains unchecked pending those shared web surfaces.
 - 2026-08-12 MAC-8 done — Added the shared web/desktop SSE reducer and desktop cloud builder controller with authenticated-preview enforcement, Mission Control state, native pause/resume actions, and approval badge projection; the fixture parity suite passed 2/2.
 - 2026-08-13 MAC-8-FIX-1 done — Extended the shared ordered builder projection to conversation, run/Mission Control, preview, and deployment state; the reducer passed 2/2 and the desktop parity fixture passed 3/3 against that exact web projection.
+- 2026-08-13 MAC-8-FIX-2 done — Added a cross-client integration contract that feeds one typed event stream through the web SSE subscriber and desktop cloud controller, then compares conversation, approval/Mission Control, preview, and deployment projections; focused desktop tests passed 4/4, while E2 remains a candidate pending packaged macOS journey evidence.
 - 2026-08-11 MAC-9 BLOCKED — API-first audit found no public session-authenticated internal-Git credential or sync API in the generated SDK; the only git-service credentials are internal service/repository-scoped boundaries. Without the prescribed user-scoped token, desktop cannot safely fetch/push or exercise the divergence/merge contract, so the task remains unchecked and no alternate credential path was introduced.
 - 2026-08-12 MAC-9 done — Added commit-boundary synchronization over GIT-7 leases: dirty work requires Commit/Stash/Discard, ancestry selects fast-forward or push, divergence requires an explicit parent-checked merge commit, and credentials remain ephemeral Git environment configuration; focused acceptance passed 4/4.
 - 2026-08-11 MAC-10 BLOCKED — Promotion depends on MAC-9's missing authenticated Git push path: project creation and capability scan APIs exist, but the desktop cannot push the local repository to the new internal repository through any public SDK operation. The task remains unchecked; no direct git-service backdoor or local-only linked marker was added.
