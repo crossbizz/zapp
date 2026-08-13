@@ -482,6 +482,14 @@ export function createFakeLlmApp(getPort: () => number) {
     });
   });
 
+  app.get("/api/desktop-config", (_req, res) => {
+    res.json({
+      version: "e2e-test-desktop-config-v1",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      defaults: {},
+    });
+  });
+
   // Ollama-specific endpoints
   app.get("/ollama/api/tags", (req, res) => {
     const ollamaModels = {

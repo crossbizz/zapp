@@ -135,7 +135,9 @@ function extractAttachmentPath(messages: any[]): string | null {
  * Load a fixture file dynamically
  * Tries .ts first (for dev mode with ts-node), then .js
  */
-async function loadFixture(fixtureName: string): Promise<LocalAgentFixture> {
+export async function loadLocalAgentFixtureForTesting(
+  fixtureName: string,
+): Promise<LocalAgentFixture> {
   if (fixtureCache.has(fixtureName)) {
     return fixtureCache.get(fixtureName)!;
   }
@@ -548,7 +550,7 @@ export async function handleLocalAgentFixture(
   fakeLlmLog(`[local-agent] Messages count: ${messages.length}`);
 
   try {
-    const fixture = await loadFixture(fixtureName);
+    const fixture = await loadLocalAgentFixtureForTesting(fixtureName);
     const sessionId = getSessionId(messages);
 
     // Determine which outer loop pass we're on based on todo reminder messages

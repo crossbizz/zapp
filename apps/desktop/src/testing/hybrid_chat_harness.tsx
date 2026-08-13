@@ -1,5 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
+import {
+  GatewayStreamEventSchema,
+  type CompleteRequest,
+  type GatewayStreamEvent,
+} from "@zapp/model-gateway";
 
 /**
  * setupHybridChatHarness — the "hybrid" chat-flow harness: the real React
@@ -142,11 +147,17 @@ import { chatSearchSchema } from "@/routes/chatSearchSchema";
 import { appDetailsSearchSchema } from "@/routes/appDetailsSearchSchema";
 import { registerPlatformAuthHandlers } from "@/zapp/auth/handlers";
 import type { PlatformAuthSession } from "@/zapp/auth/session";
+import { configureLocalAgentStreamHandler } from "@/zapp/pro_stubs/main";
+import {
+  createLocalAgentStreamHandler,
+  type DesktopLocalAgentPlatform,
+} from "@/zapp/runtime/local-agent-handler";
 
 import {
   installRendererIpcBridge,
   type RendererIpcBridge,
 } from "./renderer_ipc_bridge";
+import { loadLocalAgentFixtureForTesting } from "../../testing/fake-llm-server/localAgentHandler";
 
 const SECOND_SETUP_ERROR =
   "Second harness setup in one process — one harness per test FILE " +
@@ -166,6 +177,103 @@ function createSignedOutPlatformAuthSession(): PlatformAuthSession {
     snapshot: () => state,
     authorizationHeader: () => undefined,
     subscribe: () => () => {},
+  };
+}
+
+const TEST_LOCAL_AGENT_IDS = {
+  organizationId: "org_01J00000000000000000000000",
+  projectId: "proj_01J00000000000000000000000",
+} as const;
+
+function testLocalAgentId(prefix: "run" | "task", chatId: number): string {
+  return `${prefix}_${String(chatId).padStart(26, "0")}`;
+}
+
+function testLocalAgentSession(chatId: number) {
+  return {
+    sessionId: `00000000-0000-4000-8000-${String(chatId).padStart(12, "0")}`,
+    ...TEST_LOCAL_AGENT_IDS,
+    runId: testLocalAgentId("run", chatId),
+    taskId: testLocalAgentId("task", chatId),
+  };
+}
+
+function fixtureNameFor(request: CompleteRequest): string {
+  const match = JSON.stringify(request.messages).match(
+    /tc=local-agent\/([^\s"\\]+)/u,
+  );
+  if (match?.[1] === undefined) {
+    throw new Error(
+      "Hybrid local-agent tests must use a tc=local-agent/<fixture> prompt",
+    );
+  }
+  return match[1];
+}
+
+function localAgentTurnIndex(request: CompleteRequest): number {
+  let lastUserMessage = -1;
+  for (let index = request.messages.length - 1; index >= 0; index -= 1) {
+    if (request.messages[index]?.role === "user") {
+      lastUserMessage = index;
+      break;
+    }
+  }
+  return request.messages
+    .slice(lastUserMessage + 1)
+    .filter((message) => message.role === "tool").length;
+}
+
+/**
+ * The production desktop main process creates this composition after restoring
+ * platform auth. Hybrid tests cannot use a real user token or control API, so
+ * they inject only the fixture gateway; missing fixture prompts still fail
+ * closed instead of falling through to a network request.
+ */
+function createHybridLocalAgentPlatform(): DesktopLocalAgentPlatform {
+  return {
+    async ensureSession({ chatId }) {
+      return testLocalAgentSession(chatId);
+    },
+    gateway() {
+      return {
+        async *stream(
+          request: CompleteRequest,
+        ): AsyncIterable<GatewayStreamEvent> {
+          const fixture = await loadLocalAgentFixtureForTesting(
+            fixtureNameFor(request),
+          );
+          const turns = fixture.turns ?? fixture.passes?.[0]?.turns;
+          const turn = turns?.[localAgentTurnIndex(request)];
+          if (turn === undefined) {
+            yield {
+              type: "error",
+              code: "provider_error",
+              message: "Hybrid local-agent fixture has no remaining turn",
+            };
+            return;
+          }
+          if (turn.text !== undefined) {
+            yield { type: "text-delta", text: turn.text };
+          }
+          for (const [index, toolCall] of (turn.toolCalls ?? []).entries()) {
+            yield GatewayStreamEventSchema.parse({
+              type: "tool-call",
+              toolCallId: `${request.completionId}-${index}`,
+              toolName: toolCall.name,
+              input: toolCall.args,
+            });
+          }
+          yield {
+            type: "usage",
+            provider: "hybrid-fixture",
+            model: "local-agent",
+            finishReason: turn.toolCalls?.length ? "tool-calls" : "stop",
+            totalTokens: 1,
+          };
+          yield { type: "done" };
+        },
+      };
+    },
   };
 }
 
@@ -499,6 +607,7 @@ function eventPayload(e: { args: unknown[] }): unknown {
 
 const HYBRID_EXTRA_ENV_KEYS = [
   "DYAD_SKIP_MANAGED_PNPM_INSTALL",
+  "DYAD_DESKTOP_CONFIG_URL",
   "E2E_TEST_BUILD",
   "FAKE_LLM_PORT",
 ] as const;
@@ -633,6 +742,7 @@ export async function setupHybridChatHarness(
       registerChatStreamHandlers: false,
     });
     const nodeHarness = node;
+    process.env.DYAD_DESKTOP_CONFIG_URL = `${nodeHarness.fakeLlmUrl}/api/desktop-config`;
 
     if (options.testBuild) {
       process.env.FAKE_LLM_PORT = String(nodeHarness.fakeLlmPort);
@@ -647,6 +757,13 @@ export async function setupHybridChatHarness(
     registerIpcHandlers();
     const unsubscribePlatformAuth = registerPlatformAuthHandlers(
       createSignedOutPlatformAuthSession(),
+    );
+    configureLocalAgentStreamHandler(
+      createLocalAgentStreamHandler({
+        database: nodeHarness.db.$client,
+        platform: createHybridLocalAgentPlatform(),
+        redact: (value) => value,
+      }),
     );
 
     const silenceActWarnings = options.silenceActWarnings ?? true;

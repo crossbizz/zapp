@@ -91,6 +91,15 @@ Master plan §Global Constraints, plus:
 - [x] Failing test: the harness invokes `zapp-auth:snapshot`, receives the strict signed-out state, mounts a title-bar surface, and disposes with no missing production channel; retain the full-suite diagnostic inventory and re-run all 13 `local_agent_*` specifications.
 - [x] Run the desktop Vitest suite as a bounded diagnostic inventory; run the 13 ADR-0002 `local_agent_*` behavioral specifications separately and preserve/report their intentional RED handoff to MAC-6; verify the strict auth harness and two Monaco Playwright specs green; commit `test(desktop): restore hybrid integration coverage`.
 
+### Task MAC-5.5-FIX-1 [M2]: Hybrid harness composition and offline catalog isolation
+
+**Files:** Modify: `apps/desktop/src/testing/hybrid_chat_harness{,.guard.integration.test}.tsx`, `apps/desktop/testing/fake-llm-server/{index,localAgentHandler}.ts`, `tasks/todo.md`, this plan
+**Effort:** S
+
+- [x] Binding behavior: hybrid tests install the same local-agent stream composition as desktop startup, but use a fixture-only gateway that fails closed for an unknown fixture; remote desktop configuration resolves from the harness's fake server instead of a public endpoint.
+- [x] Failing test: a local-agent fixture prompt reaches the composed stream with no auth-precondition event, while the strict signed-out auth IPC boundary remains present and the desktop-config request returns the fake response.
+- [x] Commit: `fix(desktop): isolate hybrid test composition`
+
 ### Task MAC-6A [M2]: Local runtime + resumable-session foundation
 
 **Files:** Create: `apps/desktop/src/zapp/runtime/{local,local-session}{,.spec}.ts`, desktop migrations, `services/orchestrator-worker/src/session/index.ts`; Modify: desktop schema/package, workspace-runtime environment seam, agent-tools mutation manifest, orchestrator session transcript/export, package manifests and lockfile
@@ -221,6 +230,7 @@ This foundation intentionally does not complete MAC-6. The public user-authentic
 - 2026-08-10 MAC-5 done — Unified local/cloud dashboard uses strict IPC and generated public APIs; the separate MAC-5.5 task owns the pre-existing hybrid desktop-suite failures discovered during verification.
 - 2026-08-10 MAC-5-FIX-1 done — Creation and list recovery are separate; ambiguous retries preserve the strict operation ID through the rendered recovery control.
 - 2026-08-10 MAC-5.5 done — Restored strict auth and preload composition in the hybrid/package paths, verified the real Monaco helper 3/3, and preserved the 13 ADR-0002 local-agent RED specifications plus the bounded diagnostic remainder for MAC-6.
+- 2026-08-13 MAC-5.5-FIX-1 done — Hybrid setup now composes the local-agent stream through a fixture-only fail-closed gateway and routes desktop config to the harness fake server; guard integration passed 5/5, while the legacy `local_agent_basic` fixture remains incompatible with the current contained tool allowlist after the auth precondition was removed.
 - 2026-08-10 MAC-6A done — Added the safe local runtime, packaged resumable AR-6 session state, exact changed-path commit refs, and fail-closed guarded writes; MAC-6 remains open for the public user-authenticated model-gateway/accounting and UI/mode join plus explicit commit application.
 - 2026-08-10 MAC-6-FIX-1 BLOCKED — Containment, config-independent exact commits, terminal continuation, and truthful partial-commit reporting are focused-green (20/20), but the capped final review found missing keyed-result crash recovery, unresolved mutation-lease fencing, and durable owned-path hydration; provider acceptance was not consumed and MAC-6-FIX-2 owns the bounded closure.
 - 2026-08-10 MAC-6-FIX-2 BLOCKED — Exact keyed receipts, nonterminal unknown-outcome fencing, and exact durable owned-path add/remove recovery are focused-green (22/22), but the capped final review found terminal Git/receipt finalization can still overlap a distinct operation; provider acceptance was not consumed and MAC-6-FIX-3 owns the single-writer closure.

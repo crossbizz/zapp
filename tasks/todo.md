@@ -182,6 +182,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] MAC-5 Unified local+cloud dashboard
 - [x] MAC-5-FIX-1 Preserve cloud creation retry identity
 - [x] MAC-5.5 Triage 51 Pro-dependent integration test files + fix upstream monaco replaceEditorContent helper (aria-hidden ime-text-area breaks edit_code + editor_commit_menu) (spec source: 13 local_agent_* files; before/with MAC-6)
+- [x] MAC-5.5-FIX-1 Hybrid harness composition and offline catalog isolation
 - [x] MAC-6A Local runtime + resumable-session foundation
 - [x] MAC-6 Local WorkspaceRuntime + local sessions
 - [x] MAC-6-FIX-1 Structural local-agent containment + terminal recovery

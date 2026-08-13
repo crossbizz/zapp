@@ -34,6 +34,31 @@ describe("hybrid chat harness guards", () => {
       expect(
         await screen.findByRole("button", { name: "Sign in to Zapp" }),
       ).toBeTruthy();
+
+      const { getRemoteDesktopConfig } =
+        await import("@/ipc/shared/remote_desktop_config");
+      await expect(getRemoteDesktopConfig()).resolves.toMatchObject({
+        version: "e2e-test-desktop-config-v1",
+        defaults: {},
+      });
+    } finally {
+      await harness.dispose();
+    }
+  }, 60_000);
+
+  it("installs the local-agent composition used by the desktop main process", async () => {
+    const harness = await setupHybridChatHarness({
+      electronMock: h,
+      chatMode: "local-agent",
+      settings: { isTestMode: true },
+    });
+
+    try {
+      const result = await harness.streamChat("tc=local-agent/simple-response");
+
+      expect(result.event("chat:response:error")).toBeUndefined();
+      expect(result.eventsFor("chat:response:chunk")).not.toHaveLength(0);
+      expect(result.eventsFor("chat:response:end")).toHaveLength(1);
     } finally {
       await harness.dispose();
     }
