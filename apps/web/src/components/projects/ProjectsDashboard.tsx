@@ -1,12 +1,14 @@
 'use client';
 
-import { ZappApiError } from '@zapp/api-client';
 import { Button, EmptyState } from '@zapp/ui';
+import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
-import { createControlPlaneClient, type MeResponse } from '../../lib/api';
-import { activeMemberships, organizationStorageKey, resolveOrganization } from '../../lib/session';
+import { useAppSession, type ReadyAppSession } from '../../hooks/useAppSession';
+import { createControlPlaneClient } from '../../lib/api';
+import { appSessionStorageKey } from '../../lib/app-session';
+import { AppShell } from '../shell/AppShell';
 import styles from './projects.module.css';
 import {
   GitHubImportDialog,
@@ -14,6 +16,7 @@ import {
 } from './GitHubImportDialog';
 import { NewProjectDialog } from './NewProjectDialog';
 import { ProjectCard } from './ProjectCard';
+import { decodeThumbnail, revokeThumbnail } from './project-thumbnail';
 
 type ProjectPage = Awaited<ReturnType<ReturnType<typeof createControlPlaneClient>['listProjects']>>;
 type Project = ProjectPage['items'][number];
@@ -45,20 +48,19 @@ function RetryFailure({ description, onRetry, title }: RetryFailureProps): React
 export function ProjectsDashboard(): ReactElement {
   const pathname = usePathname();
   const router = useRouter();
-  const [profile, setProfile] = useState<MeResponse>();
+  const session = useAppSession();
   const [organizationId, setOrganizationId] = useState<string>();
   const [projects, setProjects] = useState<readonly Project[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>();
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [sessionFailed, setSessionFailed] = useState(false);
   const [projectsFailed, setProjectsFailed] = useState(false);
-  const [sessionAttempt, setSessionAttempt] = useState(0);
   const [projectsAttempt, setProjectsAttempt] = useState(0);
   const [githubImportOpen, setGitHubImportOpen] = useState(false);
   const [githubCallback, setGitHubCallback] = useState<GitHubInstallCallback>();
   const processedImportSearchRef = useRef<string | undefined>(undefined);
   const [summaries, setSummaries] = useState<ReadonlyMap<string, ProjectSummary>>(new Map());
+  const [thumbnailUrls, setThumbnailUrls] = useState<ReadonlyMap<string, string>>(new Map());
   const [summaryFailedIds, setSummaryFailedIds] = useState<ReadonlySet<string>>(new Set());
   const [summaryLoadingIds, setSummaryLoadingIds] = useState<ReadonlySet<string>>(new Set());
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -67,8 +69,30 @@ export function ProjectsDashboard(): ReactElement {
   const requestGenerationRef = useRef(0);
   const paginationAbortRef = useRef<AbortController | undefined>(undefined);
   const summaryAbortControllersRef = useRef<Set<AbortController>>(new Set());
+  const thumbnailUrlsRef = useRef<ReadonlyMap<string, string>>(new Map());
 
   activeOrganizationRef.current = organizationId;
+
+  const clearThumbnailUrls = useCallback((): void => {
+    for (const url of thumbnailUrlsRef.current.values()) revokeThumbnail(url);
+    thumbnailUrlsRef.current = new Map();
+    setThumbnailUrls(new Map());
+  }, []);
+
+  const replaceThumbnailUrl = useCallback((projectId: string, url: string): void => {
+    const previous = thumbnailUrlsRef.current.get(projectId);
+    if (previous !== undefined) revokeThumbnail(previous);
+    const next = new Map(thumbnailUrlsRef.current).set(projectId, url);
+    thumbnailUrlsRef.current = next;
+    setThumbnailUrls(next);
+  }, []);
+
+  useEffect(() => {
+    if (session.snapshot.status !== 'ready') return;
+    const selectedId = session.snapshot.membership.organization.id;
+    activeOrganizationRef.current = selectedId;
+    setOrganizationId((current) => current ?? selectedId);
+  }, [session.snapshot]);
 
   const clearGitHubCallback = useCallback((): void => {
     setGitHubCallback(undefined);
@@ -141,6 +165,35 @@ export function ProjectsDashboard(): ReactElement {
           for (const summary of response.summaries) next.set(summary.projectId, summary);
           return next;
         });
+        const pending = response.summaries.filter((summary) => summary.previewThumbnail !== null);
+        let nextThumbnail = 0;
+        const loadThumbnail = async (): Promise<void> => {
+          while (isCurrent()) {
+            const summary = pending[nextThumbnail];
+            nextThumbnail += 1;
+            if (summary === undefined || summary.previewThumbnail === null) return;
+            try {
+              const thumbnail = await createControlPlaneClient(
+                requestedOrganization,
+              ).getProjectPreviewThumbnail(
+                summary.projectId,
+                summary.previewThumbnail.artifactId,
+                controller.signal,
+              );
+              const url = URL.createObjectURL(decodeThumbnail(thumbnail));
+              if (!isCurrent()) {
+                revokeThumbnail(url);
+                return;
+              }
+              replaceThumbnailUrl(summary.projectId, url);
+            } catch {
+              if (!isCurrent()) return;
+            }
+          }
+        };
+        await Promise.all(
+          Array.from({ length: Math.min(6, pending.length) }, () => loadThumbnail()),
+        );
       } catch {
         if (!isCurrent()) return;
         setSummaryFailedIds((current) => new Set([...current, ...projectIds]));
@@ -155,46 +208,8 @@ export function ProjectsDashboard(): ReactElement {
         }
       }
     },
-    [],
+    [replaceThumbnailUrl],
   );
-
-  useEffect(() => {
-    let current = true;
-
-    const loadSession = async (): Promise<void> => {
-      setSessionFailed(false);
-      try {
-        const me = await createControlPlaneClient().getMe();
-        if (!current) return;
-        const override = new URLSearchParams(window.location.search).get('organizationId');
-        const selected = resolveOrganization(
-          me.memberships,
-          override,
-          localStorage.getItem(organizationStorageKey(me.user.id)),
-        );
-        setProfile(me);
-        activeOrganizationRef.current = selected.membership?.organization.id;
-        setOrganizationId(selected.membership?.organization.id);
-        if (selected.membership !== undefined) {
-          localStorage.setItem(
-            organizationStorageKey(me.user.id),
-            selected.membership.organization.id,
-          );
-        }
-      } catch (error) {
-        if (error instanceof ZappApiError && error.status === 401) {
-          window.location.replace('/login');
-          return;
-        }
-        if (current) setSessionFailed(true);
-      }
-    };
-
-    void loadSession();
-    return () => {
-      current = false;
-    };
-  }, [sessionAttempt]);
 
   useEffect(() => {
     if (organizationId === undefined) return;
@@ -210,6 +225,7 @@ export function ProjectsDashboard(): ReactElement {
     const loadProjects = async (): Promise<void> => {
       setProjects([]);
       setSummaries(new Map());
+      clearThumbnailUrls();
       setSummaryFailedIds(new Set());
       setSummaryLoadingIds(new Set());
       setNextCursor(undefined);
@@ -249,8 +265,9 @@ export function ProjectsDashboard(): ReactElement {
       paginationAbortRef.current?.abort();
       for (const summaryController of summaryAbortControllersRef.current) summaryController.abort();
       summaryAbortControllersRef.current.clear();
+      clearThumbnailUrls();
     };
-  }, [loadSummaries, organizationId, projectsAttempt]);
+  }, [clearThumbnailUrls, loadSummaries, organizationId, projectsAttempt]);
 
   const loadNextPage = useCallback(async (): Promise<void> => {
     if (
@@ -326,21 +343,19 @@ export function ProjectsDashboard(): ReactElement {
     };
   }, [loadNextPage, nextCursor]);
 
-  if (sessionFailed) {
+  if (session.snapshot.status === 'error') {
     return (
       <main className={styles.dashboard}>
         <RetryFailure
           description="The public session profile request did not complete."
-          onRetry={() => {
-            setSessionAttempt((value) => value + 1);
-          }}
+          onRetry={session.retry}
           title="We could not load your organizations."
         />
       </main>
     );
   }
 
-  if (profile === undefined) {
+  if (session.snapshot.status === 'loading') {
     return (
       <main className={styles.dashboard}>
         <p aria-live="polite" className={styles.loading} role="status">
@@ -350,7 +365,17 @@ export function ProjectsDashboard(): ReactElement {
     );
   }
 
-  const memberships = activeMemberships(profile.memberships);
+  if (session.snapshot.status === 'empty') {
+    return (
+      <main className={styles.dashboard}>
+        <h1>Projects</h1>
+        <p>No active organization.</p>
+      </main>
+    );
+  }
+
+  const readySession = session.snapshot;
+  const memberships = readySession.memberships;
 
   if (organizationId === undefined) {
     return (
@@ -364,56 +389,57 @@ export function ProjectsDashboard(): ReactElement {
   const selectedMembership = memberships.find((membership) => {
     return membership.organization.id === organizationId;
   });
-  const allowedModels = selectedMembership?.allowedModels ?? [];
+  if (selectedMembership === undefined) {
+    return <main className={styles.dashboard}>Loading projects…</main>;
+  }
+  const allowedModels = selectedMembership.allowedModels;
+  const shellSession: ReadyAppSession = {
+    ...readySession,
+    membership: selectedMembership,
+  };
+
+  const switchOrganization = (selectedId: string): void => {
+    localStorage.setItem(appSessionStorageKey(readySession.profile.user.id), selectedId);
+    requestGenerationRef.current += 1;
+    paginationAbortRef.current?.abort();
+    paginationAbortRef.current = undefined;
+    for (const summaryController of summaryAbortControllersRef.current) summaryController.abort();
+    summaryAbortControllersRef.current.clear();
+    activeOrganizationRef.current = selectedId;
+    setGitHubCallback(undefined);
+    loadingMoreRef.current = false;
+    setProjects([]);
+    setSummaries(new Map());
+    clearThumbnailUrls();
+    setSummaryFailedIds(new Set());
+    setSummaryLoadingIds(new Set());
+    setNextCursor(undefined);
+    setProjectsFailed(false);
+    setProjectsLoading(true);
+    setOrganizationId(selectedId);
+    const nextSearchParams = new URLSearchParams(window.location.search);
+    nextSearchParams.delete('organizationId');
+    const query = nextSearchParams.toString();
+    router.replace(query.length === 0 ? pathname : `${pathname}?${query}`, { scroll: false });
+  };
 
   return (
-    <main className={styles.dashboard}>
+    <AppShell
+      activePath="/projects"
+      invalidOrganization={readySession.invalidOrganization}
+      onSignOut={() => session.signOut(organizationId)}
+      onSwitchOrganization={switchOrganization}
+      recentProjects={projects}
+      session={shellSession}
+    >
+    <div className={styles.dashboard}>
       <header className={styles.header}>
         <div>
           <p className={styles.eyebrow}>Workspace</p>
           <h1>Projects</h1>
         </div>
         <div className={styles.headerActions}>
-          <label className={styles.organizationPicker}>
-            <span>Organization</span>
-            <select
-              aria-label="Organization"
-              onChange={(event) => {
-                const selectedId = event.target.value;
-                localStorage.setItem(organizationStorageKey(profile.user.id), selectedId);
-                requestGenerationRef.current += 1;
-                paginationAbortRef.current?.abort();
-                paginationAbortRef.current = undefined;
-                for (const summaryController of summaryAbortControllersRef.current)
-                  summaryController.abort();
-                summaryAbortControllersRef.current.clear();
-                activeOrganizationRef.current = selectedId;
-                setGitHubCallback(undefined);
-                loadingMoreRef.current = false;
-                setProjects([]);
-                setSummaries(new Map());
-                setSummaryFailedIds(new Set());
-                setSummaryLoadingIds(new Set());
-                setNextCursor(undefined);
-                setProjectsFailed(false);
-                setProjectsLoading(true);
-                setOrganizationId(selectedId);
-                const nextSearchParams = new URLSearchParams(window.location.search);
-                nextSearchParams.delete('organizationId');
-                const query = nextSearchParams.toString();
-                router.replace(query.length === 0 ? pathname : `${pathname}?${query}`, {
-                  scroll: false,
-                });
-              }}
-              value={organizationId}
-            >
-              {memberships.map((membership) => (
-                <option key={membership.organization.id} value={membership.organization.id}>
-                  {membership.organization.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Link className={styles.templateLink} href="/templates">Browse templates</Link>
           <GitHubImportDialog
             callback={githubCallback}
             onCallbackConsumed={clearGitHubCallback}
@@ -457,6 +483,7 @@ export function ProjectsDashboard(): ReactElement {
               project={projectItem}
               summary={summaries.get(projectItem.id)}
               summaryFailed={summaryFailedIds.has(projectItem.id)}
+              thumbnailUrl={thumbnailUrls.get(projectItem.id)}
             />
           ))}
         </section>
@@ -469,6 +496,7 @@ export function ProjectsDashboard(): ReactElement {
           Loading more projects…
         </p>
       ) : null}
-    </main>
+    </div>
+    </AppShell>
   );
 }

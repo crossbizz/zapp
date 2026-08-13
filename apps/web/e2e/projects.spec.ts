@@ -55,10 +55,23 @@ function project(id: string, name: string, organizationId: string, supportLevel:
 }
 
 async function signIn(page: Page): Promise<void> {
+  const projectListPattern = new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u');
+  let homeListHandled = false;
+  const handleHomeList = async (route: Route): Promise<void> => {
+    if (route.request().method() !== 'GET' || homeListHandled) {
+      await route.fallback();
+      return;
+    }
+    homeListHandled = true;
+    await projectListResponse(route, { items: [], nextCursor: null });
+  };
+  await page.route(projectListPattern, handleHomeList);
   await page.goto('/login');
   await page.getByRole('link', { name: 'Sign in' }).click();
   await expect(page).toHaveURL('/');
   await expect(page.getByText('Ada Lovelace')).toBeVisible();
+  await expect.poll(() => homeListHandled).toBe(true);
+  await page.unroute(projectListPattern, handleHomeList);
 }
 
 function projectListResponse(route: Route, body: unknown): Promise<void> {
@@ -104,6 +117,12 @@ function summary(
       readonly occurredAt: string | null;
       readonly status: 'failed' | 'not_started' | 'ready' | 'starting';
     };
+    readonly previewThumbnail?: null | {
+      readonly alt: string;
+      readonly artifactId: string;
+      readonly capturedAt: string;
+      readonly contentHash: string;
+    };
     readonly production: {
       readonly occurredAt: string | null;
       readonly releaseId: string | null;
@@ -111,7 +130,7 @@ function summary(
     };
   },
 ) {
-  return { projectId, ...input };
+  return { projectId, ...input, previewThumbnail: input.previewThumbnail ?? null };
 }
 
 function mutation(route: Route): ObservedMutation {
@@ -202,7 +221,17 @@ test('switches active organizations and renders only API-backed project card fie
   await page.goto('/projects');
 
   await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+  await expect(
+    page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Projects' }),
+  ).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('button', { name: 'New project' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Import from GitHub' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Browse templates' })).toHaveAttribute(
+    'href',
+    '/templates',
+  );
   await expect(page.getByRole('heading', { name: 'Alpha Portal' })).toBeVisible();
+  await expect(page.getByLabel('Preview unavailable for Alpha Portal')).toBeVisible();
   await expect(page.getByText('Verified')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open Alpha Portal' })).toHaveAttribute(
     'href',
@@ -544,6 +573,12 @@ test('renders batch-backed activity and accessible environment states with Deplo
             deployReadiness: { findings: [], releaseId: 'release-ready', state: 'ready' },
             lastActivityAt: '2026-08-10T19:30:00.000Z',
             preview: { occurredAt: '2026-08-10T19:20:00.000Z', status: 'ready' },
+            previewThumbnail: {
+              alt: 'Preview of Alpha Ready',
+              artifactId: 'art-alpha-ready',
+              capturedAt: '2026-08-10T19:29:00.000Z',
+              contentHash: 'b'.repeat(64),
+            },
             production: {
               occurredAt: '2026-08-10T19:25:00.000Z',
               releaseId: 'release-ready',
@@ -604,11 +639,25 @@ test('renders batch-backed activity and accessible environment states with Deplo
       });
     },
   );
+  await page.route(
+    `${apiBaseUrl}/v1/projects/alpha-ready/preview-thumbnail/art-alpha-ready`,
+    async (route) => {
+      await apiResponse(route, {
+        thumbnail: {
+          content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+P8LHAAAAAElFTkSuQmCC',
+          contentHash: 'b'.repeat(64),
+          contentType: 'image/png',
+          encoding: 'base64',
+        },
+      });
+    },
+  );
 
   await signIn(page);
   await page.goto('/projects');
 
   const ready = page.getByRole('article').filter({ hasText: 'Alpha Ready' });
+  await expect(ready.getByRole('img', { name: 'Preview of Alpha Ready' })).toBeVisible();
   await expect(ready.getByText('Preview: Ready', { exact: true })).toBeVisible();
   await expect(ready.getByText('Production: Healthy', { exact: true })).toBeVisible();
   await expect(ready.locator('time')).toHaveAttribute('datetime', '2026-08-10T19:30:00.000Z');
