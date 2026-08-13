@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { eq } from "drizzle-orm";
 
 import { apps, chats, messages } from "@/db/schema";
@@ -101,6 +101,14 @@ describe("local-agent basic flows (integration)", () => {
   }
   beforeEach(() => {
     errorEventsBaseline = harness ? allErrorEvents().length : 0;
+  });
+
+  it("does not offer generated image attachments in contained local mode", async () => {
+    const app = await createMinimalApp({ name: "Contained Images" });
+    harness.mount({ chatId: app.chatId, appId: app.appId });
+
+    fireEvent.click(await screen.findByTestId("auxiliary-actions-menu"));
+    expect(screen.queryByTestId("generate-image-menu-item")).toBeNull();
   });
 
   it("reads a file, edits it, and persists the result", async () => {

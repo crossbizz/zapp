@@ -7,6 +7,7 @@ import type { ToolRegistry } from "@zapp/agent-tools";
 import type { CompleteRequest } from "@zapp/model-gateway";
 import {
   createSessionLoop,
+  assembleSessionInitialMessages,
   SessionResultSchema,
   SessionTranscriptSchema,
   TranscriptConflictError,
@@ -1132,10 +1133,10 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
             ...input.budgets,
             maxTurns: existingTranscript.turns + input.budgets.maxTurns,
           };
-          const contextMessages = input.context.sections.map((section) => ({
-            role: "user" as const,
-            content: `[${section.kind}]\n${options.redact(section.content)}`,
-          }));
+          const assembledContext = assembleSessionInitialMessages(
+            input,
+            options.redact,
+          );
           existingTranscript = await transcripts.save(version, {
             ...draft,
             role: input.role,
@@ -1143,7 +1144,7 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
             tools: input.tools,
             budgets,
             startedAtMs: Date.now(),
-            provenance: [],
+            provenance: assembledContext.provenance,
             messages: [
               {
                 role: "system",
@@ -1151,7 +1152,7 @@ export function createLocalAgentSession(options: LocalAgentSessionOptions) {
                   .filter((part): part is string => part !== undefined)
                   .join("\n\n"),
               },
-              ...contextMessages,
+              ...assembledContext.messages.slice(1),
             ],
             tokensUsed: 0,
             inFlightCompletion: null,

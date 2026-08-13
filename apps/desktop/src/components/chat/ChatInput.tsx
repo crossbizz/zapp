@@ -147,6 +147,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     storedChatMode,
     isLoading: isChatModeLoading,
   } = useChatMode(chatId);
+  const supportsGeneratedImageAttachments = effectiveMode !== "local-agent";
   const appId = useAtomValue(selectedAppIdAtom);
   const { refreshVersions } = useVersions(appId);
   const openPreviewIfSetupRequired = useOpenPreviewIfSetupRequired();
@@ -234,6 +235,7 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     dismissedImageGenerationJobIdsAtom,
   );
   const visibleSuccessfulImageJobs = useMemo(() => {
+    if (!supportsGeneratedImageAttachments) return [];
     const appJobs = appId
       ? chatImageJobs.filter((job) => job.targetAppId === appId)
       : chatImageJobs;
@@ -243,7 +245,12 @@ export function ChatInput({ chatId }: { chatId?: number }) {
         job.status === "success" &&
         job.result,
     );
-  }, [chatImageJobs, dismissedImageJobIds, appId]);
+  }, [
+    chatImageJobs,
+    dismissedImageJobIds,
+    appId,
+    supportsGeneratedImageAttachments,
+  ]);
   const hasSuccessfulImageJobs = visibleSuccessfulImageJobs.length > 0;
 
   // Use the attachments hook
@@ -922,9 +929,11 @@ export function ChatInput({ chatId }: { chatId?: number }) {
           />
 
           {/* Chat image generation strip */}
-          <ChatImageGenerationStrip
-            onGenerateImage={handleOpenImageGenerator}
-          />
+          {supportsGeneratedImageAttachments ? (
+            <ChatImageGenerationStrip
+              onGenerateImage={handleOpenImageGenerator}
+            />
+          ) : null}
 
           {/* Use the DragDropOverlay component */}
           <DragDropOverlay isDraggingOver={isDraggingOver} />
@@ -1058,7 +1067,11 @@ export function ChatInput({ chatId }: { chatId?: number }) {
               showTokenBar={showTokenBar}
               toggleShowTokenBar={toggleShowTokenBar}
               appId={appId ?? undefined}
-              onGenerateImage={handleOpenImageGenerator}
+              onGenerateImage={
+                supportsGeneratedImageAttachments
+                  ? handleOpenImageGenerator
+                  : undefined
+              }
             />
           </div>
           {/* TokenBar is only displayed when showTokenBar is true */}
@@ -1067,12 +1080,14 @@ export function ChatInput({ chatId }: { chatId?: number }) {
       </div>
 
       {/* Image Generator Dialog */}
-      <ImageGeneratorDialog
-        open={imageGeneratorOpen}
-        onOpenChange={setImageGeneratorOpen}
-        defaultAppId={appId ?? undefined}
-        source="chat"
-      />
+      {supportsGeneratedImageAttachments ? (
+        <ImageGeneratorDialog
+          open={imageGeneratorOpen}
+          onOpenChange={setImageGeneratorOpen}
+          defaultAppId={appId ?? undefined}
+          source="chat"
+        />
+      ) : null}
     </>
   );
 }

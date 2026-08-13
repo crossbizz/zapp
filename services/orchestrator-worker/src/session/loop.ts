@@ -268,7 +268,7 @@ const UNTRUSTED_CONTEXT_KINDS = new Set<AssembledContext['sections'][number]['ki
   'evidence',
 ]);
 
-function initialMessages(
+export function assembleSessionInitialMessages(
   input: SessionInput,
   redact: (value: string) => string,
 ): {
@@ -488,7 +488,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
       const rawInputs = new Map<string, Readonly<Record<string, JsonValue>>>();
       let transcript: SessionTranscript;
       if (loaded === undefined) {
-        const initial = initialMessages(input, dependencies.redact);
+        const initial = assembleSessionInitialMessages(input, dependencies.redact);
         provenance = initial.provenance;
         initial.messages[0] = {
           role: 'system',
