@@ -293,6 +293,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-18 Reference-quality real API product shell and builder Manage
 - [x] WEB-18-FIX-2 Browser API CORS for the real product shell
 - [x] M6-GATE-FIX-1 Bound preview-proxy browser cleanup under cold-gate contention
+- [x] OPS-13-FIX-1 Narrow child-process runtime owners in Semgrep
 - [x] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures
 - [ ] V-2 Run repeat-change protocol ×5 per app (PRD §40.3), record metrics *(10-app/50-change corpus is valid; 50 live executions and immutable result evidence require a dedicated run budget/window beyond the 10-minute task cap)*
 - [ ] V-3 Verify all 22 P0 exit criteria (PRD §39) with evidence links *(matrix is structurally green: 17 verified, 4 candidates, 1 V-2-blocked, 0 failed; E1 and E8 have exact content-addressed integrated evidence and the live Stytch adapter gate is 5/5, while packaged cross-client/end-user sign-in and real GitHub/database-provider evidence is still required)*
