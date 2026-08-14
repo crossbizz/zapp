@@ -286,6 +286,18 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Task 8: Close two local review rounds, accessibility/responsive acceptance, the full local gate, one connected E1 run, and one credential-gated Stytch check.
 - [x] Commit sequence and verification commands match the binding execution expansion; final closure commit: `feat(web): complete real API product shell`.
 
+#### WEB-18-FIX-3 — immersive builder prompt and preview repair
+
+**Design:** `docs/superpowers/specs/2026-08-13-immersive-builder-repair-design.md`
+**Binding execution expansion:** `docs/superpowers/plans/2026-08-13-immersive-builder-repair.md`
+**Files:** The exact Create/Modify lists in the binding execution expansion. No desktop files are in scope.
+
+- [ ] **Prompt feedback:** an API-accepted prompt is immediately visible with a truthful queued/running state before the first SSE event; the durable `message.user` event reconciles without duplication; failures retain the input and retry identity.
+- [ ] **Immersive layout:** the builder owns the full viewport, uses a compact header and bounded conversation column, preserves resizing/Mission Control/responsive panes, and removes the nested product-sidebar/mode-switcher hierarchy.
+- [ ] **Preview hierarchy:** the preview remains the dominant surface with one compact toolbar, a fill-height stage, and working route/device/open/refresh/share/select/console/error flows.
+- [ ] **Verify/review/ship:** focused and full web gates, accessibility/responsive browser acceptance, full-stack authenticated prompt-to-preview verification, repository verification, exact-head push, and green CI/Security.
+- [ ] Commit: `fix(web): repair immersive builder prompt and preview flow`
+
 ---
 
 ## Testing strategy
