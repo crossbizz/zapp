@@ -83,6 +83,15 @@ Routes: `POST /v1/organizations`, `GET /v1/organizations`, `PATCH /v1/organizati
 - [x] **Step 2:** Implement; org creation seeds `plan="trial"` and creates the paired Stytch Organization via AuthPort (`organization_id` stored on the org row; failure → org creation rolls back); invites are single-use tokens (7 d expiry) stored hashed.
 - [x] **Step 3:** Commit: `feat(control-api): organizations, memberships, invites, RBAC matrix`
 
+#### CP-3-FIX-1 — self-service organization bootstrap on first login
+
+**Files:** Create: `src/auth/default-organization.ts`. Modify: `src/auth/port.ts`, `src/auth/stytch.ts`, `src/auth/users.ts`, `src/routes/auth.ts`, `test/stytch.test.ts`, `test/integration/auth.test.ts`, `test/integration/audit.test.ts`, `test/integration/orgs.test.ts`, `test/integration/tenant-isolation.test.ts`, `tasks/todo.md`, this plan.
+
+- [x] **RED/provider:** replace the org-less discovery rejection assertion with a failing adapter test proving that Stytch's discovery-organization endpoint receives the intermediate session, a user-prefixed organization name, a collision-safe slug, and the configured session lifetime, and that its authenticated member becomes the returned identity.
+- [x] **RED/database:** add failing PostgreSQL login coverage proving that first login creates exactly one `trial` organization plus one active Owner membership, `/v1/me` exposes it, and repeated login does not create another organization or membership.
+- [x] **GREEN:** make org-less Stytch discovery create-and-authenticate the user's organization; make the database user upsert transactionally ensure a default organization and active Owner membership for users with no live membership. Use `<user name>'s Workspace` and a stable, collision-safe slug. Existing memberships remain unchanged.
+- [x] **Verify/review/ship:** run focused control-api unit and integration suites, package lint/typecheck, `pnpm verify`, one Critical/Important review round (exit: zero Critical/Important), record the execution log, commit `fix(control-api): bootstrap organization on first login`, push `main`, and confirm exact-head GitHub CI/Security green. Run the real Stytch acceptance gate once at final acceptance; do not create persistent provider test fixtures outside the interactive sign-in flow.
+
 ### Task CP-4: Tenant context plugin + isolation suite v1
 
 **Files:** Create: `src/plugins/tenant.ts`, `test/integration/tenant-isolation.test.ts`
@@ -436,3 +445,4 @@ Execution expansion (2026-08-12):
 - 2026-08-12 CP-23 done — Added keyed typed card responses, run-scoped specification/plan projections, SHA-verified 64-KiB artifact reads, and deterministic SDK routes; no provider call.
 - 2026-08-12 CP-25 done — Added presentation-only template APIs and exact-slug Remix creation with server-owned seeding and idempotent replay; no provider call.
 - 2026-08-12 CP-27 done — Added bounded authenticated desktop-notification cursor replay over the existing strict projection and preference boundary, with atomic Redis cursor append, per-user/tenant isolation, reconnect guidance, and regenerated SDK; no provider call.
+- 2026-08-13 CP-3-FIX-1 done — Self-service Stytch discovery and transactional default workspace bootstrap shipped; updated dependent org/audit/isolation fixtures for the new login invariant.

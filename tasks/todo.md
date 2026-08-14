@@ -21,6 +21,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-1 Fastify skeleton + request context
 - [x] CP-2 Stytch B2B auth + device flow (AuthPort)
 - [x] CP-3 Orgs, memberships, invites, RBAC matrix
+- [x] CP-3-FIX-1 Self-service organization bootstrap on first login
 - [x] CP-4 Tenant context + isolation suite v1
 - [x] CP-5 Audit + idempotency + rate limits
 - [x] CP-6 Projects/repos/branches/environments CRUD

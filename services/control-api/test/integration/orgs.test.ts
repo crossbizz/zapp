@@ -180,6 +180,8 @@ describe.skipIf(!hasDatabase)('organizations, against PostgreSQL', () => {
     it('writes the organization and the creator’s Owner membership', async () => {
       port.organizationCreateFails = false;
       const headers = await signIn();
+      const organizationCountBefore = await count('organizations');
+      const membershipCountBefore = await count('memberships');
 
       const response = await app.inject({
         method: 'POST',
@@ -190,13 +192,18 @@ describe.skipIf(!hasDatabase)('organizations, against PostgreSQL', () => {
 
       expect(response.statusCode, response.body).toBe(201);
       const rows = await database.db.select().from(organizations);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ slug: 'acme-rockets', plan: 'trial' });
-      expect(await count('memberships')).toBe(1);
+      expect(rows).toHaveLength(organizationCountBefore + 1);
+      expect(rows.find((row) => row.slug === 'acme-rockets')).toMatchObject({
+        slug: 'acme-rockets',
+        plan: 'trial',
+      });
+      expect(await count('memberships')).toBe(membershipCountBefore + 1);
     });
 
     it('persists nothing when the provider refuses', async () => {
       const headers = await signIn();
+      const organizationCountBefore = await count('organizations');
+      const membershipCountBefore = await count('memberships');
       port.organizationCreateFails = true;
 
       const response = await app.inject({
@@ -207,8 +214,8 @@ describe.skipIf(!hasDatabase)('organizations, against PostgreSQL', () => {
       });
 
       expect(response.statusCode).toBe(502);
-      expect(await count('organizations')).toBe(0);
-      expect(await count('memberships')).toBe(0);
+      expect(await count('organizations')).toBe(organizationCountBefore);
+      expect(await count('memberships')).toBe(membershipCountBefore);
       port.organizationCreateFails = false;
     });
   });

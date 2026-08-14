@@ -1,5 +1,6 @@
 import { B2BClient, envs } from 'stytch';
 
+import { defaultOrganizationForIdentity } from './default-organization.js';
 import { AuthPortError, type AuthIdentity, type AuthPort } from './port.js';
 
 /**
@@ -189,6 +190,13 @@ interface DiscoveredLike {
   readonly organization?: { readonly organization_id: string };
 }
 
+interface DiscoveryLike {
+  readonly intermediate_session_token: string;
+  readonly email_address: string;
+  readonly full_name?: string;
+  readonly discovered_organizations: readonly DiscoveredLike[];
+}
+
 /**
  * Turns any provider failure into an `AuthPortError` with *our* wording. Stytch
  * error text quotes the request that failed, and the request here carries a
@@ -210,8 +218,8 @@ async function guard<T>(
     return await run();
   } catch (error) {
     if (error instanceof AuthPortError) {
-      // Our own refusal (`organization_required`, `authentication_incomplete`),
-      // raised from inside the operation. Stytch did not fail; nothing to sort.
+      // Our own refusal (`authentication_incomplete`), raised from inside the
+      // operation. Stytch did not fail; nothing to sort.
       throw error;
     }
     report(classifyStytchFailure(error, name));
@@ -221,9 +229,8 @@ async function guard<T>(
 
 /**
  * The organization to sign in to: one the member is already authenticated for
- * if there is one, otherwise the first they are eligible to join. Anything more
- * opinionated — remembering a choice, prompting for one — is CP-3's, which owns
- * organization selection and creation.
+ * if there is one, otherwise the first they are eligible to join. An empty
+ * result is handled by the self-service creation branch in `exchangeCode`.
  */
 function pickOrganization(discovered: readonly DiscoveredLike[]): string | undefined {
   const authenticated = discovered.find(
@@ -291,16 +298,32 @@ export function createStytchAuthPort(
             discovery_oauth_token: code,
           });
 
-          const organizationId = pickOrganization(discovery.discovered_organizations);
+          const discovered = discovery as DiscoveryLike;
+          const organizationId = pickOrganization(discovered.discovered_organizations);
           if (organizationId === undefined) {
-            throw new AuthPortError(
-              'organization_required',
-              'This account does not belong to an organization yet.',
-            );
+            const organization = defaultOrganizationForIdentity({
+              email: discovered.email_address,
+              ...(discovered.full_name === undefined
+                ? {}
+                : { displayName: discovered.full_name }),
+            });
+            const created = await client.discovery.organizations.create({
+              intermediate_session_token: discovered.intermediate_session_token,
+              organization_name: organization.name,
+              organization_slug: organization.slug,
+              session_duration_minutes: STYTCH_SESSION_DURATION_MINUTES,
+            });
+            if (!created.member_authenticated) {
+              throw new AuthPortError(
+                'authentication_incomplete',
+                'Sign-in needs another verification step.',
+              );
+            }
+            return toIdentity(created.member);
           }
 
           const exchanged = await client.discovery.intermediateSessions.exchange({
-            intermediate_session_token: discovery.intermediate_session_token,
+            intermediate_session_token: discovered.intermediate_session_token,
             organization_id: organizationId,
             session_duration_minutes: STYTCH_SESSION_DURATION_MINUTES,
           });

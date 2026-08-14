@@ -4,7 +4,6 @@ import { ApiErrorSchema, newId } from '@zapp/contracts';
 import {
   agentEvents,
   agentRuns,
-  auditEvents,
   branches,
   nextEventSequence,
   projectContracts,
@@ -328,6 +327,15 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
     };
   }
 
+  /** Retires the personal workspace when this fixture assigns a different role. */
+  async function retireBootstrapMembership(member: Member): Promise<void> {
+    await database.sql`
+      update memberships
+      set status = 'removed'
+      where user_id = ${member.userId} and status = 'active'
+    `;
+  }
+
   /** `member`'s headers, naming `organizationId` as the tenant for the request. */
   function as(member: Member, organizationId?: string): Record<string, string> {
     return organizationId === undefined
@@ -380,28 +388,27 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
     const pending = await signIn(`pending@${slug}.test`);
 
     const now = new Date();
-    const created = await store.create({
-      name: slug,
-      slug,
-      creatorUserId: owner.userId,
-      now,
-      link: () => Promise.resolve({ externalOrgId: `external-${slug}` }),
-      audit: noAudit,
-    });
-    const organizationId = created.organization.id;
-    const auditEventId = newId('aud');
-    const auditEventIds = [auditEventId];
-    await database.db.insert(auditEvents).values({
-      id: auditEventId,
-      organizationId,
-      actorType: 'user',
-      actorId: owner.userId,
-      action: 'organization.created',
-      targetType: 'organization',
-      targetId: organizationId,
-      metadataJson: { seeded: true },
-      occurredAt: EVENT_TIME,
-    });
+    const [bootstrap] = await database.sql<{ organization_id: string }[]>`
+      select organization_id
+      from memberships
+      where user_id = ${owner.userId} and status = 'active'
+    `;
+    if (bootstrap === undefined) throw new Error(`sign-in created no workspace for ${owner.email}`);
+    const organizationId = bootstrap.organization_id;
+    await database.sql`
+      update organizations set name = ${slug}, slug = ${slug} where id = ${organizationId}
+    `;
+    const auditRows = await database.sql<{ id: string }[]>`
+      select id from audit_events
+      where organization_id = ${organizationId} and action = 'organization.created'
+    `;
+    const auditEventIds = auditRows.map((row) => row.id);
+
+    await Promise.all([
+      retireBootstrapMembership(builder),
+      retireBootstrapMembership(viewer),
+      retireBootstrapMembership(pending),
+    ]);
     await store.addMember({
       organizationId,
       userId: builder.userId,
@@ -563,7 +570,9 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
     b = await seedTenant('beta');
 
     nomad = await signIn('nomad@nowhere.test');
+    await retireBootstrapMembership(nomad);
     bridge = await signIn('bridge@both.test');
+    await retireBootstrapMembership(bridge);
     const now = new Date();
     await store.addMember({
       organizationId: a.organizationId,

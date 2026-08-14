@@ -172,13 +172,16 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
     const acme = await found();
 
     const written = await rows();
-    expect(written).toHaveLength(1);
-    expect(written[0]).toMatchObject({
+    const created = written.filter(
+      (row) => row.action === 'organization.created' && row.target_id === acme.id,
+    );
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
       action: 'organization.created',
       actor_id: acme.userId,
       target_id: acme.id,
     });
-    expect(written[0]?.metadata_json).toMatchObject({ slug: 'acme-rockets' });
+    expect(created[0]?.metadata_json).toMatchObject({ slug: 'acme-rockets' });
   });
 
   it('delivers a detached completion audit exactly once across retries', async () => {
@@ -411,6 +414,8 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
     // orphaned by a failed transaction would be a trail describing something
     // that never happened — and a trail you would believe.
     const alice = await signIn(ALICE);
+    const auditCountBefore = await count('audit_events');
+    const organizationCountBefore = await count('organizations');
 
     await expect(
       store.create({
@@ -428,12 +433,14 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
       }),
     ).rejects.toBe(AUDIT_FAILED);
 
-    expect(await count('audit_events')).toBe(0);
-    expect(await count('organizations')).toBe(0);
+    expect(await count('audit_events')).toBe(auditCountBefore);
+    expect(await count('organizations')).toBe(organizationCountBefore);
   });
 
   it('refuses the mutation when the row cannot be written', async () => {
     const alice = await signIn(ALICE);
+    const organizationCountBefore = await count('organizations');
+    const auditCountBefore = await count('audit_events');
     auditFails = true;
 
     const response = await app.inject({
@@ -446,8 +453,8 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
     // The whole request fails rather than succeeding unrecorded, and nothing
     // survives it.
     expect(response.statusCode).toBe(500);
-    expect(await count('organizations')).toBe(0);
-    expect(await count('audit_events')).toBe(0);
+    expect(await count('organizations')).toBe(organizationCountBefore);
+    expect(await count('audit_events')).toBe(auditCountBefore);
   });
 
   it('keeps a project and its row together, or neither', async () => {
@@ -597,7 +604,12 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
       headers: bob.headers,
     });
     expect(failed.statusCode).toBe(500);
-    expect(await database.sql`select 1 from memberships where user_id = ${bob.userId}`).toEqual([]);
+    expect(
+      await database.sql`
+        select 1 from memberships
+         where organization_id = ${acme.id} and user_id = ${bob.userId}
+      `,
+    ).toEqual([]);
 
     auditFails = false;
     const retried = await app.inject({
@@ -616,10 +628,11 @@ describe.skipIf(!hasDatabase)('the audit trail, against PostgreSQL', () => {
     // exports no update and no delete for the table. Both halves matter: a
     // correction is another row, never an edit.
     await found();
+    const auditCountBefore = await count('audit_events');
 
     await expect(database.sql`delete from audit_events`).rejects.toThrow();
     await expect(database.sql`update audit_events set action = 'tampered'`).rejects.toThrow();
-    expect(await count('audit_events')).toBe(1);
+    expect(await count('audit_events')).toBe(auditCountBefore);
   });
 
   /** One well-formed record, for the tests that write through the sink directly. */

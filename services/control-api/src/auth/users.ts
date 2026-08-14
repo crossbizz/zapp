@@ -1,16 +1,17 @@
 import { newId } from '@zapp/contracts';
-import { users, type Database } from '@zapp/db';
-import { eq } from 'drizzle-orm';
+import { auditEvents, memberships, organizations, users, type Database } from '@zapp/db';
+import { and, eq, or } from 'drizzle-orm';
 
 import { allowedModelsFromPolicy } from '../orgs/model-policy.js';
+import { defaultOrganizationForIdentity } from './default-organization.js';
 import type { AuthIdentity } from './port.js';
 
 /**
  * The identity half of `packages/db`, as the auth routes use it.
  *
  * A port rather than a raw `Database` so route tests need no PostgreSQL, and so
- * the two statements a login actually performs stay visible in one file instead
- * of being spread through handlers.
+ * the complete first-login transaction stays visible in one file instead of
+ * being spread through handlers.
  */
 
 export interface SessionUser {
@@ -49,53 +50,111 @@ export interface UserStore {
 }
 
 /**
- * PRD §23.1 gives `users` no provider column, so **email is the link**: the
- * provider's `externalId` identifies the person to Stytch, and the address it
- * asserts identifies them to us. That is sound precisely because the address
- * comes from the provider's verified assertion and never from a request — but
- * it is the reason a provider that stops verifying email addresses would be a
- * schema change here, not a configuration one.
+ * The provider id is the durable link. Email is only the one-time fallback for
+ * an invited or legacy user whose row has not been linked yet; a row already
+ * linked to another provider member is never claimed by matching its address.
  */
 export function createDbUserStore(db: Database): UserStore {
   return {
     async upsertFromIdentity(identity, now) {
-      const [inserted] = await db
-        .insert(users)
-        .values({
-          id: newId('user'),
-          email: identity.email,
-          displayName: identity.displayName,
-          avatarUrl: identity.avatarUrl ?? null,
-          lastSeenAt: now,
-        })
-        .onConflictDoNothing({ target: users.email })
-        .returning({
+      return await db.transaction(async (tx) => {
+        const userColumns = {
           id: users.id,
           email: users.email,
           displayName: users.displayName,
           avatarUrl: users.avatarUrl,
-        });
+          externalId: users.externalId,
+        } as const;
+        const [inserted] = await tx
+          .insert(users)
+          .values({
+            id: newId('user'),
+            externalId: identity.externalId,
+            email: identity.email,
+            displayName: identity.displayName,
+            avatarUrl: identity.avatarUrl ?? null,
+            lastSeenAt: now,
+          })
+          .onConflictDoNothing()
+          .returning(userColumns);
 
-      if (inserted !== undefined) return { user: inserted, created: true };
+        let user: SessionUser;
+        const created = inserted !== undefined;
+        if (inserted !== undefined) {
+          user = inserted;
+        } else {
+          const candidates = await tx
+            .select(userColumns)
+            .from(users)
+            .where(or(eq(users.externalId, identity.externalId), eq(users.email, identity.email)))
+            .for('update');
+          const byExternalId = candidates.find((candidate) => candidate.externalId === identity.externalId);
+          const byEmail = candidates.find((candidate) => candidate.email === identity.email);
+          if (
+            (byExternalId !== undefined && byEmail !== undefined && byExternalId.id !== byEmail.id) ||
+            (byExternalId === undefined && byEmail?.externalId !== null)
+          ) {
+            throw new Error('provider identity conflicts with an existing user');
+          }
+          const existing = byExternalId ?? byEmail;
+          if (existing === undefined) {
+            throw new Error('user upsert returned no row');
+          }
 
-      const [updated] = await db
-        .update(users)
-        .set({
-          displayName: identity.displayName,
-          avatarUrl: identity.avatarUrl ?? null,
-          lastSeenAt: now,
-        })
-        .where(eq(users.email, identity.email))
-        .returning({
-          id: users.id,
-          email: users.email,
-          displayName: users.displayName,
-          avatarUrl: users.avatarUrl,
-        });
-      if (updated === undefined) {
-        throw new Error('user upsert returned no row');
-      }
-      return { user: updated, created: false };
+          const [updated] = await tx
+            .update(users)
+            .set({
+              externalId: identity.externalId,
+              email: identity.email,
+              displayName: identity.displayName,
+              avatarUrl: identity.avatarUrl ?? null,
+              lastSeenAt: now,
+            })
+            .where(eq(users.id, existing.id))
+            .returning(userColumns);
+          if (updated === undefined) {
+            throw new Error('user upsert returned no row');
+          }
+          user = updated;
+        }
+
+        const [activeMembership] = await tx
+          .select({ organizationId: memberships.organizationId })
+          .from(memberships)
+          .where(and(eq(memberships.userId, user.id), eq(memberships.status, 'active')))
+          .limit(1);
+        if (activeMembership === undefined) {
+          const organization = defaultOrganizationForIdentity(identity);
+          const organizationId = newId('org');
+          await tx.insert(organizations).values({
+            id: organizationId,
+            name: organization.name,
+            slug: organization.slug,
+            plan: 'trial',
+            createdAt: now,
+          });
+          await tx.insert(memberships).values({
+            organizationId,
+            userId: user.id,
+            role: 'owner',
+            status: 'active',
+            createdAt: now,
+          });
+          await tx.insert(auditEvents).values({
+            id: newId('aud'),
+            organizationId,
+            actorType: 'user',
+            actorId: user.id,
+            action: 'organization.created',
+            targetType: 'organization',
+            targetId: organizationId,
+            metadataJson: { slug: organization.slug, source: 'self_service_login' },
+            occurredAt: now,
+          });
+        }
+
+        return { user, created };
+      });
     },
 
     async profile(userId) {

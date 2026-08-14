@@ -27,8 +27,6 @@ export interface AuthIdentity {
 export type AuthPortErrorCode =
   /** The code was never issued, has expired, or the provider rejected it. */
   | 'exchange_failed'
-  /** The person authenticated, but belongs to no organization to sign in to (CP-3 owns the fix). */
-  | 'organization_required'
   /** The provider wants another factor before it will call this a session. */
   | 'authentication_incomplete'
   /** The provider refused to create the organization. */

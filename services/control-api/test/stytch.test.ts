@@ -34,6 +34,7 @@ const MEMBER = {
 interface MockCalls {
   readonly authenticate: ReturnType<typeof vi.fn>;
   readonly exchange: ReturnType<typeof vi.fn>;
+  readonly createDiscoveredOrganization: ReturnType<typeof vi.fn>;
   readonly authenticateJwt: ReturnType<typeof vi.fn>;
   readonly create: ReturnType<typeof vi.fn>;
 }
@@ -61,6 +62,18 @@ function mockClient(overrides: Partial<Record<keyof MockCalls, unknown>> = {}): 
       .mockResolvedValue(
         overrides.exchange ?? { member_authenticated: true, member: MEMBER, session_jwt: 'jwt-1' },
       ),
+    createDiscoveredOrganization: vi.fn().mockResolvedValue(
+      overrides.createDiscoveredOrganization ?? {
+        member_authenticated: true,
+        member: MEMBER,
+        organization: {
+          organization_id: 'organization-test-self-service',
+          organization_name: "Alice Example's Workspace",
+          organization_slug: 'alice-example-workspace-e383094d4770',
+        },
+        session_jwt: 'jwt-self-service',
+      },
+    ),
     authenticateJwt: vi
       .fn()
       .mockResolvedValue(
@@ -77,7 +90,10 @@ function mockClient(overrides: Partial<Record<keyof MockCalls, unknown>> = {}): 
     calls,
     client: {
       oauth: { discovery: { authenticate: calls.authenticate } },
-      discovery: { intermediateSessions: { exchange: calls.exchange } },
+      discovery: {
+        intermediateSessions: { exchange: calls.exchange },
+        organizations: { create: calls.createDiscoveredOrganization },
+      },
       sessions: { authenticateJwt: calls.authenticateJwt },
       organizations: { create: calls.create },
     } as unknown as StytchClientLike,
@@ -190,20 +206,45 @@ describe('exchangeCode', () => {
     });
   });
 
-  it('reports organization_required when discovery finds nowhere to sign in', async () => {
-    const { client } = mockClient({
+  it('creates and authenticates a user-prefixed organization when discovery finds none', async () => {
+    const newMember = {
+      member_id: 'member-test-nora',
+      email_address: 'nora@acme.test',
+      name: 'Nora New',
+      oauth_registrations: [],
+    };
+    const { client, calls } = mockClient({
       authenticate: {
         intermediate_session_token: 'ist-3',
-        email_address: 'nobody@acme.test',
+        email_address: 'nora@acme.test',
+        full_name: 'Nora New',
         discovered_organizations: [],
+      },
+      createDiscoveredOrganization: {
+        member_authenticated: true,
+        member: newMember,
+        organization: {
+          organization_id: 'organization-test-nora',
+          organization_name: "Nora New's Workspace",
+          organization_slug: 'nora-new-workspace-08dd54604eb2',
+        },
+        session_jwt: 'jwt-nora',
       },
     });
     const port = createStytchAuthPort(CONFIG, client);
 
-    await expect(port.exchangeCode('token')).rejects.toMatchObject({
-      name: 'AuthPortError',
-      code: 'organization_required',
+    await expect(port.exchangeCode('token')).resolves.toEqual({
+      externalId: 'member-test-nora',
+      email: 'nora@acme.test',
+      displayName: 'Nora New',
     });
+    expect(calls.createDiscoveredOrganization).toHaveBeenCalledWith({
+      intermediate_session_token: 'ist-3',
+      organization_name: "Nora New's Workspace",
+      organization_slug: 'nora-new-workspace-08dd54604eb2',
+      session_duration_minutes: 60,
+    });
+    expect(calls.exchange).not.toHaveBeenCalled();
   });
 
   it('reports authentication_incomplete when the exchange still wants a second factor', async () => {
@@ -354,9 +395,9 @@ describe('fault reporting', () => {
   });
 
   it('says nothing when the failure was ours rather than the provider’s', async () => {
-    // `organization_required` is raised inside the guarded operation by this
-    // adapter. Stytch answered fine; there is no provider fault to classify,
-    // and reporting one would put noise in front of the real ones.
+    // `authentication_incomplete` is raised inside the guarded operation by
+    // this adapter. Stytch answered fine; there is no provider fault to
+    // classify, and reporting one would put noise in front of the real ones.
     const faults: StytchFault[] = [];
     const { client } = mockClient({
       authenticate: {
@@ -364,11 +405,15 @@ describe('fault reporting', () => {
         email_address: 'nobody@acme.test',
         discovered_organizations: [],
       },
+      createDiscoveredOrganization: {
+        member_authenticated: false,
+        intermediate_session_token: 'ist-6',
+      },
     });
     const port = createStytchAuthPort({ ...CONFIG, onFault: (f) => faults.push(f) }, client);
 
     await expect(port.exchangeCode('token')).rejects.toMatchObject({
-      code: 'organization_required',
+      code: 'authentication_incomplete',
     });
     expect(faults).toEqual([]);
   });

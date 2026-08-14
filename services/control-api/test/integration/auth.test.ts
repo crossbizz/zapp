@@ -1,5 +1,6 @@
 import { newId } from '@zapp/contracts';
-import { memberships, organizations } from '@zapp/db';
+import { memberships, organizations, users } from '@zapp/db';
+import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp, type AppInstance } from '../../src/app.js';
@@ -9,7 +10,12 @@ import { createStytchAuthPort, type StytchFault } from '../../src/auth/stytch.js
 import { createDbUserStore } from '../../src/auth/users.js';
 import { credentialGate } from '../support/credentials.js';
 import { FakeAuthPort } from '../support/fake-auth-port.js';
-import { TEST_AUTH_CONFIG, cookieJar, cookiesOf } from '../support/harness.js';
+import {
+  TEST_AUTH_CONFIG,
+  TEST_RATE_LIMITS,
+  cookieJar,
+  cookiesOf,
+} from '../support/harness.js';
 import { hasDatabase, setUpTestDatabase, type TestDatabase } from './helpers.js';
 
 /**
@@ -42,6 +48,7 @@ describe.skipIf(!hasDatabase)('sign-in, against PostgreSQL', () => {
     app = buildApp({
       logger: false,
       auth: { port, users: createDbUserStore(database.db), config: TEST_AUTH_CONFIG },
+      limits: { config: TEST_RATE_LIMITS },
     });
     await app.ready();
   }, 120_000);
@@ -70,23 +77,102 @@ describe.skipIf(!hasDatabase)('sign-in, against PostgreSQL', () => {
     return cookiesOf(callback.headers['set-cookie']);
   }
 
-  it('creates the user row on a first login', async () => {
-    await login(ALICE, 'first-login');
+  async function beginLogin(identity: AuthIdentity, code: string) {
+    const start = await app.inject({ method: 'GET', url: '/v1/auth/login' });
+    const state = new URL(start.headers.location as string).searchParams.get('state') ?? '';
+    port.issueCode(code, identity);
+    return {
+      method: 'GET' as const,
+      url: `/v1/auth/callback?code=${code}&state=${encodeURIComponent(state)}`,
+      headers: { cookie: cookieJar(cookiesOf(start.headers['set-cookie'])) },
+    };
+  }
+
+  it('creates the user, trial organization, and active Owner membership on a first login', async () => {
+    const cookies = await login(ALICE, 'first-login');
 
     const rows = await database.db.query.users.findMany();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
+      externalId: 'member-test-alice',
       email: 'alice@acme.test',
       displayName: 'Alice Example',
       avatarUrl: 'https://cdn.fake.test/alice.png',
     });
     expect(rows[0]?.id).toMatch(/^user_[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(rows[0]?.lastSeenAt).toBeInstanceOf(Date);
+
+    const organizationRows = await database.db.query.organizations.findMany();
+    expect(organizationRows).toHaveLength(1);
+    expect(organizationRows[0]).toMatchObject({
+      name: "Alice Example's Workspace",
+      slug: 'alice-example-workspace-e383094d4770',
+      plan: 'trial',
+    });
+
+    const membershipRows = await database.db.query.memberships.findMany();
+    expect(membershipRows).toEqual([
+      expect.objectContaining({
+        organizationId: organizationRows[0]?.id,
+        userId: rows[0]?.id,
+        role: 'owner',
+        status: 'active',
+      }),
+    ]);
+
+    expect(await database.db.query.auditEvents.findMany()).toEqual([
+      expect.objectContaining({
+        organizationId: organizationRows[0]?.id,
+        actorType: 'user',
+        actorId: rows[0]?.id,
+        action: 'organization.created',
+        targetType: 'organization',
+        targetId: organizationRows[0]?.id,
+        metadataJson: {
+          slug: 'alice-example-workspace-e383094d4770',
+          source: 'self_service_login',
+        },
+      }),
+    ]);
+
+    const me = await app.inject({
+      method: 'GET',
+      url: '/v1/me',
+      headers: { cookie: `${SESSION_COOKIE}=${cookies.get(SESSION_COOKIE) ?? ''}` },
+    });
+    expect(me.statusCode).toBe(200);
+    expect(me.json()).toMatchObject({
+      memberships: [
+        {
+          organization: {
+            id: organizationRows[0]?.id,
+            name: "Alice Example's Workspace",
+            slug: 'alice-example-workspace-e383094d4770',
+          },
+          role: 'owner',
+          status: 'active',
+        },
+      ],
+    });
   });
 
-  it('links a second login to the same row and refreshes the profile', async () => {
+  it('preserves an existing active membership while refreshing the profile', async () => {
     await login(ALICE, 'first-login');
     const [created] = await database.db.query.users.findMany();
+    const [organization] = await database.db.query.organizations.findMany();
+    await database.db
+      .update(organizations)
+      .set({ name: 'Existing Team', slug: 'existing-team' })
+      .where(eq(organizations.id, organization?.id ?? ''));
+    await database.db
+      .update(memberships)
+      .set({ role: 'builder' })
+      .where(
+        and(
+          eq(memberships.organizationId, organization?.id ?? ''),
+          eq(memberships.userId, created?.id ?? ''),
+        ),
+      );
 
     await login(
       { ...ALICE, displayName: 'Alice Renamed', avatarUrl: 'https://cdn.fake.test/new.png' },
@@ -100,17 +186,107 @@ describe.skipIf(!hasDatabase)('sign-in, against PostgreSQL', () => {
       displayName: 'Alice Renamed',
       avatarUrl: 'https://cdn.fake.test/new.png',
     });
+    expect(await database.db.query.organizations.findMany()).toHaveLength(1);
+    expect(await database.db.query.memberships.findMany()).toEqual([
+      expect.objectContaining({
+        organizationId: organization?.id,
+        userId: created?.id,
+        role: 'builder',
+        status: 'active',
+      }),
+    ]);
+    expect(await database.db.query.auditEvents.findMany()).toHaveLength(1);
+  });
+
+  it('serializes concurrent first-login callbacks into one account and workspace', async () => {
+    const first = await beginLogin(ALICE, 'concurrent-first');
+    const second = await beginLogin(ALICE, 'concurrent-second');
+
+    const responses = await Promise.all([app.inject(first), app.inject(second)]);
+
+    expect(responses.map((response) => response.statusCode)).toEqual([302, 302]);
+    expect(await database.db.query.users.findMany()).toHaveLength(1);
+    expect(await database.db.query.organizations.findMany()).toHaveLength(1);
+    expect(await database.db.query.memberships.findMany()).toHaveLength(1);
+    expect(await database.db.query.auditEvents.findMany()).toHaveLength(1);
+  });
+
+  it('claims a matching unlinked user row and gives it a workspace', async () => {
+    const userId = newId('user');
+    await database.db.insert(users).values({
+      id: userId,
+      externalId: null,
+      email: ALICE.email,
+      displayName: 'Invited Alice',
+    });
+
+    await login(ALICE, 'claim-unlinked');
+
+    expect(await database.db.query.users.findMany()).toEqual([
+      expect.objectContaining({ id: userId, externalId: ALICE.externalId, email: ALICE.email }),
+    ]);
+    expect(await database.db.query.organizations.findMany()).toHaveLength(1);
+    expect(await database.db.query.memberships.findMany()).toEqual([
+      expect.objectContaining({ userId, role: 'owner', status: 'active' }),
+    ]);
+  });
+
+  it('refuses to claim an email already linked to a different provider member', async () => {
+    const userId = newId('user');
+    await database.db.insert(users).values({
+      id: userId,
+      externalId: 'member-someone-else',
+      email: ALICE.email,
+      displayName: 'Existing Alice',
+    });
+    const callback = await beginLogin(ALICE, 'conflicting-link');
+
+    const response = await app.inject(callback);
+
+    expect(response.statusCode).toBe(500);
+    expect(await database.db.query.users.findMany()).toEqual([
+      expect.objectContaining({
+        id: userId,
+        externalId: 'member-someone-else',
+        displayName: 'Existing Alice',
+      }),
+    ]);
+    expect(await database.db.query.organizations.findMany()).toEqual([]);
+    expect(await database.db.query.memberships.findMany()).toEqual([]);
+    expect(await database.db.query.auditEvents.findMany()).toEqual([]);
+  });
+
+  it('keeps the provider-linked account and workspace when its email changes', async () => {
+    await login(ALICE, 'original-email');
+    const [originalUser] = await database.db.query.users.findMany();
+    const [originalOrganization] = await database.db.query.organizations.findMany();
+
+    await login({ ...ALICE, email: 'alice.new@acme.test' }, 'new-email');
+
+    expect(await database.db.query.users.findMany()).toEqual([
+      expect.objectContaining({
+        id: originalUser?.id,
+        externalId: ALICE.externalId,
+        email: 'alice.new@acme.test',
+      }),
+    ]);
+    expect(await database.db.query.organizations.findMany()).toEqual([
+      expect.objectContaining({ id: originalOrganization?.id }),
+    ]);
+    expect(await database.db.query.memberships.findMany()).toHaveLength(1);
+    expect(await database.db.query.auditEvents.findMany()).toHaveLength(1);
   });
 
   it('answers /v1/me with the memberships that are actually in the tables', async () => {
     const cookies = await login(ALICE, 'first-login');
     const [user] = await database.db.query.users.findMany();
-    const organizationId = newId('org');
+    const [bootstrapOrganization] = await database.db.query.organizations.findMany();
+    const organizationId = bootstrapOrganization?.id ?? '';
     const removedOrganizationId = newId('org');
 
-    await database.db.insert(organizations).values([
-      {
-        id: organizationId,
+    await database.db
+      .update(organizations)
+      .set({
         name: 'Acme',
         slug: `acme-${organizationId}`,
         settingsJson: {
@@ -123,11 +299,23 @@ describe.skipIf(!hasDatabase)('sign-in, against PostgreSQL', () => {
             ],
           },
         },
-      },
-      { id: removedOrganizationId, name: 'Former', slug: `former-${removedOrganizationId}` },
-    ]);
+      })
+      .where(eq(organizations.id, organizationId));
+    await database.db
+      .update(memberships)
+      .set({ role: 'builder' })
+      .where(
+        and(
+          eq(memberships.organizationId, organizationId),
+          eq(memberships.userId, user?.id ?? ''),
+        ),
+      );
+    await database.db.insert(organizations).values({
+      id: removedOrganizationId,
+      name: 'Former',
+      slug: `former-${removedOrganizationId}`,
+    });
     await database.db.insert(memberships).values([
-      { organizationId, userId: user?.id ?? '', role: 'builder', status: 'active' },
       {
         organizationId: removedOrganizationId,
         userId: user?.id ?? '',

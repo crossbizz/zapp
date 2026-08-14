@@ -236,9 +236,6 @@ export function registerAuthRoutes(app: AppInstance, deps: AuthRoutesDeps): void
       }
 
       const identity = await port.exchangeCode(code).catch((error: unknown) => {
-        if (error instanceof AuthPortError && error.code === 'organization_required') {
-          throw new ApiError('organization_required', 403, error.message);
-        }
         // Anything else the provider refused is, from here, one thing: this
         // person is not signed in. The reason stays in the log.
         request.log.info(
