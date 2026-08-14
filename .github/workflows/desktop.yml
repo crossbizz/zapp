@@ -40,7 +40,7 @@ jobs:
       # postinstall scripts (native rebuilds), so no push-capable token is left
       # behind in .git/config for them to pick up.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -286,7 +286,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -338,7 +338,7 @@ jobs:
       # persist-credentials: false for the same reason as the packaging job:
       # this runs repo code plus package postinstall scripts (native rebuilds).
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
