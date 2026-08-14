@@ -26,21 +26,21 @@ const GovernorAdmissionInputSchema = z
   })
   .strict();
 
-const GovernorClaimInputSchema = GovernorAdmissionInputSchema.extend({
+export const GovernorClaimInputSchema = GovernorAdmissionInputSchema.extend({
   requestedAt: z.date(),
   budgetMs: PositiveLimitSchema,
   globalLimit: PositiveLimitSchema,
   organizationLimit: PositiveLimitSchema,
 }).strict();
 
-const GovernorAdmissionDecisionSchema = z.discriminatedUnion('status', [
+export const GovernorAdmissionDecisionSchema = z.discriminatedUnion('status', [
   z
     .object({ status: z.enum(['admitted', 'replay']), deadlineAt: z.date() })
     .strict(),
   z.object({ status: z.literal('queued'), queuePosition: PositiveLimitSchema }).strict(),
 ]);
 
-const GovernorReleaseInputSchema = z
+export const GovernorReleaseInputSchema = z
   .object({
     workspaceId: idSchema('ws'),
     organizationId: idSchema('org'),
@@ -48,7 +48,7 @@ const GovernorReleaseInputSchema = z
   })
   .strict();
 
-const GovernorExpiredClaimSchema = GovernorAdmissionInputSchema.omit({
+export const GovernorExpiredClaimSchema = GovernorAdmissionInputSchema.omit({
   operationKey: true,
 })
   .extend({
@@ -56,11 +56,11 @@ const GovernorExpiredClaimSchema = GovernorAdmissionInputSchema.omit({
     leaseToken: z.string().min(1),
   })
   .strict();
-const GovernorTerminationCandidateSchema = GovernorExpiredClaimSchema.omit({
+export const GovernorTerminationCandidateSchema = GovernorExpiredClaimSchema.omit({
   leaseToken: true,
 });
 
-const ClaimExpiredInputSchema = z
+export const ClaimExpiredInputSchema = z
   .object({
     now: z.date(),
     ownerId: z.string().min(1),
@@ -69,7 +69,7 @@ const ClaimExpiredInputSchema = z
   })
   .strict();
 
-const ExpiredFenceInputSchema = z
+export const ExpiredFenceInputSchema = z
   .object({
     workspaceId: idSchema('ws'),
     leaseToken: z.string().min(1),
@@ -77,11 +77,11 @@ const ExpiredFenceInputSchema = z
   })
   .strict();
 
-const RenewExpiredInputSchema = ExpiredFenceInputSchema.omit({ operationKey: true })
+export const RenewExpiredInputSchema = ExpiredFenceInputSchema.omit({ operationKey: true })
   .extend({ leaseMs: PositiveLimitSchema })
   .strict();
 
-const OrganizationListInputSchema = z
+export const OrganizationListInputSchema = z
   .object({ organizationId: idSchema('org'), operationKey: OperationKeySchema })
   .strict();
 
@@ -102,11 +102,12 @@ const OrganizationLimitsSchema = z
   .object({ concurrentSandboxes: PositiveLimitSchema })
   .strict();
 
-type GovernorClaimInput = z.infer<typeof GovernorClaimInputSchema>;
-type GovernorReleaseInput = z.infer<typeof GovernorReleaseInputSchema>;
-type GovernorExpiredClaim = z.infer<typeof GovernorExpiredClaimSchema>;
-type GovernorTerminationCandidate = z.infer<typeof GovernorTerminationCandidateSchema>;
-type ExpiredFenceInput = z.infer<typeof ExpiredFenceInputSchema>;
+export type GovernorClaimInput = z.infer<typeof GovernorClaimInputSchema>;
+export type GovernorReleaseInput = z.infer<typeof GovernorReleaseInputSchema>;
+export type GovernorAdmissionDecision = z.infer<typeof GovernorAdmissionDecisionSchema>;
+export type GovernorExpiredClaim = z.infer<typeof GovernorExpiredClaimSchema>;
+export type GovernorTerminationCandidate = z.infer<typeof GovernorTerminationCandidateSchema>;
+export type ExpiredFenceInput = z.infer<typeof ExpiredFenceInputSchema>;
 type GovernorTerminateAllInput = z.infer<typeof GovernorTerminateAllInputSchema>;
 
 export interface GovernorCapacityPort {
@@ -114,20 +115,20 @@ export interface GovernorCapacityPort {
    * Atomically checks both limits, persists one deadline per tenant+run, and claims or
    * replays one workspace slot. Decisions remain replayable by operationKey after release.
    */
-  readonly claim: (input: GovernorClaimInput) => Promise<unknown>;
+  readonly claim: (input: GovernorClaimInput) => Promise<GovernorAdmissionDecision>;
   /** Idempotently removes one admitted workspace from both counters, retaining its decision. */
   readonly release: (input: GovernorReleaseInput) => Promise<void>;
   /** Claims expired rows with a renewable durable fence; never an in-memory lease. */
   readonly claimExpired: (
     input: z.infer<typeof ClaimExpiredInputSchema>,
-  ) => Promise<unknown>;
+  ) => Promise<readonly GovernorExpiredClaim[]>;
   readonly renewExpired: (input: z.infer<typeof RenewExpiredInputSchema>) => Promise<boolean>;
   readonly completeExpired: (input: ExpiredFenceInput) => Promise<void>;
   readonly releaseExpired: (input: ExpiredFenceInput) => Promise<void>;
   /** Returns active rows for exactly one organization. */
   readonly listOrganization: (
     input: z.infer<typeof OrganizationListInputSchema>,
-  ) => Promise<unknown>;
+  ) => Promise<readonly GovernorTerminationCandidate[]>;
 }
 
 export interface RunawayComputeGovernor {

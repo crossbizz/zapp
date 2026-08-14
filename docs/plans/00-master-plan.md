@@ -360,6 +360,22 @@ North star (PRD §37.1): **verified production releases per active org per month
 - [x] **Step 3:** Run the focused proof, control-api integration, lint/typecheck/build, and the exact protected push gate with no bypass; one review round exits with no correctness or structural-control finding.
 - [x] **Step 4:** Commit: `fix(gate): bound append-only reset proof`
 
+### M1-GATE-17 — Runnable local prompt-to-preview exit
+
+**Design:** `docs/superpowers/specs/2026-08-12-local-m1-runtime-design.md`
+**Binding execution expansion:** `docs/superpowers/plans/2026-08-12-local-m1-runtime.md`
+**Files:** The exact Create/Modify lists in Tasks 1–8 of the binding expansion. The expansion's pre-existing `M1-GATE-16` and `0028` labels are advanced to the next available tracker and migration identifiers here because both were assigned before execution.
+
+**Interfaces:** `sandboxCapacityAdmissions`, `createSandboxCapacityRepository`, `SandboxServiceEnvSchema`, `composeSandboxRuntime`, `runSandboxServer`, `createSandboxWorkspaceRuntime`, `createModelGatewaySessionGateway`, `createM1BuilderSessionRunner`, `RunWorkerEnvSchema`, `composeRunWorker`, `createLocalM1TemporalOrchestrator`, `loadLocalConfig`, `createProcessSupervisor`, `runLocal`, and `runM1Live`, exactly as defined by the binding expansion.
+
+- [ ] **Step 1:** Persist tenant-scoped sandbox capacity admission, expiry leasing, and exact-operation replay in PostgreSQL; compose it into the deployable sandbox service.
+- [ ] **Step 2:** Ship a real sandbox-service process with validated environment, locked Modal image, service boundaries, health, background reconciliation, and bounded shutdown.
+- [ ] **Step 3:** Bind the complete sandbox-backed `WorkspaceRuntime`, model-gateway-only session gateway, and code-owned M1 Builder tool/session composition.
+- [ ] **Step 4:** Ship the `agent-runs` Temporal worker and development-only M1 workflow profile without changing production routing.
+- [ ] **Step 5:** Add the fail-closed `pnpm local` supervisor, process smoke, live runner, and developer documentation.
+- [ ] **Step 6:** Run every focused command in the binding expansion, package lint/typecheck/build, credential-free repository verification, one capped review/fix round, and the single real Stytch/Anthropic/Modal prompt→preview→edit→restore gate.
+- [ ] **Step 7:** Commit the slices prescribed by the expansion, then close the tracker and execution log only with green live evidence; final commit `feat(local): ship runnable M1 prompt-to-preview`.
+
 - 2026-08-03: Plan set authored from PRD v1.1. Not yet executed.
 - 2026-08-07 M1-GATE-7 BLOCKED: serialization and its focused regression are green, but the complete local gate exposes a separate stale git-service unit assertion that still requires the disabled GitHub Actions live-backup job; M1-GATE-8 must move that proof to the local gate before this task can be signed off.
 - 2026-08-07 M1-GATE-8 BLOCKED: the structural local-gate repair, focused workflow test, git-service static checks, one adversarial fix round, and an earlier complete local gate are green; the final uncontaminated tracked-hook gate ran the live backup proof (1/1) and git-service integration (16/16) without skips, then exposed an unrelated deterministic control-api SSE failure where `uses matching media parameters before q as Accept specificity` received HTTP 500 instead of 200 (1 failed, 234 passed), so the task and tracker remain unchecked. Paper trail: `turbo.json` was added to Files during the review fix to prove every backup input crosses Turbo strict env mode; its existing declarations were sufficient, and the already-landed machine lock was retained while fixing inherited `CI=false`/`0` and pinning MinIO.

@@ -109,6 +109,7 @@ export {
 // PRD §23.4 — execution and evidence.
 export {
   activityIdempotency,
+  sandboxCapacityAdmissions,
   MAX_EVENT_PAYLOAD_BYTES,
   agentEvents,
   artifacts,
@@ -126,6 +127,8 @@ export {
   type NewVerificationResult,
   type NewWorkspace,
   type RunEventCounter,
+  type SandboxCapacityAdmission,
+  type NewSandboxCapacityAdmission,
   type TestCase,
   type TestRun,
   type VerificationResult,

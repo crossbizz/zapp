@@ -36,6 +36,7 @@ import { branches, projectTenantForeignKey, projects } from './projects.js';
 const WORKSPACE_STATUSES = WorkspaceStatusSchema.options;
 const WORKSPACE_PURPOSES = WorkspacePurposeSchema.options;
 const EVENT_VISIBILITIES = AgentEventVisibilitySchema.options;
+const SANDBOX_CAPACITY_DECISIONS = ['admitted', 'queued'] as const;
 
 /** PRD §14.4 payload ceiling: 64 KiB. Anything larger belongs in `artifacts` + object storage (master plan §5.2). */
 export const MAX_EVENT_PAYLOAD_BYTES = 65_536;
@@ -119,6 +120,67 @@ export const workspaces = pgTable(
     projectTenantForeignKey('workspaces', t.projectId, t.organizationId),
   ],
 );
+
+/** Durable global/tenant sandbox admission and expiry lease state. */
+export const sandboxCapacityAdmissions = pgTable(
+  'sandbox_capacity_admissions',
+  {
+    workspaceId: text('workspace_id')
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    organizationId: organizationId(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    runId: text('run_id').notNull(),
+    taskId: text('task_id').notNull(),
+    purpose: text('purpose', { enum: WORKSPACE_PURPOSES }).notNull(),
+    operationKey: text('operation_key').notNull(),
+    decision: text('decision', { enum: SANDBOX_CAPACITY_DECISIONS }).notNull(),
+    queuePosition: integer('queue_position'),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull(),
+    deadlineAt: timestamp('deadline_at', { withTimezone: true }),
+    active: boolean('active').notNull().default(false),
+    releasedAt: timestamp('released_at', { withTimezone: true }),
+    leaseOwnerId: text('lease_owner_id'),
+    leaseToken: text('lease_token'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('sandbox_capacity_operation_key_idx').on(t.operationKey),
+    index('sandbox_capacity_active_global_idx').on(t.active, t.deadlineAt, t.workspaceId),
+    index('sandbox_capacity_active_org_idx').on(
+      t.organizationId,
+      t.active,
+      t.requestedAt,
+      t.workspaceId,
+    ),
+    index('sandbox_capacity_expired_lease_idx').on(
+      t.active,
+      t.deadlineAt,
+      t.leaseExpiresAt,
+    ),
+    check('sandbox_capacity_decision_check', oneOf('decision', SANDBOX_CAPACITY_DECISIONS)),
+    check(
+      'sandbox_capacity_decision_shape_check',
+      sql`(
+        (${t.decision} = 'admitted' and ${t.deadlineAt} is not null and ${t.queuePosition} is null)
+        or
+        (${t.decision} = 'queued' and ${t.deadlineAt} is null and ${t.queuePosition} > 0 and not ${t.active})
+      )`,
+    ),
+    check(
+      'sandbox_capacity_lease_shape_check',
+      sql`num_nonnulls(${t.leaseOwnerId}, ${t.leaseToken}, ${t.leaseExpiresAt}) in (0, 3) and (${t.leaseToken} is null or ${t.active})`,
+    ),
+    projectTenantForeignKey('sandbox_capacity_admissions', t.projectId, t.organizationId),
+  ],
+);
+
+export type SandboxCapacityAdmission = typeof sandboxCapacityAdmissions.$inferSelect;
+export type NewSandboxCapacityAdmission = typeof sandboxCapacityAdmissions.$inferInsert;
 
 /**
  * PRD §14.4 event log — the hot table, and the one Mission Control replays from.

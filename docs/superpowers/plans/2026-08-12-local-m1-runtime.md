@@ -31,9 +31,9 @@
 - Modify: `tasks/todo.md`
 - Modify: `packages/db/src/schema/execution.ts`
 - Modify: `packages/db/src/index.ts`
-- Create: `packages/db/drizzle/0028_sandbox_capacity.sql`
+- Create: `packages/db/drizzle/0035_sandbox_capacity.sql`
 - Modify: `packages/db/drizzle/meta/_journal.json`
-- Modify/generated: `packages/db/drizzle/meta/0028_snapshot.json`
+- Modify/generated: `packages/db/drizzle/meta/0035_snapshot.json`
 - Modify: `services/sandbox-service/src/compose.ts`
 - Create: `services/sandbox-service/src/state/capacity.ts`
 - Create: `services/sandbox-service/test/database-capacity.test.ts`
@@ -52,7 +52,7 @@ The durable row is keyed by `workspace_id`; it stores tenant/project/run/task/pu
 
 ### Step 1.1: Add the unchecked gate contract
 
-Add `M1-GATE-16 — Runnable local prompt-to-preview exit` under master-plan M1 gate repairs with this plan's Files, interfaces, exact verification commands, acceptance criteria, and prescribed final commit. Add an unchecked tracker line. Do not change any existing checkbox.
+Add `M1-GATE-17 — Runnable local prompt-to-preview exit` under master-plan M1 gate repairs with this plan's Files, interfaces, exact verification commands, acceptance criteria, and prescribed final commit. `M1-GATE-16` was assigned after this expansion was authored, so the next available identifier and migration sequence are binding. Add an unchecked tracker line. Do not change any existing checkbox.
 
 ### Step 1.2: Write failing capacity tests
 
@@ -525,10 +525,10 @@ The command must prove every approved-design acceptance item, including two dist
 
 ### Step 8.4: Finish tracker and execution log only after success
 
-Check only `M1-GATE-16` in `tasks/todo.md`. Check its master-plan steps and append:
+Check only `M1-GATE-17` in `tasks/todo.md`. Check its master-plan steps and append:
 
 ```text
-2026-08-12 M1-GATE-16 done — Local supervisor, deployable sandbox/run-worker compositions, and the one real Stytch/Anthropic/Modal prompt-to-preview/edit/restore gate passed; <blockers/deviations or none>.
+2026-08-13 M1-GATE-17 done — Local supervisor, deployable sandbox/run-worker compositions, and the one real Stytch/Anthropic/Modal prompt-to-preview/edit/restore gate passed; <blockers/deviations or none>.
 ```
 
 Then run:
@@ -548,4 +548,4 @@ git commit -am "feat(local): ship runnable M1 prompt-to-preview"
 - Explicit sandbox termination followed by another action creates/reuses a replacement workspace and restores from durable Git/control-plane/Temporal state without losing ordered events.
 - Browser traffic contains no provider credential or raw Modal URL.
 - Missing dependencies, child crashes, provider failures, and failed assertions exit nonzero with a redacted named failure.
-- Full local verification is green, the single live evidence file exists, and `M1-GATE-16` is checked in the final code commit.
+- Full local verification is green, the single live evidence file exists, and `M1-GATE-17` is checked in the final code commit.

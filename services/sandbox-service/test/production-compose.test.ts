@@ -3,6 +3,16 @@ import { expect, it, vi } from 'vitest';
 
 import { composeSandboxApp } from '../src/compose.js';
 
+const testCapacity = {
+  claim: () => Promise.resolve({ status: 'queued' as const, queuePosition: 2 }),
+  release: () => Promise.resolve(),
+  claimExpired: () => Promise.resolve([]),
+  renewExpired: () => Promise.resolve(false),
+  completeExpired: () => Promise.resolve(),
+  releaseExpired: () => Promise.resolve(),
+  listOrganization: () => Promise.resolve([]),
+};
+
 it('rejects a real workspace create through production composition before provider creation', async () => {
   const organizationId = newId('org');
   const projectId = newId('proj');
@@ -30,19 +40,11 @@ it('rejects a real workspace create through production composition before provid
   } as never;
   const app = await composeSandboxApp({
     database,
+    testOnlyCapacity: testCapacity,
     governor: {
       ownerId: 'sandbox-production-test',
       globalLimit: 100,
       now: () => new Date('2026-08-11T00:00:00.000Z'),
-      capacity: {
-        claim: () => Promise.resolve({ status: 'queued', queuePosition: 2 }),
-        release: () => Promise.resolve(),
-        claimExpired: () => Promise.resolve([]),
-        renewExpired: () => Promise.resolve(false),
-        completeExpired: () => Promise.resolve(),
-        releaseExpired: () => Promise.resolve(),
-        listOrganization: () => Promise.resolve([]),
-      },
       actions: {
         checkpointAndTerminate: () => Promise.resolve(),
         terminate: () => Promise.resolve(),
@@ -117,4 +119,20 @@ it('rejects a real workspace create through production composition before provid
   });
   expect(createWorkspace).not.toHaveBeenCalled();
   await app.close();
+});
+
+it('rejects the test-only capacity seam outside the test environment', async () => {
+  vi.stubEnv('NODE_ENV', 'production');
+  try {
+    await expect(
+      composeSandboxApp({
+        database: {} as never,
+        governor: {} as never,
+        app: {} as never,
+        testOnlyCapacity: testCapacity,
+      }),
+    ).rejects.toThrow('testOnlyCapacity may only be used when NODE_ENV=test');
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });

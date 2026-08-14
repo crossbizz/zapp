@@ -7,12 +7,14 @@ import { eq } from 'drizzle-orm';
 import './instrumentation.js';
 import {
   createRunawayComputeGovernor,
+  type GovernorCapacityPort,
   type RunawayComputeGovernor,
   type RunawayComputeGovernorDependencies,
 } from './lifecycle/governor.js';
 import { createSandboxPlanLimitsAdapter } from './lifecycle/plan-limits.js';
 import { buildApp, type BuildAppOptions } from './app.js';
 import type { SandboxTelemetryRelay } from './routes/telemetry.js';
+import { createSandboxCapacityRepository } from './state/capacity.js';
 
 type WithoutGovernor<T> = T extends unknown ? Omit<T, 'governor'> : never;
 type DeployableSandboxAppOptions = WithoutGovernor<BuildAppOptions> & {
@@ -64,14 +66,20 @@ export function createDatabaseSandboxOrganizationSource(database: Database) {
 export async function composeSandboxApp(options: {
   readonly app: DeployableSandboxAppOptions;
   readonly database: Database;
-  readonly governor: Omit<RunawayComputeGovernorDependencies, 'limits'>;
+  readonly governor: Omit<RunawayComputeGovernorDependencies, 'limits' | 'capacity'>;
   readonly plansUrl?: URL;
+  readonly testOnlyCapacity?: GovernorCapacityPort;
 }) {
+  if (options.testOnlyCapacity !== undefined && process.env['NODE_ENV'] !== 'test') {
+    throw new Error('testOnlyCapacity may only be used when NODE_ENV=test');
+  }
   const plans = await loadSandboxPlanLimits(options.plansUrl);
   return buildApp({
     ...options.app,
     governor: composeSandboxGovernor({
       ...options.governor,
+      capacity:
+        options.testOnlyCapacity ?? createSandboxCapacityRepository(options.database),
       plans,
       organizations: createDatabaseSandboxOrganizationSource(options.database),
     }),
