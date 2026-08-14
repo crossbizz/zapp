@@ -3,10 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 
 import { NativeConnection, type Worker } from '@temporalio/worker';
-import { createServiceTokenSigner } from '@zapp/config';
-import { idSchema } from '@zapp/contracts';
-import { agentRuns, branches, createDb, type Database, type Db } from '@zapp/db';
-import { and, eq } from 'drizzle-orm';
+import { createFeatureFlagEvaluator, createServiceTokenSigner } from '@zapp/config';
+import { idSchema, WorkspaceStatusSchema } from '@zapp/contracts';
+import { agentRuns, branches, createDb, type Database, type Db, workspaces } from '@zapp/db';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 
 import {
@@ -18,6 +18,7 @@ import {
   EventBatchClient,
   type EventActivities,
 } from '../activities/events.js';
+import { createFeatureFlagActivities } from '../activities/feature-flags.js';
 import { createSessionActivities, type SessionActivities } from '../activities/session.js';
 import { createWorkspaceActivities, type WorkspaceActivities } from '../activities/workspace.js';
 import type { ProductionRunActivities } from '../worker.js';
@@ -30,6 +31,29 @@ import { createSandboxWorkspaceRuntime } from './sandbox-client.js';
 const WorkspaceResponseSchema = z
   .object({ workspace: z.object({ id: idSchema('ws') }).passthrough() })
   .strict();
+const ReusableWorkspaceStatusResponseSchema = z
+  .object({
+    workspace: z
+      .object({ id: idSchema('ws'), status: z.literal('ready') })
+      .passthrough(),
+    providerStatus: WorkspaceStatusSchema,
+  })
+  .strict();
+const WorkspaceGitBootstrapFailureResponseSchema = z.object({
+  code: z.literal('workspace_git_bootstrap_failed'),
+  details: z.object({
+    stage: z.string().regex(/^[a-z-]+$/u),
+    exitCode: z.number().int(),
+    reason: z.enum([
+      'authentication_failed',
+      'connection_failed',
+      'dns_resolution_failed',
+      'git_command_failed',
+      'repository_not_found',
+      'tls_failed',
+    ]),
+  }),
+});
 const RUN_TASK_ID = idSchema('task').parse(`task_${'0'.repeat(26)}`);
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -46,9 +70,7 @@ export interface RunWorkerRuntime {
 
 export interface RunWorkerComposition {
   readonly createDatabase?: (url: string) => Db;
-  readonly connectTemporal?: (options: {
-    readonly address: string;
-  }) => Promise<NativeConnection>;
+  readonly connectTemporal?: (options: { readonly address: string }) => Promise<NativeConnection>;
   readonly composeActivities?: (options: {
     readonly env: RunWorkerEnv;
     readonly database: Database;
@@ -81,16 +103,40 @@ function responseError(boundary: string, status: number): Error {
   return new Error(`${boundary} request failed with status ${String(status)}`);
 }
 
+export async function responseErrorFromResponse(
+  boundary: string,
+  response: Response,
+): Promise<Error> {
+  let classified: z.infer<typeof WorkspaceGitBootstrapFailureResponseSchema> | undefined;
+  if (response.headers.get('content-type')?.includes('application/json') === true) {
+    try {
+      const parsed = WorkspaceGitBootstrapFailureResponseSchema.safeParse(await response.json());
+      if (parsed.success) classified = parsed.data;
+    } catch {
+      // A malformed or unclassified downstream response remains a status-only error.
+    }
+  }
+  await response.body?.cancel().catch(() => undefined);
+  if (classified === undefined) return responseError(boundary, response.status);
+  const { stage, exitCode, reason } = classified.details;
+  return new Error(
+    `${boundary} request failed with status ${String(response.status)} (${classified.code}: ${stage}/${reason}/${String(exitCode)})`,
+  );
+}
+
 async function readPrompts(): Promise<RolePromptRegistry> {
   const names = ['builder', 'planner', 'verifier', 'summarizer'] as const;
   const entries = await Promise.all(
-    names.map(async (name) => [
-      name,
-      await readFile(
-        new URL(`../../../../packages/agent-policies/prompts/${name}.md`, import.meta.url),
-        'utf8',
-      ),
-    ] as const),
+    names.map(
+      async (name) =>
+        [
+          name,
+          await readFile(
+            new URL(`../../../../packages/agent-policies/prompts/${name}.md`, import.meta.url),
+            'utf8',
+          ),
+        ] as const,
+    ),
   );
   return Object.fromEntries(entries) as RolePromptRegistry;
 }
@@ -116,7 +162,7 @@ async function serviceHeaders(
   });
 }
 
-async function composeProductionActivities(options: {
+export async function composeProductionActivities(options: {
   readonly env: RunWorkerEnv;
   readonly database: Database;
   readonly fetchImpl?: typeof fetch;
@@ -186,6 +232,62 @@ async function composeProductionActivities(options: {
         )
         .limit(1);
       if (row === undefined) throw new Error('Run branch was not found in the tenant scope');
+      const [reusable] = await database
+        .select({ id: workspaces.id })
+        .from(workspaces)
+        .where(
+          and(
+            eq(workspaces.organizationId, input.organizationId),
+            eq(workspaces.projectId, input.projectId),
+            eq(workspaces.branchId, input.branchId),
+            eq(workspaces.status, 'ready'),
+            isNull(workspaces.terminatedAt),
+          ),
+        )
+        .orderBy(desc(workspaces.createdAt))
+        .limit(1);
+      if (reusable !== undefined) {
+        const statusResponse = await fetchImpl(
+          `${env.sandboxServiceUrl}/internal/workspaces/${encodeURIComponent(reusable.id)}`,
+          {
+            method: 'GET',
+            headers: await serviceHeaders(env, 'sandbox-service', input),
+          },
+        );
+        if (statusResponse.ok) {
+          const status = ReusableWorkspaceStatusResponseSchema.parse(
+            await statusResponse.json(),
+          );
+          if (status.providerStatus === 'ready') {
+            return { workspaceId: status.workspace.id };
+          }
+          const staleKey = operationKey(
+            `${input.idempotencyKey}:retire:${status.workspace.id}`,
+          );
+          const staleHeaders = await serviceHeaders(env, 'sandbox-service', input);
+          staleHeaders.set('idempotency-key', staleKey);
+          const terminationResponse = await fetchImpl(
+            `${env.sandboxServiceUrl}/internal/workspaces/${encodeURIComponent(status.workspace.id)}/terminate`,
+            {
+              method: 'POST',
+              headers: staleHeaders,
+              body: JSON.stringify({ operationKey: staleKey }),
+            },
+          );
+          if (!terminationResponse.ok) {
+            throw await responseErrorFromResponse(
+              'Stale sandbox workspace termination',
+              terminationResponse,
+            );
+          }
+          WorkspaceResponseSchema.parse(await terminationResponse.json());
+        } else {
+          await statusResponse.body?.cancel().catch(() => undefined);
+          if (statusResponse.status !== 404) {
+            throw responseError('Sandbox workspace status', statusResponse.status);
+          }
+        }
+      }
       const workspaceId = stableId('ws', input.idempotencyKey);
       const taskId = stableId('task', `${input.runId}:${RUN_TASK_ID}`);
       const key = operationKey(input.idempotencyKey);
@@ -220,8 +322,7 @@ async function composeProductionActivities(options: {
         }),
       });
       if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined);
-        throw responseError('Sandbox workspace provisioning', response.status);
+        throw await responseErrorFromResponse('Sandbox workspace provisioning', response);
       }
       return {
         workspaceId: WorkspaceResponseSchema.parse(await response.json()).workspace.id,
@@ -234,6 +335,7 @@ async function composeProductionActivities(options: {
         organizationId: input.organizationId,
         projectId: input.projectId,
         workspaceId: input.workspaceId,
+        runId: input.runId,
       });
       const changed = await runtime.git({ operation: 'diff', args: ['--name-only'] });
       if (changed.exitCode !== 0) throw new Error('Unable to inspect the workspace diff');
@@ -248,21 +350,28 @@ async function composeProductionActivities(options: {
         .map((path) => path.trim())
         .filter((path) => path.length > 0)
         .filter((path, index, all) => all.indexOf(path) === index);
-      const committed = await runtime.git({
-        operation: 'add_commit',
-        paths: ['.'],
-        message: input.message,
-      });
-      if (committed.exitCode !== 0) throw new Error('Unable to commit the workspace changes');
+      if (paths.length > 0) {
+        const committed = await runtime.git({
+          operation: 'add_commit',
+          paths: ['.'],
+          message: input.message,
+        });
+        if (committed.exitCode !== 0) throw new Error('Unable to commit the workspace changes');
+      }
       const head = await runtime.exec({
         cmd: 'git',
         args: ['rev-parse', 'HEAD'],
         timeoutMs: 30_000,
       });
       if (head.exitCode !== 0) throw new Error('Unable to resolve the workspace commit');
-      const commitSha = z.string().regex(/^[0-9a-f]{40,64}$/u).parse(head.stdout.trim());
-      const pushed = await runtime.git({ operation: 'push' });
-      if (pushed.exitCode !== 0) throw new Error('Unable to push the workspace commit');
+      const commitSha = z
+        .string()
+        .regex(/^[0-9a-f]{40,64}$/u)
+        .parse(head.stdout.trim());
+      if (paths.length > 0) {
+        const pushed = await runtime.git({ operation: 'push' });
+        if (pushed.exitCode !== 0) throw new Error('Unable to push the workspace commit');
+      }
       return {
         commitSha,
         diffstat: paths.map((path) => ({ path, additions: 0, deletions: 0 })),
@@ -276,42 +385,53 @@ async function composeProductionActivities(options: {
     checkpointBudgetStop: () =>
       Promise.reject(new Error('M1 budget checkpoints require a control-plane checkpoint port')),
   });
-  const sessionActivities: SessionActivities = createSessionActivities({
-    async run(input, context) {
-      const runtime = createSandboxWorkspaceRuntime({
-        baseUrl: env.sandboxServiceUrl,
-        serviceTokens: env.serviceTokens,
-        organizationId: input.organizationId,
-        projectId: input.projectId,
-        workspaceId: input.workspaceId,
-      });
-      return await createM1BuilderSessionRunner({
-        gateway: createModelGatewaySessionGateway({
-          baseUrl: env.modelGatewayUrl,
+  const sessionActivities: SessionActivities = createSessionActivities(
+    {
+      async run(input, context) {
+        const runtime = createSandboxWorkspaceRuntime({
+          baseUrl: env.sandboxServiceUrl,
           serviceTokens: env.serviceTokens,
-        }),
-        runtime,
-        events: { emit: () => Promise.resolve() },
-        approvals: { status: () => Promise.resolve('pending') },
-        prompts,
-        redactor: {
-          redact(value) {
-            return value.split(env.serviceTokens.secret).join('[REDACTED]');
+          organizationId: input.organizationId,
+          projectId: input.projectId,
+          workspaceId: input.workspaceId,
+          runId: input.runId,
+        });
+        return await createM1BuilderSessionRunner({
+          gateway: createModelGatewaySessionGateway({
+            baseUrl: env.modelGatewayUrl,
+            serviceTokens: env.serviceTokens,
+            fetch: fetchImpl,
+          }),
+          runtime,
+          events: { emit: () => Promise.resolve() },
+          approvals: { status: () => Promise.resolve('pending') },
+          prompts,
+          redactor: {
+            redact(value) {
+              return value.split(env.serviceTokens.secret).join('[REDACTED]');
+            },
           },
-        },
-        tokenCounter: {
-          countRequestTokens(request) {
-            return Math.max(1, Math.ceil(JSON.stringify(request).length / 4));
+          tokenCounter: {
+            countRequestTokens(request) {
+              return Math.max(1, Math.ceil(JSON.stringify(request).length / 4));
+            },
           },
-        },
-      }).run(input, context);
+        }).run(input, context);
+      },
     },
-  });
+    { publishSessionEvent: (event) => eventClient.emit(event) },
+  );
+  const featureFlagActivities = createFeatureFlagActivities(
+    createFeatureFlagEvaluator({
+      provider: { evaluate: () => Promise.resolve(false) },
+    }),
+  );
   return {
     ...eventActivities,
     ...workspaceActivities,
     ...approvalActivities,
     ...sessionActivities,
+    ...featureFlagActivities,
   } as ProductionRunActivities;
 }
 

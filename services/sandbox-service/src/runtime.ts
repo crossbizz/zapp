@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import {
@@ -105,6 +105,12 @@ export interface SandboxRuntime {
   readonly app: Awaited<ReturnType<typeof composeSandboxApp>>;
   startBackgroundWork(): void;
   close(): Promise<void>;
+}
+
+function workspaceAgentToken(serviceTokenSecret: string): string {
+  return createHmac('sha256', serviceTokenSecret)
+    .update('zapp-workspace-agent-token:v1')
+    .digest('hex');
 }
 
 function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -261,7 +267,11 @@ export async function composeSandboxRuntime(
   try {
     const database = databaseHandle.db;
     const rows = factories.createState(database);
-    const agentToken = randomBytes(32).toString('hex');
+    // Workspaces outlive an individual sandbox-service process. Deriving a
+    // domain-separated credential from the stable service secret lets a
+    // restarted process continue managing agents it created previously,
+    // without storing or exposing the service secret itself.
+    const agentToken = workspaceAgentToken(env.serviceTokens.secret);
     const provider = factories.createProvider({
       environment: env.modal.environment,
       imageLock,
@@ -331,6 +341,7 @@ export async function composeSandboxRuntime(
         networkPolicies,
         events: controlApi.events,
         gitService: { baseUrl: env.gitServiceUrl, serviceTokens: env.serviceTokens },
+        dependencyDomains: [new URL(env.gitCloneBaseUrl).hostname],
         telemetryRelay,
         storageMetering: { database },
         usageMetering: { pricing, database, ledger: controlApi.usage },

@@ -36,6 +36,32 @@ describe('preview public boundary', () => {
     );
   });
 
+  it('allows HTTP preview URLs only for loopback development hosts', () => {
+    expect(
+      PreviewHandleSchema.safeParse({
+        id: share.id,
+        url: `http://127.0.0.1:3000/preview/org/${share.id}`,
+        expiresAt: share.expiresAt,
+        policy: share.policy,
+      }).success,
+    ).toBe(true);
+    expect(
+      PreviewSessionExchangeResultSchema.safeParse({
+        previewOrigin: `http://org-${share.id}.preview.localhost:4000`,
+        grant: 'pbg_' + 'a'.repeat(43),
+        expiresAt: share.expiresAt,
+      }).success,
+    ).toBe(true);
+    expect(
+      PreviewHandleSchema.safeParse({
+        id: share.id,
+        url: `http://example.com/preview/org/${share.id}`,
+        expiresAt: share.expiresAt,
+        policy: share.policy,
+      }).success,
+    ).toBe(false);
+  });
+
   it('uses strict create, exchange, and redemption bodies', () => {
     expect(
       CreatePreviewShareBodySchema.parse({ policy: 'org', expiresInSeconds: 3_600 }),

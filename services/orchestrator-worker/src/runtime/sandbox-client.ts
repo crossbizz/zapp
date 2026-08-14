@@ -120,6 +120,7 @@ export interface SandboxWorkspaceClientOptions {
   readonly organizationId: string;
   readonly projectId: string;
   readonly workspaceId: string;
+  readonly runId: string;
   readonly fetch?: typeof fetch;
   readonly operationKey?: () => string;
 }
@@ -172,6 +173,7 @@ export function createSandboxWorkspaceRuntime(
     organizationId: idSchema('org').parse(optionsValue.organizationId),
     projectId: idSchema('proj').parse(optionsValue.projectId),
     workspaceId: idSchema('ws').parse(optionsValue.workspaceId),
+    runId: idSchema('run').parse(optionsValue.runId),
   };
   const fetchImpl = options.fetch ?? fetch;
   const serviceTokens = createServiceTokenSigner(options.serviceTokens);
@@ -191,6 +193,7 @@ export function createSandboxWorkspaceRuntime(
       'x-zapp-service-token': issued.token,
       'x-zapp-organization-id': options.organizationId,
       'x-zapp-project-id': options.projectId,
+      'x-zapp-run-id': options.runId,
     });
     if (input.contentType !== undefined) headers.set('content-type', input.contentType);
     if (input.mutation) {

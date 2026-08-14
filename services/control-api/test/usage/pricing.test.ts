@@ -1,5 +1,8 @@
+import { readFile } from 'node:fs/promises';
+
 import { describe, expect, it } from 'vitest';
 
+import { loadPlanLimitsConfig } from '../../src/usage/limits.js';
 import {
   estimateUsage,
   loadPricingConfig,
@@ -32,6 +35,37 @@ const config = {
 } as const;
 
 describe('OPS-1A pricing snapshot', () => {
+  it('keeps the trial run ceiling above eight productive Builder turns', async () => {
+    const [pricingJson, plansJson, modelsJson] = await Promise.all([
+      readFile(new URL('../../../../config/pricing.json', import.meta.url), 'utf8'),
+      readFile(new URL('../../../../config/plans.json', import.meta.url), 'utf8'),
+      readFile(
+        new URL('../../../model-gateway/config/models.json', import.meta.url),
+        'utf8',
+      ),
+    ]);
+    const configuredPricing = loadPricingConfig(JSON.parse(pricingJson) as unknown);
+    const plans = loadPlanLimitsConfig(JSON.parse(plansJson) as unknown);
+    const models = JSON.parse(modelsJson) as {
+      roles: { builder: { primary: string; fallbacks: string[] } };
+    };
+    const route = [models.roles.builder.primary, ...models.roles.builder.fallbacks].flatMap(
+      (reference) => {
+        const [provider, model] = reference.split('/');
+        if (provider === undefined || model === undefined) throw new Error('invalid model route');
+        return Array.from({ length: 2 }, () => ({
+          provider,
+          model,
+          maxInputTokens: 10_000,
+          maxOutputTokens: 8_192,
+        }));
+      },
+    );
+    const required = Number(worstCaseReservation(configuredPricing, route)) * 8;
+
+    expect(Number(plans.trial.maxRunBudgetCredits)).toBeGreaterThanOrEqual(required);
+  });
+
   it.each([
     {
       name: 'tokens',

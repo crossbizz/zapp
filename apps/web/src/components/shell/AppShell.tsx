@@ -13,6 +13,7 @@ export interface AppShellProps {
   readonly children: ReactNode;
   readonly compactible?: boolean;
   readonly invalidOrganization?: boolean;
+  readonly immersive?: boolean;
   readonly onSignOut: () => Promise<void>;
   readonly onSwitchOrganization: (organizationId: string) => void;
   readonly recentProjects?: readonly { readonly id: string; readonly name: string }[];
@@ -24,6 +25,7 @@ export function AppShell({
   children,
   compactible = true,
   invalidOrganization = false,
+  immersive = false,
   onSignOut,
   onSwitchOrganization,
   recentProjects = [],
@@ -40,32 +42,47 @@ export function AppShell({
       recentProjects={recentProjects}
     />
   );
+  const shellClassName = [styles.shell, immersive ? styles.immersive : undefined]
+    .filter((value): value is string => value !== undefined)
+    .join(' ');
 
   return (
-    <div className={styles.shell}>
-      <aside aria-label="Workspace" className={styles.desktopSidebar}>
-        {sidebar}
-      </aside>
-      {compactible ? <header className={styles.mobileHeader}>
-        <Link aria-label="zapp.build dashboard" className={styles.mobileBrand} href="/">
-          <span aria-hidden="true" className={styles.brandMark}>z</span>
-          <strong>zapp.build</strong>
-        </Link>
-        <Drawer
-          className={styles.mobileDrawer ?? ''}
-          title="Workspace navigation"
-          trigger={(
-            <button aria-label="Open navigation" className={styles.mobileMenuButton} type="button">
-              <span aria-hidden="true">☰</span>
-            </button>
-          )}
-        >
+    <div className={shellClassName}>
+      {immersive ? null : (
+        <aside aria-label="Workspace" className={styles.desktopSidebar}>
           {sidebar}
-        </Drawer>
-      </header> : null}
+        </aside>
+      )}
+      {compactible && !immersive ? (
+        <header className={styles.mobileHeader}>
+          <Link aria-label="zapp.build dashboard" className={styles.mobileBrand} href="/">
+            <span aria-hidden="true" className={styles.brandMark}>
+              z
+            </span>
+            <strong>zapp.build</strong>
+          </Link>
+          <Drawer
+            className={styles.mobileDrawer ?? ''}
+            title="Workspace navigation"
+            trigger={
+              <button
+                aria-label="Open navigation"
+                className={styles.mobileMenuButton}
+                type="button"
+              >
+                <span aria-hidden="true">☰</span>
+              </button>
+            }
+          >
+            {sidebar}
+          </Drawer>
+        </header>
+      ) : null}
       <main className={styles.main}>
         {invalidOrganization ? (
-          <p className={styles.contextWarning} role="alert">Invalid organization selection.</p>
+          <p className={styles.contextWarning} role="alert">
+            Invalid organization selection.
+          </p>
         ) : null}
         {children}
       </main>

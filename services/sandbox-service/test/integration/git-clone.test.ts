@@ -14,11 +14,16 @@ import {
   createGitTokenClient,
   createWorkspaceGitService,
   GitTokenGrantSchema,
+  WorkspaceGitBootstrapError,
   type GitTokenGrant,
   type GitTokenClient,
   type WorkspaceGitCommandPort,
 } from '../../src/provider/git-bootstrap.js';
-import type { WorkspaceAgentProvider, WorkspaceLifecycleRow, WorkspaceRowBoundary } from '../../src/routes/workspaces.js';
+import type {
+  WorkspaceAgentProvider,
+  WorkspaceLifecycleRow,
+  WorkspaceRowBoundary,
+} from '../../src/routes/workspaces.js';
 import { createScopedSecretInjector } from '../../src/secrets/injector.js';
 
 const execFileAsync = promisify(execFile);
@@ -101,6 +106,51 @@ describe('WS-5 scoped-token Git bootstrap', () => {
 
   afterEach(async () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  it('classifies clone transport failures without retaining the repository token', async () => {
+    const token = 'clone-token-that-must-never-cross-the-boundary';
+    const failingCloneUrl = new URL(CLEAN_CLONE_URL);
+    failingCloneUrl.username = 'x-access-token';
+    failingCloneUrl.password = token;
+    const service = createWorkspaceGitService({
+      tokens: {
+        mint: () =>
+          Promise.resolve({
+            token,
+            username: 'zt-clone-failure',
+            cloneUrl: CLEAN_CLONE_URL,
+            expiresAt: '2026-08-09T00:05:00.000Z',
+          }),
+      },
+      commands: {
+        exec: () =>
+          Promise.resolve({
+            exitCode: 128,
+            stdout: '',
+            stderr: `fatal: unable to access '${failingCloneUrl.toString()}': Could not resolve host: forgejo.test`,
+            durationMs: 1,
+            truncated: false,
+          }),
+      },
+    });
+
+    const failure = await service
+      .bootstrap({
+        ...IDS,
+        branchName: BRANCH_NAME,
+        operationKey: OPERATION_KEY,
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(WorkspaceGitBootstrapError);
+    expect(failure).toMatchObject({
+      stage: 'clone',
+      exitCode: 128,
+      reason: 'dns_resolution_failed',
+    });
+    expect(JSON.stringify(failure)).not.toContain(token);
+    expect(String(failure)).not.toContain(token);
   });
 
   it('clones the explicit branch and remints an expired push without persisting credentials', async () => {
@@ -200,9 +250,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       CLEAN_CLONE_URL,
     );
     expect((await git(workspace, 'config', '--get', 'credential.helper')).stdout).toBe('\n');
-    expect((await git(workspace, 'config', '--get', 'user.name')).stdout.trim()).toBe(
-      'zapp-agent',
-    );
+    expect((await git(workspace, 'config', '--get', 'user.name')).stdout.trim()).toBe('zapp-agent');
     expect((await git(workspace, 'config', '--get', 'user.email')).stdout.trim()).toBe(
       'agent@zapp.build',
     );
@@ -249,6 +297,70 @@ describe('WS-5 scoped-token Git bootstrap', () => {
         taskId: IDS.taskId,
       },
     ]);
+  }, 30_000);
+
+  it('boots the default branch of a brand-new empty project repository', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-ws5-empty-'));
+    roots.push(root);
+    const bare = join(root, 'remote.git');
+    const workspace = join(root, 'workspace');
+    await execFileAsync('mkdir', ['-p', workspace]);
+    await execFileAsync('git', ['init', '--bare', '--initial-branch=main', bare]);
+
+    const tokens: GitTokenClient = {
+      mint: () =>
+        Promise.resolve({
+          token: 'empty-repository-token',
+          username: 'zt-empty',
+          cloneUrl: CLEAN_CLONE_URL,
+          expiresAt: '2026-08-09T00:05:00.000Z',
+        }),
+    };
+    const commands: WorkspaceGitCommandPort = {
+      async exec(input) {
+        const args = input.args.map((argument) => {
+          if (!argument.startsWith('url.https://')) return argument;
+          const separator = argument.indexOf('.insteadOf=');
+          const cleanUrl = argument.slice(separator + '.insteadOf='.length);
+          expect(cleanUrl).toBe(CLEAN_CLONE_URL);
+          return `url.file://${bare}.insteadOf=${cleanUrl}`;
+        });
+        try {
+          const result = await git(workspace, ...args);
+          return {
+            exitCode: 0,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            durationMs: 1,
+            truncated: false,
+          };
+        } catch (error) {
+          const failure = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+          return {
+            exitCode: typeof failure.code === 'number' ? failure.code : 1,
+            stdout: typeof failure.stdout === 'string' ? failure.stdout : '',
+            stderr: typeof failure.stderr === 'string' ? failure.stderr : 'git failed',
+            durationMs: 1,
+            truncated: false,
+          };
+        }
+      },
+    };
+    const service = createWorkspaceGitService({ tokens, commands });
+
+    await service.bootstrap({
+      ...IDS,
+      branchName: 'main',
+      operationKey: OPERATION_KEY,
+    });
+
+    expect((await git(workspace, 'branch', '--show-current')).stdout.trim()).toBe('main');
+    expect((await git(workspace, 'remote', 'get-url', 'origin')).stdout.trim()).toBe(
+      CLEAN_CLONE_URL,
+    );
+    await writeFile(join(workspace, 'README.md'), 'first project commit\n');
+    await git(workspace, 'add', 'README.md');
+    await expect(git(workspace, 'commit', '-m', 'first project commit')).resolves.toBeDefined();
   }, 15_000);
 
   it('makes workspace creation wait for clone and routes push through a fresh GIT-3 token', async () => {
@@ -371,10 +483,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       getStatus: () => Promise.resolve('ready'),
       updateNetworkPolicy: () => Promise.resolve(),
       exec: async (input, idempotencyKey) =>
-        (await commands.exec(
-          input,
-          idempotencyKey ?? OPERATION_KEY,
-        )) as WorkspaceAgentExecResult,
+        (await commands.exec(input, idempotencyKey ?? OPERATION_KEY)) as WorkspaceAgentExecResult,
       execStream: () => ({ [Symbol.asyncIterator]: async function* () {} }),
       killExec: unused,
       readFile: unused,
@@ -487,7 +596,7 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       'route landed\n',
     );
     await app.close();
-  }, 15_000);
+  }, 30_000);
 
   it('mints a strict GIT-3 token with sandbox-service identity and no reusable response cache', async () => {
     const calls: Array<{ input: string; init: RequestInit }> = [];

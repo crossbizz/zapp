@@ -1,12 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import {
-  branches,
-  projects,
-  workspaces,
-  type Database,
-  type Workspace,
-} from '@zapp/db';
+import { branches, projects, workspaces, type Database, type Workspace } from '@zapp/db';
 import { and, eq, gt, isNull, lte, or } from 'drizzle-orm';
 
 import { ModalWorkspaceAttachmentSchema } from '../provider/modal.js';
@@ -146,15 +140,22 @@ export function createPostgresWorkspaceStateStore(
         if (branch === undefined) {
           throw new Error('Workspace branch does not match the durable create intent.');
         }
+        const durableAttachment = {
+          runId: key.runId,
+          taskId: key.taskId,
+          purpose: key.purpose,
+          environment: attachment.requiredTags.environment,
+          imageTag: attachment.imageTag,
+        };
+        const [inserted] = await tx
+          .insert(workspaces)
+          .values({ ...row, ...durableAttachment })
+          .onConflictDoNothing()
+          .returning();
+        if (inserted !== undefined) return inserted;
         const [created] = await tx
           .update(workspaces)
-          .set({
-            runId: key.runId,
-            taskId: key.taskId,
-            purpose: key.purpose,
-            environment: attachment.requiredTags.environment,
-            imageTag: attachment.imageTag,
-          })
+          .set(durableAttachment)
           .where(
             and(
               eq(workspaces.id, row.id),
@@ -205,7 +206,10 @@ export function createPostgresWorkspaceStateStore(
           and(
             eq(workspaces.id, workspaceId),
             eq(workspaces.status, expectedStatus),
-            or(isNull(workspaces.providerWorkspaceId), eq(workspaces.providerWorkspaceId, providerWorkspaceId)),
+            or(
+              isNull(workspaces.providerWorkspaceId),
+              eq(workspaces.providerWorkspaceId, providerWorkspaceId),
+            ),
           ),
         )
         .returning();
@@ -248,12 +252,7 @@ export function createPostgresWorkspaceStateStore(
       const rows = await database
         .select()
         .from(workspaces)
-        .where(
-          and(
-            eq(workspaces.status, 'ready'),
-            isNull(workspaces.terminatedAt),
-          ),
-        );
+        .where(and(eq(workspaces.status, 'ready'), isNull(workspaces.terminatedAt)));
       return rows.flatMap((row) => {
         const record = attachmentRecord(row);
         return record === undefined || record.row.providerWorkspaceId === null ? [] : [record];
@@ -394,10 +393,7 @@ export function createPostgresWorkspaceStateStore(
         .update(workspaces)
         .set({ previewMonitorOwnerId: null, previewMonitorLeaseExpiresAt: null })
         .where(
-          and(
-            eq(workspaces.id, workspaceId),
-            eq(workspaces.previewMonitorOwnerId, leaseToken),
-          ),
+          and(eq(workspaces.id, workspaceId), eq(workspaces.previewMonitorOwnerId, leaseToken)),
         );
     },
   };

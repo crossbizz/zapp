@@ -11,6 +11,13 @@ const REQUIRED_PROVIDER_VARIABLES = [
   'MODAL_TOKEN_SECRET',
 ];
 
+function localDatabaseUrl() {
+  const url = new URL('postgres://127.0.0.1:5432/zapp');
+  url.username = 'zapp';
+  url.password = 'zapp';
+  return url.toString();
+}
+
 export class LocalPreflightError extends Error {
   constructor(message, variables = []) {
     super(message);
@@ -73,9 +80,7 @@ export function loadLocalForgejoEnv({
   try {
     parsed = parseEnvFile(readFileSync(envPath, 'utf8'));
   } catch {
-    throw new LocalPreflightError(
-      '.env.local.forgejo is missing; rerun ./scripts/dev-up.sh',
-    );
+    throw new LocalPreflightError('.env.local.forgejo is missing; rerun ./scripts/dev-up.sh');
   }
   const invalid = [];
   if (missingCredential(parsed.FORGEJO_ADMIN_TOKEN)) invalid.push('FORGEJO_ADMIN_TOKEN');
@@ -149,7 +154,7 @@ export function loadLocalConfig({
     ...env,
     NODE_ENV: 'development',
     RUN_WORKFLOW_PROFILE: 'm1',
-    DATABASE_URL: 'postgres://zapp:zapp@127.0.0.1:5432/zapp',
+    DATABASE_URL: localDatabaseUrl(),
     REDIS_URL: 'redis://127.0.0.1:6379',
     TEMPORAL_ADDRESS: '127.0.0.1:7233',
     TEMPORAL_NAMESPACE: 'default',
@@ -161,6 +166,7 @@ export function loadLocalConfig({
     MODEL_GATEWAY_URL: 'http://127.0.0.1:4100',
     SANDBOX_SERVICE_URL: 'http://127.0.0.1:4400',
     GIT_SERVICE_URL: 'http://127.0.0.1:4500',
+    SANDBOX_GLOBAL_LIMIT: '100',
     SANDBOX_OWNER_ID: 'sandbox-local',
     SERVICE_TOKEN_ISSUER: 'zapp-control-plane',
     ARTIFACT_ENDPOINT: 'http://127.0.0.1:9000',
@@ -168,7 +174,7 @@ export function loadLocalConfig({
     ARTIFACT_BUCKET: 'zapp-artifacts',
     ARTIFACT_KEY: 'minioadmin',
     ARTIFACT_SECRET: 'minioadmin',
-    PREVIEW_BASE_DOMAIN: 'preview.localhost',
+    PREVIEW_BASE_DOMAIN: 'preview.localhost:4000',
     PREVIEW_SHARE_KEY_VERSION: '1',
   };
   combined.RUN_INTENT_HMAC_SECRET = localKey(combined, 'RUN_INTENT_HMAC_SECRET');

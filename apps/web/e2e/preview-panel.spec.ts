@@ -55,7 +55,12 @@ function corsHeaders(contentType = 'application/json'): Record<string, string> {
 
 function runFrame(
   sequence: number,
-  type: 'commit.created' | 'preview.failed' | 'preview.ready' | 'preview.starting',
+  type:
+    | 'commit.created'
+    | 'preview.failed'
+    | 'preview.ready'
+    | 'preview.starting'
+    | 'run.completed',
   payload: Readonly<Record<string, unknown>>,
 ): string {
   const data = {
@@ -82,7 +87,11 @@ async function signIn(page: Page): Promise<void> {
   await expect(page).toHaveURL('/');
 }
 
-async function installBuilder(page: Page, runEvents: () => string): Promise<void> {
+async function installBuilder(
+  page: Page,
+  runEvents: () => string,
+  run: typeof activeRun = activeRun,
+): Promise<void> {
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}`, async (route) => {
     await route.fulfill({ body: JSON.stringify(projectRead), headers: corsHeaders(), status: 200 });
   });
@@ -92,7 +101,7 @@ async function installBuilder(page: Page, runEvents: () => string): Promise<void
       return;
     }
     await route.fulfill({
-      body: JSON.stringify({ items: [activeRun], nextCursor: null }),
+      body: JSON.stringify({ items: [run], nextCursor: null }),
       headers: corsHeaders(),
       status: 200,
     });
@@ -108,6 +117,101 @@ async function installBuilder(page: Page, runEvents: () => string): Promise<void
 
 test.beforeEach(async ({ page }) => {
   await page.request.get(`${apiBaseUrl}/__reset`);
+});
+
+test('keeps preview controls compact and gives the remaining workspace to the stage', async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await installBuilder(page, () => '', { ...activeRun, status: 'queued' });
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  const workspace = page.getByRole('region', { name: 'Workspace' });
+  const toolbar = page.getByRole('toolbar', { name: 'Preview controls' });
+  const stage = page.getByRole('region', { name: 'Application preview' });
+  const select = page.getByRole('button', { name: 'Select element' });
+  const workspaceBounds = await workspace.boundingBox();
+  const toolbarBounds = await toolbar.boundingBox();
+  const stageBounds = await stage.boundingBox();
+  const selectBounds = await select.boundingBox();
+  if (
+    workspaceBounds === null ||
+    toolbarBounds === null ||
+    stageBounds === null ||
+    selectBounds === null
+  ) {
+    throw new Error('The compact preview geometry was not rendered.');
+  }
+
+  expect(toolbarBounds.height).toBeLessThanOrEqual(48);
+  expect(selectBounds.y).toBeGreaterThanOrEqual(toolbarBounds.y);
+  expect(selectBounds.y + selectBounds.height).toBeLessThanOrEqual(
+    toolbarBounds.y + toolbarBounds.height,
+  );
+  expect(stageBounds.height).toBeGreaterThanOrEqual(workspaceBounds.height - 130);
+  expect(stageBounds.width).toBeGreaterThanOrEqual(workspaceBounds.width - 24);
+  await expect(page.getByRole('heading', { name: 'Build queued' })).toBeVisible();
+});
+
+test('keeps an existing healthy preview open when a repeated start reports failure', async ({
+  page,
+}) => {
+  await installBuilder(
+    page,
+    () =>
+      runFrame(1, 'preview.failed', {
+        action: 'start',
+        code: 'dev_server_operation_failed',
+        workspaceId,
+      }),
+  );
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        entries: [],
+        failureId: null,
+        nextCursor: 0,
+        state: 'ready',
+        truncated: false,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/shares`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        share: {
+          expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString(),
+          id: '01j00000000000000000000000',
+          policy: 'org',
+          url: shareUrl,
+        },
+      }),
+      headers: corsHeaders(),
+      status: 201,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/events`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await page.route(
+    `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`,
+    async (route) => {
+      await route.fulfill({
+        body: '<!doctype html><title>Fixture preview</title><h1>Preview application</h1>',
+        contentType: 'text/html',
+        status: 200,
+      });
+    },
+  );
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect(page.getByTitle('Application preview')).toBeVisible();
+  await expect(page.getByText('Preview failed')).toHaveCount(0);
 });
 
 test('renders preview lifecycle states from structured events and public workspace APIs', async ({
@@ -305,13 +409,16 @@ test('renders preview lifecycle states from structured events and public workspa
       status: 200,
     });
   });
-  await page.route(`${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`, async (route) => {
-    await route.fulfill({
-      body: '<!doctype html><title>Fixture preview</title><h1>Preview application</h1>',
-      contentType: 'text/html',
-      status: 200,
-    });
-  });
+  await page.route(
+    `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`,
+    async (route) => {
+      await route.fulfill({
+        body: '<!doctype html><title>Fixture preview</title><h1>Preview application</h1>',
+        contentType: 'text/html',
+        status: 200,
+      });
+    },
+  );
 
   await signIn(page);
   await page.goto(`/projects/${projectId}`);
@@ -356,7 +463,11 @@ test('renders preview lifecycle states from structured events and public workspa
   await expect.poll(() => restartRequests.length).toBe(2);
   expect(restartRequests[0]).toBe(restartRequests[1]);
 
-  frames += runFrame(4, 'preview.ready', { action: 'restart', workspaceId });
+  frames += runFrame(4, 'run.completed', { status: 'completed' });
+  await page.reload();
+  await expect(page.getByText('Preview is behind latest changes — Restart')).toHaveCount(0);
+
+  frames += runFrame(5, 'preview.ready', { action: 'restart', workspaceId });
   logState = 'idle';
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Preview sleeping' })).toBeVisible();
@@ -379,7 +490,7 @@ test('renders preview lifecycle states from structured events and public workspa
 
   captureFails = false;
   logState = 'failed';
-  frames += runFrame(5, 'preview.failed', {
+  frames += runFrame(6, 'preview.failed', {
     code: 'dev_server_operation_failed',
     workspaceId,
   });
@@ -428,6 +539,7 @@ test('captures a console error and attaches its screenshot to the conversation c
   page,
 }) => {
   const screenshotKeys: string[] = [];
+  let captureDelivered = false;
   await installBuilder(page, () => runFrame(1, 'preview.ready', { action: 'start', workspaceId }));
   await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
     await route.fulfill({
@@ -458,17 +570,20 @@ test('captures a console error and attaches its screenshot to the conversation c
   });
   await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/events`, async (route) => {
     await route.fulfill({
-      body: captureFrame({
-        payload: {
-          level: 'error',
-          message: 'Checkout total crashed',
-          stack: 'at Checkout (/src/Checkout.tsx:42:9)',
-        },
-        type: 'console',
-      }),
+      body: captureDelivered
+        ? ': keep-alive\n\n'
+        : captureFrame({
+            payload: {
+              level: 'error',
+              message: 'Checkout total crashed',
+              stack: 'at Checkout (/src/Checkout.tsx:42:9)',
+            },
+            type: 'console',
+          }),
       headers: corsHeaders('text/event-stream'),
       status: 200,
     });
+    captureDelivered = true;
   });
   await page.route(
     `${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/screenshot`,
@@ -486,9 +601,12 @@ test('captures a console error and attaches its screenshot to the conversation c
       });
     },
   );
-  await page.route(`${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`, async (route) => {
-    await route.fulfill({ body: '<!doctype html><h1>Preview</h1>', contentType: 'text/html' });
-  });
+  await page.route(
+    `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`,
+    async (route) => {
+      await route.fulfill({ body: '<!doctype html><h1>Preview</h1>', contentType: 'text/html' });
+    },
+  );
 
   await signIn(page);
   await page.goto(`/projects/${projectId}`);
@@ -609,18 +727,21 @@ test('attaches a trusted selected element and sends its canonical context with t
       status: 202,
     });
   });
-  await page.route(`${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`, async (route) => {
-    await route.fulfill({
-      body: `<!doctype html><script>
+  await page.route(
+    `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`,
+    async (route) => {
+      await route.fulfill({
+        body: `<!doctype html><script>
         window.addEventListener('message', (event) => {
           if (event.data?.type === 'zapp:selection-mode') {
             document.body.dataset.selectionMode = String(event.data.enabled);
           }
         });
       </script><h1>Preview</h1>`,
-      contentType: 'text/html',
-    });
-  });
+        contentType: 'text/html',
+      });
+    },
+  );
 
   await signIn(page);
   await page.goto(`/projects/${projectId}`);
@@ -629,21 +750,25 @@ test('attaches a trusted selected element and sends its canonical context with t
   await expect(
     page.getByTitle('Application preview').contentFrame().locator('body'),
   ).toHaveAttribute('data-selection-mode', 'true');
-  await page.getByTitle('Application preview').contentFrame().locator('body').evaluate(() => {
-    window.parent.postMessage(
-      {
-        payload: {
-          boundingBox: { height: 36, width: 88, x: 24, y: 16 },
-          componentHint: 'Button',
-          computedRole: 'button',
-          selector: '[data-testid="save-settings"]',
-          text: 'Save',
+  await page
+    .getByTitle('Application preview')
+    .contentFrame()
+    .locator('body')
+    .evaluate(() => {
+      window.parent.postMessage(
+        {
+          payload: {
+            boundingBox: { height: 36, width: 88, x: 24, y: 16 },
+            componentHint: 'Button',
+            computedRole: 'button',
+            selector: '[data-testid="save-settings"]',
+            text: 'Save',
+          },
+          type: 'zapp:element-selected',
         },
-        type: 'zapp:element-selected',
-      },
-      window.location.origin,
-    );
-  });
+        window.location.origin,
+      );
+    });
 
   await expect(page.getByLabel('Attached selections')).toContainText(
     "Selected: <Button> 'Save' on /settings",
@@ -652,28 +777,32 @@ test('attaches a trusted selected element and sends its canonical context with t
     page.getByTitle('Application preview').contentFrame().locator('body'),
   ).toHaveAttribute('data-selection-mode', 'false');
   await expect(page.getByRole('button', { name: 'Remove selected Button Save' })).toBeVisible();
-  await page.getByTitle('Application preview').contentFrame().locator('body').evaluate(async () => {
-    window.parent.postMessage(
-      {
-        payload: {
-          boundingBox: { height: 36, width: 88, x: 24, y: 16 },
-          componentHint: 'Button',
-          computedRole: 'button',
-          selector: '[data-testid="save-settings"]',
-          text: 'Save',
+  await page
+    .getByTitle('Application preview')
+    .contentFrame()
+    .locator('body')
+    .evaluate(async () => {
+      window.parent.postMessage(
+        {
+          payload: {
+            boundingBox: { height: 36, width: 88, x: 24, y: 16 },
+            componentHint: 'Button',
+            computedRole: 'button',
+            selector: '[data-testid="save-settings"]',
+            text: 'Save',
+          },
+          type: 'zapp:element-selected',
         },
-        type: 'zapp:element-selected',
-      },
-      window.location.origin,
-    );
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => {
+        window.location.origin,
+      );
+      await new Promise<void>((resolve) => {
         requestAnimationFrame(() => {
-          resolve();
+          requestAnimationFrame(() => {
+            resolve();
+          });
         });
       });
     });
-  });
   expect(screenshotRequests).toHaveLength(1);
   await expect(page.getByRole('button', { name: 'Remove selected Button Save' })).toHaveCount(1);
   await page.getByLabel('Message the agent').fill('Move this beside the password field.');
@@ -683,7 +812,11 @@ test('attaches a trusted selected element and sends its canonical context with t
   await expect.poll(() => sentMessage).toBeDefined();
   const body = sentMessage as { attachments: readonly unknown[]; content: string };
   expect(body.attachments).toEqual([
-    expect.objectContaining({ attachmentId: previewEvidenceId, contentType: 'image/png', kind: 'image' }),
+    expect.objectContaining({
+      attachmentId: previewEvidenceId,
+      contentType: 'image/png',
+      kind: 'image',
+    }),
   ]);
   expect(JSON.parse(body.content)).toEqual({
     message: 'Move this beside the password field.',
@@ -754,33 +887,42 @@ test('does not attach a selected-element screenshot completed after the preview 
       });
     },
   );
-  await page.route(`${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`, async (route) => {
-    await route.fulfill({ body: '<!doctype html><h1>Preview</h1>', contentType: 'text/html' });
-  });
+  await page.route(
+    `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`,
+    async (route) => {
+      await route.fulfill({ body: '<!doctype html><h1>Preview</h1>', contentType: 'text/html' });
+    },
+  );
 
   await signIn(page);
   await page.goto(`/projects/${projectId}`);
   await expect(page.getByTitle('Application preview')).toBeVisible();
   await page.getByRole('button', { name: 'Select element' }).click();
-  await page.getByTitle('Application preview').contentFrame().locator('body').evaluate(() => {
-    window.parent.postMessage(
-      {
-        payload: {
-          boundingBox: { height: 36, width: 88, x: 24, y: 16 },
-          componentHint: 'Button',
-          computedRole: 'button',
-          selector: '[data-testid="save-settings"]',
-          text: 'Save',
+  await page
+    .getByTitle('Application preview')
+    .contentFrame()
+    .locator('body')
+    .evaluate(() => {
+      window.parent.postMessage(
+        {
+          payload: {
+            boundingBox: { height: 36, width: 88, x: 24, y: 16 },
+            componentHint: 'Button',
+            computedRole: 'button',
+            selector: '[data-testid="save-settings"]',
+            text: 'Save',
+          },
+          type: 'zapp:element-selected',
         },
-        type: 'zapp:element-selected',
-      },
-      window.location.origin,
-    );
-  });
+        window.location.origin,
+      );
+    });
   await screenshotStarted;
 
   await page.getByRole('button', { name: 'Refresh' }).click();
-  await expect(page.getByTitle('Application preview').contentFrame().getByRole('heading', { name: 'Preview' })).toBeVisible();
+  await expect(
+    page.getByTitle('Application preview').contentFrame().getByRole('heading', { name: 'Preview' }),
+  ).toBeVisible();
   const screenshotResponse = page.waitForResponse(
     `${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/screenshot`,
   );

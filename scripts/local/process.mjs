@@ -114,6 +114,42 @@ export function createProcessSupervisor({
     }
   }
 
+  async function waitForLineMatch(name, matcher, timeoutMs = 60_000) {
+    const entry = children.find((candidate) => candidate.spec.name === name);
+    if (entry === undefined) throw new Error(`Unknown child ${name}`);
+    const matchLine = (line) => {
+      matcher.lastIndex = 0;
+      return matcher.exec(line);
+    };
+    for (const line of entry.tail) {
+      const match = matchLine(line);
+      if (match !== null) return match;
+    }
+    let listener;
+    const observed = new Promise((resolve) => {
+      listener = (line) => {
+        const match = matchLine(line);
+        if (match !== null) resolve(match);
+      };
+      lines.on(name, listener);
+    });
+    let timeout;
+    try {
+      return await Promise.race([
+        observed,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => {
+            reject(new Error(`${name} did not report a matching endpoint`));
+          }, timeoutMs);
+        }),
+        failure,
+      ]);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      if (listener !== undefined) lines.off(name, listener);
+    }
+  }
+
   async function stopAll() {
     if (stopping) return;
     stopping = true;
@@ -154,6 +190,7 @@ export function createProcessSupervisor({
     failure,
     start,
     waitForLine,
+    waitForLineMatch,
     stopAll,
     tail(name) {
       return [...(children.find((entry) => entry.spec.name === name)?.tail ?? [])];

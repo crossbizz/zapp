@@ -84,7 +84,11 @@ export function composeApp(runtime: ServiceRuntime): ServiceComposition {
   // One token service, bound to the routes *and* handed to the sweep. Two would
   // be two Forgejo clients and two chances for them to disagree about which
   // instance, which credential and which deadline.
-  const tokens = createTokenService({ client, audit: createDbGitAuditSink(runtime.database) });
+  const tokens = createTokenService({
+    client,
+    audit: createDbGitAuditSink(runtime.database),
+    cloneBaseUrl: runtime.forgejo.cloneBaseUrl,
+  });
   const provider = createForgejoGitProvider({ client });
   const importProvider = Object.assign(provider, {
     async setDefaultBranch(ref: string, branch: string): Promise<void> {

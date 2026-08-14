@@ -3,7 +3,12 @@ import {
   type OutputRedactor,
   type ProjectDataPort,
 } from '@zapp/agent-tools';
-import type { ExecutionContract } from '@zapp/contracts';
+import { posix } from 'node:path';
+import {
+  ExecutionContractSchema,
+  type ExecutionContract,
+  type ToolName,
+} from '@zapp/contracts';
 import { scanProjectCapabilities } from '@zapp/project-adapters';
 import type { WorkspaceRuntime } from '@zapp/workspace-runtime';
 
@@ -27,11 +32,42 @@ import { createM1UnavailablePorts, M1PortUnavailableError } from './unavailable-
 
 const M1_TASK_ID = 'm1-builder';
 const M1_CONTEXT_TOKEN_BUDGET = 12_000;
+const M1_UNAVAILABLE_TOOL_NAMES = new Set<ToolName>([
+  'execute_migration',
+  'set_environment_variable',
+  'run_browser_tests',
+  'capture_screenshot',
+  'inspect_browser_console',
+  'inspect_network_requests',
+  'create_preview',
+  'run_preview_smoke_test',
+  'create_release_candidate',
+  'deploy_release',
+  'check_deployment_health',
+  'rollback_release',
+]);
+const M1_LOCAL_CAPABILITY_INSTRUCTIONS =
+  'Browser evidence, release, deployment, environment, and migration tools are unavailable in the local runtime. Verify the application with its build, typecheck, lint, tests, development server, and logs, then finish with a concise summary.';
+const M1_IGNORED_FILE_TREE_SEGMENTS = new Set([
+  '.git',
+  '.next',
+  '.turbo',
+  'coverage',
+  'node_modules',
+]);
 const M1_SESSION_BUDGETS = {
   maxTurns: 32,
-  maxTokens: 64_000,
+  maxTokens: 1_000_000,
   maxWallClockMs: 30 * 60_000,
 } as const;
+const M1_BOOTSTRAP_EXECUTION_CONTRACT = ExecutionContractSchema.parse({
+  version: 1,
+  package_manager: 'pnpm',
+  workspace_root: '.',
+  install: { command: 'pnpm install' },
+  develop: { command: 'pnpm dev', port: 3000 },
+  build: { command: 'pnpm build' },
+});
 
 export interface SessionEventPublisher {
   emit(event: SessionEvent): void | Promise<void>;
@@ -66,6 +102,18 @@ export class M1SandboxBoundaryError extends Error {
     super('The M1 builder requires a network-profiled cloud sandbox runtime');
     this.name = 'M1SandboxBoundaryError';
   }
+}
+
+function isProjectSourceEntry(path: string): boolean {
+  return !path.split('/').some((segment) => M1_IGNORED_FILE_TREE_SEGMENTS.has(segment));
+}
+
+async function listProjectEntries(
+  runtime: WorkspaceRuntime,
+  path: string,
+  options?: { readonly glob?: string; readonly maxDepth?: number },
+) {
+  return (await runtime.listFiles(path, options)).filter((entry) => isProjectSourceEntry(entry.path));
 }
 
 interface RuntimeWithDevServerLogs extends WorkspaceRuntime {
@@ -104,10 +152,17 @@ function projectDataPort(runtime: WorkspaceRuntime): ProjectDataPort {
     readTestResults: () => Promise.reject(new M1PortUnavailableError('stored test results')),
     readDatabaseSchema: () => Promise.reject(new M1PortUnavailableError('database schema')),
     async readLatestProjectContract() {
+      const rootManifest = await runtime.listFiles('.', {
+        glob: 'package.json',
+        maxDepth: 1,
+      });
+      if (!rootManifest.some((entry) => entry.type === 'file' && entry.path === 'package.json')) {
+        return { ok: true, version: 1, contract: M1_BOOTSTRAP_EXECUTION_CONTRACT };
+      }
       const result = await scanProjectCapabilities({
         workspaceRoot: '.',
         listFiles: async (glob) =>
-          (await runtime.listFiles('.', { glob, maxDepth: 100 }))
+          (await listProjectEntries(runtime, '.', { glob, maxDepth: 100 }))
             .filter((entry) => entry.type === 'file')
             .map((entry) => entry.path),
         readFile: async (path) => new TextDecoder().decode(await runtime.readFile(path)),
@@ -118,6 +173,31 @@ function projectDataPort(runtime: WorkspaceRuntime): ProjectDataPort {
 }
 
 function healthCheckedRuntime(runtime: WorkspaceRuntime): WorkspaceRuntime {
+  const writeFile = async (path: string, data: Uint8Array): Promise<void> => {
+    try {
+      await runtime.writeFile(path, data);
+      return;
+    } catch (error: unknown) {
+      const components = path.split('/');
+      const parent = posix.dirname(path);
+      if (
+        posix.isAbsolute(path) ||
+        path.includes('\0') ||
+        components.includes('..') ||
+        parent === '.'
+      ) {
+        throw error;
+      }
+      const created = await runtime.exec({
+        cmd: 'mkdir',
+        args: ['-p', '--', parent],
+        cwd: '.',
+        timeoutMs: 30_000,
+      });
+      if (created.exitCode !== 0) throw error;
+      await runtime.writeFile(path, data);
+    }
+  };
   const startAndCheck = async (
     start: (contract: ExecutionContract) => Promise<{ port: number; pid: number }>,
     contract: ExecutionContract,
@@ -133,10 +213,10 @@ function healthCheckedRuntime(runtime: WorkspaceRuntime): WorkspaceRuntime {
     execStream: (input) => runtime.execStream(input),
     readFile: (path) => runtime.readFile(path),
     readFileForUpdate: (path) => runtime.readFileForUpdate(path),
-    writeFile: (path, data) => runtime.writeFile(path, data),
+    writeFile,
     writeFilesAtomically: (files) => runtime.writeFilesAtomically(files),
     search: (input) => runtime.search(input),
-    listFiles: (path, options) => runtime.listFiles(path, options),
+    listFiles: (path, options) => listProjectEntries(runtime, path, options),
     stat: (path) => runtime.stat(path),
     delete: (path) => runtime.delete(path),
     deleteFile: (path) => runtime.deleteFile(path),
@@ -196,7 +276,7 @@ export function createM1BuilderSessionRunner(
 ): BuilderSessionRunner {
   if (options.runtime.kind !== 'cloud') throw new M1SandboxBoundaryError();
   const registry = createM1ToolRegistry(options.runtime, options.redactor);
-  return adaptSessionLoop(
+  const runner = adaptSessionLoop(
     (transcripts, contextEvents) =>
       createSessionLoop({
         gateway: options.gateway,
@@ -225,4 +305,18 @@ export function createM1BuilderSessionRunner(
       budgets: M1_SESSION_BUDGETS,
     }),
   );
+  return {
+    run(input, context) {
+      return runner.run(
+        {
+          ...input,
+          allowedTools: input.allowedTools.filter(
+            (tool) => !M1_UNAVAILABLE_TOOL_NAMES.has(tool),
+          ),
+          modeInstructions: `${input.modeInstructions}\n${M1_LOCAL_CAPABILITY_INSTRUCTIONS}`,
+        },
+        context,
+      );
+    },
+  };
 }

@@ -12,6 +12,7 @@ const serviceTokens = { secret: 's'.repeat(32) };
 const organizationId = newId('org');
 const projectId = newId('proj');
 const workspaceId = newId('ws');
+const runId = newId('run');
 const operationKey = `op_${'a'.repeat(64)}`;
 const execution = {
   exitCode: 0,
@@ -92,6 +93,7 @@ function fixture() {
     organizationId,
     projectId,
     workspaceId,
+    runId,
     fetch: fetchMock,
     operationKey: () => operationKey,
   });
@@ -147,6 +149,8 @@ describe('sandbox-backed WorkspaceRuntime', () => {
     for (const request of requests) {
       expect(request.headers.get('x-zapp-organization-id')).toBe(organizationId);
       expect(request.headers.get('x-zapp-project-id')).toBe(projectId);
+      expect(request.headers.get('x-zapp-run-id')).toBe(runId);
+      expect(request.headers.get('x-zapp-task-id')).toBeNull();
       const token = request.headers.get('x-zapp-service-token');
       expect(token).not.toBeNull();
       const verdict = await verifier.verifyServiceToken(token ?? '', 'sandbox-service');
@@ -163,12 +167,14 @@ describe('sandbox-backed WorkspaceRuntime', () => {
   it('rejects malformed success bodies and hides upstream response bodies', async () => {
     const malformed = createSandboxWorkspaceRuntime({
       baseUrl: 'http://sandbox.test', serviceTokens, organizationId, projectId, workspaceId,
+      runId,
       fetch: () => Promise.resolve(json({ exitCode: 'zero' })),
     });
     await expect(malformed.exec({ cmd: 'true', args: [], timeoutMs: 1_000 })).rejects.toThrow();
 
     const failed = createSandboxWorkspaceRuntime({
       baseUrl: 'http://sandbox.test', serviceTokens, organizationId, projectId, workspaceId,
+      runId,
       fetch: () => Promise.resolve(new Response('provider token=secret-value', { status: 502 })),
     });
     await expect(failed.health()).rejects.toEqual(

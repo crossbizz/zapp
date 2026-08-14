@@ -212,18 +212,32 @@ async function mockDeployment(page: Page): Promise<void> {
     specificationId: null,
     status: 'approved',
   } as const;
-  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects/${projectId}/releases(?:\\?.*)?$`, 'u'), async (route) => {
-    await response(route, {
-      items: [{ ...release, activeProduction: false, deployments: [], evidence: null, supportLevel: 'verified' }],
-      nextCursor: null,
-      rollbackTargets: [],
-    });
-  });
+  await page.route(
+    new RegExp(`^${apiBaseUrl}/v1/projects/${projectId}/releases(?:\\?.*)?$`, 'u'),
+    async (route) => {
+      await response(route, {
+        items: [
+          {
+            ...release,
+            activeProduction: false,
+            deployments: [],
+            evidence: null,
+            supportLevel: 'verified',
+          },
+        ],
+        nextCursor: null,
+        rollbackTargets: [],
+      });
+    },
+  );
   await page.route(`${apiBaseUrl}/v1/releases/${releaseId}`, async (route) => {
     await response(route, { release, readiness: { findings: [], state: 'ready' } });
   });
   await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/evidence`, async (route) => {
-    const block = (gateId: string) => ({ gates: [{ class: 'support_level_policy', evidenceArtifactIds: [], gateId, status: 'passed' }], status: 'passed' });
+    const block = (gateId: string) => ({
+      gates: [{ class: 'support_level_policy', evidenceArtifactIds: [], gateId, status: 'passed' }],
+      status: 'passed',
+    });
     await response(route, {
       evidence: {
         browser_tests: block('browser_smoke'),
@@ -242,14 +256,22 @@ async function mockDeployment(page: Page): Promise<void> {
       },
     });
   });
-  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deployment-preview?retarget=false`, async (route) => {
-    await response(route, {
-      deploymentType: 'first_deploy',
-      effects: { activeUsers: 'No users affected', productionData: 'Created', secrets: 'Applied', url: 'Created' },
-      requiresExplicitDataDisposition: false,
-      title: 'First deploy',
-    });
-  });
+  await page.route(
+    `${apiBaseUrl}/v1/releases/${releaseId}/deployment-preview?retarget=false`,
+    async (route) => {
+      await response(route, {
+        deploymentType: 'first_deploy',
+        effects: {
+          activeUsers: 'No users affected',
+          productionData: 'Created',
+          secrets: 'Applied',
+          url: 'Created',
+        },
+        requiresExplicitDataDisposition: false,
+        title: 'First deploy',
+      });
+    },
+  );
   await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deploy`, async (route) => {
     await response(route, { deploymentId });
   });
@@ -264,7 +286,11 @@ async function mockDeployment(page: Page): Promise<void> {
       terminalSuccess: {
         customDomainAction: { href: `/v1/projects/${projectId}/domains`, method: 'POST' },
         evidence: { statusLink: `/v1/releases/${releaseId}/evidence` },
-        monitoring: { faroAppLink: 'https://grafana.example.test/faro', grafanaDashboardLinks: [], posthogAnnotationLink: 'https://posthog.example.test/release' },
+        monitoring: {
+          faroAppLink: 'https://grafana.example.test/faro',
+          grafanaDashboardLinks: [],
+          posthogAnnotationLink: 'https://posthog.example.test/release',
+        },
         permanentUrl: 'https://accessible.example.test',
         previewChanges: { note: 'Preview changes require a new release.', requireRedeploy: true },
         previousHealthyRelease: null,
@@ -327,7 +353,7 @@ test('keeps Manage, Billing, and mobile builder navigation axe clean and contain
 
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto(`/projects/${projectId}`);
-  await expect(page.getByRole('button', { name: 'Open navigation' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open navigation' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Conversation' })).toHaveAttribute(
     'aria-pressed',
     'true',
@@ -355,7 +381,9 @@ test('keeps Manage, Billing, and mobile builder navigation axe clean and contain
   await axeClean(page);
 });
 
-test('runs prompt to Preview to successful deploy using only keyboard controls', async ({ page }) => {
+test('runs prompt to Preview to successful deploy using only keyboard controls', async ({
+  page,
+}) => {
   await mockBuilder(page);
   await mockCreation(page);
   await mockDashboard(page);
@@ -375,9 +403,7 @@ test('runs prompt to Preview to successful deploy using only keyboard controls',
   await page.keyboard.press('Enter');
   await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true');
 
-  const projects = page
-    .getByRole('navigation', { name: 'Primary' })
-    .getByRole('link', { name: 'Projects' });
+  const projects = page.getByRole('link', { name: 'Projects' });
   await tabTo(page, projects);
   await page.keyboard.press('Enter');
   await expect(page).toHaveURL('/projects');

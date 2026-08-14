@@ -394,7 +394,10 @@ describe('agent session loop', () => {
 
     const result = await session.run(input());
 
-    expect(result.status).toBe('budget_exhausted');
+    expect(result).toMatchObject({
+      status: 'budget_exhausted',
+      errorCode: 'budget_exceeded',
+    });
     expect(events).toHaveLength(1);
     const emitted = events[0];
     expect(emitted?.type).toBe('usage.recorded');
@@ -740,7 +743,10 @@ describe('agent session loop', () => {
       budgets: { maxTurns: 1, maxTokens: 1_000, maxWallClockMs: 30_000 },
     });
 
-    expect(result.status).toBe('budget_exhausted');
+    expect(result).toMatchObject({
+      status: 'budget_exhausted',
+      errorCode: 'turn_budget_exhausted',
+    });
     expect(scripted.requests).toHaveLength(1);
     expect(await readFile(join(root, 'one-turn.txt'), 'utf8')).toBe('written once');
   });
@@ -1333,6 +1339,61 @@ describe('agent session loop', () => {
     expect(afterNominalExpiry).toMatchObject({ error: { name: 'SessionLeaseBusyError' } });
     expect(environmentCalls).toBe(1);
     expect(completed.status).toBe('completed');
+  });
+
+  it('bounds oversized tool output before publishing it to the event timeline', async () => {
+    const { registry, root } = await memoryRegistry();
+    await writeFile(join(root, 'large.txt'), 'x'.repeat(80_000), 'utf8');
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-large-read',
+          toolName: 'read_file',
+          input: { path: 'large.txt' },
+        },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
+        { type: 'done' },
+      ],
+      [
+        { type: 'text-delta', text: 'Large file inspected.' },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 10 },
+        { type: 'done' },
+      ],
+    ]);
+    const events: SessionEvent[] = [];
+    const session = createSessionLoop({
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: (event) => void events.push(event) },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    await expect(session.run(input(['read_file']))).resolves.toMatchObject({
+      status: 'completed',
+    });
+
+    const outputEvent = events.find((event) => event.type === 'tool.output');
+    expect(outputEvent).toBeDefined();
+    expect(Buffer.byteLength(JSON.stringify(outputEvent?.payload), 'utf8')).toBeLessThanOrEqual(
+      65_536,
+    );
+    expect(outputEvent?.payload['output']).toEqual({
+      type: 'truncated',
+      byteSize: 80_061,
+      message: 'Tool output exceeded the inline event limit and was omitted from the timeline.',
+    });
+    expect(JSON.stringify(scripted.requests[1]?.messages.at(-1))).toContain('x'.repeat(1_000));
   });
 
   it('replays a durable event outbox after post-mutation delivery failure', async () => {

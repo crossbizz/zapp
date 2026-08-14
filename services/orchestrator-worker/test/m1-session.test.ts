@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,6 +31,10 @@ class RecordingRuntime extends MemoryWorkspaceRuntime {
   readonly commands: { readonly cmd: string; readonly args: readonly string[] }[] = [];
   healthChecks = 0;
 
+  constructor(private readonly rootPath: string) {
+    super(rootPath);
+  }
+
   override exec(input: {
     cmd: string;
     args: string[];
@@ -40,6 +44,17 @@ class RecordingRuntime extends MemoryWorkspaceRuntime {
     pty?: boolean;
   }): Promise<ExecResult> {
     this.commands.push({ cmd: input.cmd, args: input.args });
+    if (input.cmd === 'mkdir') {
+      const path = input.args.at(-1);
+      if (path === undefined) throw new Error('mkdir path is required');
+      return mkdir(join(this.rootPath, path), { recursive: true }).then(() => ({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        durationMs: 1,
+        truncated: false,
+      }));
+    }
     return Promise.resolve({
       exitCode: 0,
       stdout: input.cmd === 'node' ? 'checked' : 'installed',
@@ -87,6 +102,106 @@ const usage = {
 };
 
 describe('M1 builder session composition', () => {
+  it('creates missing parent directories before writing application source', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-m1-nested-write-'));
+    roots.push(root);
+    const runtime = new RecordingRuntime(root);
+    Object.defineProperty(runtime, 'kind', { value: 'cloud' });
+    const registry = createM1ToolRegistry(runtime, { redact: (value) => value });
+
+    await expect(
+      registry.execute(
+        'write_file',
+        { path: 'app/components/Hero.tsx', content: 'export function Hero() { return null; }\n' },
+        {
+          organizationId: newId('org'),
+          projectId: newId('proj'),
+          runId: newId('run'),
+          taskId: 'm1-builder',
+          step: 'nested-write',
+        },
+      ),
+    ).resolves.toMatchObject({ ok: true, path: 'app/components/Hero.tsx' });
+    await expect(readFile(join(root, 'app/components/Hero.tsx'), 'utf8')).resolves.toBe(
+      'export function Hero() { return null; }\n',
+    );
+    expect(runtime.commands).toEqual([
+      { cmd: 'mkdir', args: ['-p', '--', 'app/components'] },
+    ]);
+  });
+
+  it('provides a runnable bootstrap contract for a blank self-service project', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-m1-blank-project-'));
+    roots.push(root);
+    const runtime = new RecordingRuntime(root);
+    Object.defineProperty(runtime, 'kind', { value: 'cloud' });
+    const registry = createM1ToolRegistry(runtime, { redact: (value) => value });
+
+    await expect(
+      registry.execute(
+        'read_project_contract',
+        {},
+        {
+          organizationId: newId('org'),
+          projectId: newId('proj'),
+          runId: newId('run'),
+          taskId: 'm1-builder',
+          step: 'bootstrap-contract',
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      version: 1,
+      contract: {
+        package_manager: 'pnpm',
+        workspace_root: '.',
+        install: { command: 'pnpm install' },
+        develop: { command: 'pnpm dev', port: 3000 },
+        build: { command: 'pnpm build' },
+      },
+    });
+  });
+
+  it('keeps dependency and generated output trees out of the builder file inventory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-m1-source-inventory-'));
+    roots.push(root);
+    await Promise.all([
+      mkdir(join(root, 'src'), { recursive: true }),
+      mkdir(join(root, 'node_modules', 'dependency'), { recursive: true }),
+      mkdir(join(root, '.next', 'cache'), { recursive: true }),
+      mkdir(join(root, '.git', 'objects'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(root, 'src', 'page.tsx'), 'export default function Page() { return null; }'),
+      writeFile(join(root, 'node_modules', 'dependency', 'index.js'), 'module.exports = {};'),
+      writeFile(join(root, '.next', 'cache', 'bundle.js'), 'generated'),
+      writeFile(join(root, '.git', 'objects', 'pack'), 'git data'),
+    ]);
+    const runtime = new RecordingRuntime(root);
+    Object.defineProperty(runtime, 'kind', { value: 'cloud' });
+    const registry = createM1ToolRegistry(runtime, { redact: (value) => value });
+
+    await expect(
+      registry.execute(
+        'list_files',
+        { path: '.', maxDepth: 10 },
+        {
+          organizationId: newId('org'),
+          projectId: newId('proj'),
+          runId: newId('run'),
+          taskId: 'm1-builder',
+          step: 'source-inventory',
+        },
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      entries: [
+        { path: 'src', type: 'directory' },
+        { path: 'src/page.tsx', type: 'file' },
+      ],
+    });
+  });
+
   it('builds through registered tools, starts a healthy preview, and resumes for a follow-up', async () => {
     const root = await mkdtemp(join(tmpdir(), 'zapp-m1-session-'));
     roots.push(root);
@@ -232,6 +347,8 @@ describe('M1 builder session composition', () => {
       role: 'user',
       content: '[currentTask]\nCreate a small landing page and start its preview.',
     });
+    expect(scripted.requests[0]?.maxOutputTokens).toBeGreaterThanOrEqual(8_000);
+    expect(scripted.requests[0]).not.toHaveProperty('taskId');
 
     await expect(
       runner.run(
@@ -300,5 +417,105 @@ describe('M1 builder session composition', () => {
         tokenCounter: { countRequestTokens: () => 1 },
       }),
     ).toThrow(M1SandboxBoundaryError);
+  });
+
+  it('does not advertise unavailable local ports to the M1 builder', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-m1-available-tools-'));
+    roots.push(root);
+    await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'node app.js' } }));
+    const runtime = new RecordingRuntime(root);
+    Object.defineProperty(runtime, 'kind', { value: 'cloud' });
+    const scripted = scriptedGateway([
+      [{ type: 'text-delta', text: 'Used only runnable local tools.' }, usage, { type: 'done' }],
+    ]);
+    const runner = createM1BuilderSessionRunner({
+      gateway: scripted.gateway,
+      runtime,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: { builder: 'Build.', planner: 'Plan.', verifier: 'Verify.', summarizer: 'Summarize.' },
+      redactor: { redact: (value) => value },
+      tokenCounter: { countRequestTokens: () => 1 },
+    });
+
+    await expect(
+      runner.run(
+        RunBuilderSessionInputSchema.parse({
+          runId: newId('run'),
+          organizationId: newId('org'),
+          projectId: newId('proj'),
+          workspaceId: newId('ws'),
+          mode: 'build',
+          model: null,
+          prompt: 'Build and verify a local preview.',
+          allowedTools: [
+            'run_dev_server',
+            'inspect_browser_console',
+            'run_browser_tests',
+            'run_preview_smoke_test',
+            'deploy_release',
+          ],
+          modeInstructions: 'Use only capabilities available in the local runtime.',
+          budget: { maxCredits: 100 },
+          idempotencyKey: 'm1-available-tools-test',
+        }),
+        {
+          transcripts: new MemoryTranscriptStore(),
+          signal: new AbortController().signal,
+          events: { emit: () => Promise.resolve() },
+          resumeCheckpoint: undefined,
+        },
+      ),
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(scripted.requests[0]?.tools?.map(({ name }) => name)).toEqual(['run_dev_server']);
+    expect(scripted.requests[0]?.messages[0]?.content).toContain(
+      'Browser evidence, release, deployment, environment, and migration tools are unavailable',
+    );
+  });
+
+  it('keeps unavailable object-union tools out of the local gateway request', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-m1-union-schema-'));
+    roots.push(root);
+    await writeFile(join(root, 'package.json'), JSON.stringify({ scripts: { dev: 'node app.js' } }));
+    const runtime = new RecordingRuntime(root);
+    Object.defineProperty(runtime, 'kind', { value: 'cloud' });
+    const scripted = scriptedGateway([
+      [{ type: 'text-delta', text: 'Schema accepted.' }, usage, { type: 'done' }],
+    ]);
+    const runner = createM1BuilderSessionRunner({
+      gateway: scripted.gateway,
+      runtime,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: { builder: 'Build.', planner: 'Plan.', verifier: 'Verify.', summarizer: 'Summarize.' },
+      redactor: { redact: (value) => value },
+      tokenCounter: { countRequestTokens: () => 1 },
+    });
+    const runId = newId('run');
+
+    await expect(
+      runner.run(
+        RunBuilderSessionInputSchema.parse({
+          runId,
+          organizationId: newId('org'),
+          projectId: newId('proj'),
+          workspaceId: newId('ws'),
+          mode: 'build',
+          model: null,
+          prompt: 'Exercise the complete neutral tool schema boundary.',
+          allowedTools: ['run_browser_tests', 'capture_screenshot', 'deploy_release'],
+          modeInstructions: 'Return a concise summary.',
+          budget: { maxCredits: 100 },
+          idempotencyKey: 'm1-union-schema-test',
+        }),
+        {
+          transcripts: new MemoryTranscriptStore(),
+          signal: new AbortController().signal,
+          events: { emit: () => Promise.resolve() },
+          resumeCheckpoint: undefined,
+        },
+      ),
+    ).resolves.toMatchObject({ status: 'completed', summary: 'Schema accepted.' });
+    expect(scripted.requests[0]?.tools).toEqual([]);
   });
 });

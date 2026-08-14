@@ -53,6 +53,23 @@ function applicationCookieOnly(rawCookie: string | undefined): string | undefine
   return kept.length === 0 ? undefined : kept.join('; ');
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return (
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized === '[::1]' ||
+    /^127(?:\.\d{1,3}){3}$/u.test(normalized)
+  );
+}
+
+export function isAllowedPreviewPublicOrigin(origin: URL): boolean {
+  return (
+    origin.protocol === 'https:' ||
+    (origin.protocol === 'http:' && isLoopbackHostname(origin.hostname))
+  );
+}
+
 export function sanitizePreviewRequestHeaders(
   headers: PreviewHeaders,
   applicationCookie?: string,
@@ -75,9 +92,11 @@ export function sanitizePreviewRequestHeaders(
   const cookie = applicationCookieOnly(applicationCookie);
   if (cookie !== undefined) sanitized.cookie = cookie;
   if (publicOrigin !== undefined) {
-    if (publicOrigin.protocol !== 'https:') throw new Error('Preview public origin must use HTTPS');
+    if (!isAllowedPreviewPublicOrigin(publicOrigin)) {
+      throw new Error('Preview public origin must use HTTPS outside loopback development hosts');
+    }
     sanitized['x-forwarded-host'] = publicOrigin.host;
-    sanitized['x-forwarded-proto'] = 'https';
+    sanitized['x-forwarded-proto'] = publicOrigin.protocol.slice(0, -1);
   }
   return sanitized;
 }
@@ -223,7 +242,15 @@ export function createPreviewTransport(resolver: PreviewTunnelResolver): Preview
         await response.cancel();
       };
       if (untrustedInput.signal?.aborted === true) await cancel();
-      else untrustedInput.signal?.addEventListener('abort', () => void cancel(), { once: true });
+      else {
+        untrustedInput.signal?.addEventListener(
+          'abort',
+          () => {
+            void cancel().catch(() => undefined);
+          },
+          { once: true },
+        );
+      }
       return {
         statusCode: z.number().int().min(100).max(599).parse(response.statusCode),
         headers: sanitizePreviewResponseHeaders(

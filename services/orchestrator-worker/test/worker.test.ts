@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ActivityIdempotencyStore } from '../src/activities/idempotency.js';
 import {
   createBusinessFailure,
+  DEFAULT_MAX_HEARTBEAT_THROTTLE_INTERVAL,
   createProductionCapabilityScanWorker,
   createProductionRunWorker,
   createRunWorker,
@@ -58,6 +59,7 @@ describe('AR-9 worker queue and activity policy', () => {
     expect(create.mock.calls[0]?.[0]).toMatchObject({
       taskQueue: 'agent-runs',
       interceptors: { activity: [expect.any(Function)] },
+      maxHeartbeatThrottleInterval: DEFAULT_MAX_HEARTBEAT_THROTTLE_INTERVAL,
     });
     create.mockRestore();
   });

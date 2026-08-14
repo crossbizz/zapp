@@ -47,6 +47,7 @@ interface PreviewFrameProps {
   readonly organizationId: string;
   readonly projectId: string;
   readonly runId?: string;
+  readonly runStatus?: BuilderRun['status'];
 }
 
 interface StoredShareAttempt {
@@ -89,12 +90,17 @@ function previewLifecycle(events: readonly RunEvent[]): {
   const latestCommit = [...events]
     .reverse()
     .find((candidate) => candidate.type === 'commit.created');
+  const latestCompletedRun = [...events]
+    .reverse()
+    .find((candidate) => candidate.type === 'run.completed');
   return {
     ...(event === undefined ? {} : { event }),
     stale:
       event?.type === 'preview.ready' &&
       latestCommit !== undefined &&
-      latestCommit.data.sequence > event.data.sequence,
+      latestCommit.data.sequence > event.data.sequence &&
+      (latestCompletedRun === undefined ||
+        latestCompletedRun.data.sequence < latestCommit.data.sequence),
   };
 }
 
@@ -148,21 +154,25 @@ function PreviewStyles(): ReactElement {
     <style jsx global>{`
       .zapp-preview-panel {
         display: grid;
-        min-height: 34rem;
-        gap: 0.75rem;
-        padding: 0.75rem;
+        height: 100%;
+        min-height: 0;
+        grid-template-rows: auto minmax(0, 1fr) auto;
         background: var(--zapp-surface-canvas);
         container-type: inline-size;
       }
       .zapp-preview-toolbar {
         display: grid;
-        grid-template-columns: auto minmax(8rem, 1fr) auto auto;
+        min-height: 2rem;
+        grid-template-columns: auto minmax(6rem, 1fr) auto auto auto;
         align-items: center;
-        gap: 0.75rem;
+        gap: 0.4rem;
+        padding: 0.2rem 0.65rem;
+        border-bottom: 1px solid var(--zapp-border);
+        background: var(--zapp-surface-raised);
       }
       .zapp-preview-path {
         overflow: hidden;
-        padding: 0.45rem 0.75rem;
+        padding: 0.35rem 0.65rem;
         border: 1px solid var(--zapp-border);
         border-radius: var(--zapp-radius-pill);
         background: var(--zapp-surface-raised);
@@ -177,11 +187,33 @@ function PreviewStyles(): ReactElement {
         gap: 0.375rem;
       }
       .zapp-preview-toolbar-actions .zapp-button {
+        min-height: 2rem;
+        padding: 0.35rem 0.65rem;
+        font-size: var(--zapp-text-12);
+        white-space: nowrap;
+      }
+      .zapp-preview-toolbar-actions .zapp-icon-button {
+        width: 2rem;
+        height: 2rem;
+      }
+      .zapp-preview-toolbar-actions .zapp-icon-button svg {
+        width: 0.9rem;
+        height: 0.9rem;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.8;
+      }
+      .zapp-preview-select-mode .zapp-button {
+        min-height: 2rem;
+        padding: 0.35rem 0.65rem;
+        font-size: var(--zapp-text-12);
         white-space: nowrap;
       }
       .zapp-preview-devices button {
-        min-height: 2.25rem;
-        padding: 0.35rem 0.65rem;
+        min-height: 2rem;
+        padding: 0.3rem 0.55rem;
         border: 1px solid var(--zapp-border);
         border-radius: var(--zapp-radius-pill);
         background: var(--zapp-surface-raised);
@@ -206,19 +238,26 @@ function PreviewStyles(): ReactElement {
       }
       .zapp-preview-stage {
         display: grid;
-        min-height: 28rem;
+        min-height: 0;
         place-items: stretch center;
         overflow: auto;
-        border: 1px solid var(--zapp-border);
-        border-radius: var(--zapp-radius-panel);
         background: var(--zapp-surface-muted);
       }
       .zapp-preview-stage iframe {
         width: var(--zapp-preview-width);
         max-width: 100%;
-        min-height: 28rem;
+        height: 100%;
+        min-height: 100%;
         border: 0;
         background: white;
+      }
+      .zapp-preview-stage > .zapp-empty-state {
+        align-self: stretch;
+        max-width: none;
+        align-content: center;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
       }
       .zapp-preview-state {
         display: grid;
@@ -252,7 +291,16 @@ function PreviewStyles(): ReactElement {
         background: var(--zapp-surface-subtle);
       }
       .zapp-preview-footer {
+        min-height: 0;
         justify-content: space-between;
+        padding: 0.2rem 0.65rem;
+        border-top: 1px solid var(--zapp-border);
+        background: var(--zapp-surface-raised);
+      }
+      .zapp-preview-footer .zapp-button {
+        min-height: 2rem;
+        padding: 0.35rem 0.65rem;
+        font-size: var(--zapp-text-12);
       }
       .zapp-preview-capture-table {
         width: 100%;
@@ -265,9 +313,9 @@ function PreviewStyles(): ReactElement {
         text-align: left;
         vertical-align: top;
       }
-      @container (max-width: 52rem) {
+      @container (max-width: 44rem) {
         .zapp-preview-toolbar {
-          grid-template-columns: auto minmax(8rem, 1fr) auto;
+          grid-template-columns: auto minmax(8rem, 1fr) auto auto;
         }
         .zapp-preview-devices {
           grid-column: 1 / -1;
@@ -275,7 +323,7 @@ function PreviewStyles(): ReactElement {
           justify-content: center;
         }
         .zapp-preview-toolbar-actions {
-          grid-column: 3;
+          grid-column: 4;
           grid-row: 1;
         }
       }
@@ -318,6 +366,7 @@ export function PreviewFrame({
   organizationId,
   projectId,
   runId,
+  runStatus,
 }: PreviewFrameProps): ReactElement {
   const [attaching, setAttaching] = useState(false);
   const [captureEvents, setCaptureEvents] = useState<readonly BuilderPreviewEvent[]>([]);
@@ -359,6 +408,7 @@ export function PreviewFrame({
   const { events } = useRunEvents(runId, organizationId);
   const lifecycle = useMemo(() => previewLifecycle(events), [events]);
   const workspaceId = eventWorkspaceId(lifecycle.event);
+  const previewUsable = lifecycle.event?.type === 'preview.ready' || logs?.state === 'ready';
 
   const refreshWorkspace = useCallback(
     async (signal?: AbortSignal, reset = false): Promise<void> => {
@@ -484,7 +534,7 @@ export function PreviewFrame({
   }, [lifecycle.event?.type, refreshLatestWorkspace, workspaceId]);
 
   useEffect(() => {
-    if (workspaceId === undefined || lifecycle.event?.type !== 'preview.ready') return;
+    if (workspaceId === undefined || !previewUsable) return;
     let current = true;
     let renewalTimer: number | undefined;
     const stored = readShareAttempt(workspaceId);
@@ -529,10 +579,10 @@ export function PreviewFrame({
       current = false;
       if (renewalTimer !== undefined) window.clearTimeout(renewalTimer);
     };
-  }, [lifecycle.event?.type, organizationId, shareRenewalGeneration, workspaceId]);
+  }, [organizationId, previewUsable, shareRenewalGeneration, workspaceId]);
 
   useEffect(() => {
-    if (workspaceId === undefined || lifecycle.event?.type !== 'preview.ready') return;
+    if (workspaceId === undefined || !previewUsable) return;
     let current = true;
     setCaptureFailed(false);
     const subscription = createControlPlaneClient(organizationId).subscribePreviewEvents(
@@ -556,10 +606,14 @@ export function PreviewFrame({
       current = false;
       subscription.close();
     };
-  }, [connectionGeneration, lifecycle.event?.type, organizationId, workspaceId]);
+  }, [connectionGeneration, organizationId, previewUsable, workspaceId]);
 
   const previewState: PreviewState = (() => {
-    if (lifecycle.event?.type === 'preview.failed' || logs?.state === 'failed') return 'failed';
+    if (
+      logs?.state !== 'ready' &&
+      (lifecycle.event?.type === 'preview.failed' || logs?.state === 'failed')
+    )
+      return 'failed';
     if (
       lifecycle.event?.type === 'preview.starting' ||
       logs?.state === 'starting' ||
@@ -687,7 +741,9 @@ export function PreviewFrame({
           return;
         selectionScreenshotKeyRef.current = undefined;
         if (blob.size <= 0 || blob.size > maximumComposerImageBytes) {
-          setOperationStatus('The selected-element screenshot is outside the 1 byte to 8 MiB attachment limit.');
+          setOperationStatus(
+            'The selected-element screenshot is outside the 1 byte to 8 MiB attachment limit.',
+          );
           return;
         }
         const accepted = await onAttachSelectionToChat(
@@ -846,8 +902,20 @@ export function PreviewFrame({
     if (lifecycle.event === undefined || workspaceId === undefined) {
       return (
         <EmptyState
-          description="The preview will appear after the agent starts a workspace."
-          title="Preview unavailable"
+          description={
+            runStatus === 'queued'
+              ? 'The agent accepted your request and will start the workspace next.'
+              : runStatus === 'running'
+                ? 'The agent is preparing the first workspace and preview.'
+                : 'The preview will appear after the agent starts a workspace.'
+          }
+          title={
+            runStatus === 'queued'
+              ? 'Build queued'
+              : runStatus === 'running'
+                ? 'Workspace is starting'
+                : 'Preview unavailable'
+          }
         />
       );
     }
@@ -941,15 +1009,16 @@ export function PreviewFrame({
         path={path}
         {...(publicShareUrl === undefined ? {} : { shareUrl: publicShareUrl })}
         sharing={sharing}
-      />
-      <SelectMode
-        disabled={previewState !== 'ready' || selecting}
-        iframeRef={iframeRef}
-        onSelected={(selection) => {
-          void attachSelectedElement(selection);
-        }}
-        {...(previewUrl === undefined ? {} : { previewUrl })}
-      />
+      >
+        <SelectMode
+          disabled={previewState !== 'ready' || selecting}
+          iframeRef={iframeRef}
+          onSelected={(selection) => {
+            void attachSelectedElement(selection);
+          }}
+          {...(previewUrl === undefined ? {} : { previewUrl })}
+        />
+      </PreviewToolbar>
       {previewState === 'stale' ? (
         <div className="zapp-preview-stale-banner" role="status">
           Preview is behind latest changes — Restart{' '}
@@ -958,7 +1027,9 @@ export function PreviewFrame({
           </Button>
         </div>
       ) : null}
-      <div className="zapp-preview-stage">{previewContent()}</div>
+      <div aria-label="Application preview" className="zapp-preview-stage" role="region">
+        {previewContent()}
+      </div>
       <div className="zapp-preview-footer">
         <ConsoleDrawer
           attaching={attaching}

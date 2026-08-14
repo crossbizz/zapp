@@ -277,6 +277,11 @@ const WorkspaceScopeHeadersSchema = z
     projectId: idSchema('proj'),
   })
   .strict();
+const ExecutionScopeHeadersSchema = z
+  .object({
+    runId: idSchema('run'),
+  })
+  .strict();
 const WorkspaceParamsSchema = z.object({ workspaceId: idSchema('ws') }).strict();
 const ProjectParamsSchema = z.object({ projectId: idSchema('proj') }).strict();
 const StorageMeasurementSchema = z
@@ -591,6 +596,12 @@ function readWorkspaceScope(request: FastifyRequest) {
   });
 }
 
+function readExecutionScope(request: FastifyRequest) {
+  return ExecutionScopeHeadersSchema.parse({
+    runId: request.headers['x-zapp-run-id'],
+  });
+}
+
 function createInputFor(
   row: WorkspaceLifecycleRow,
   body: z.infer<typeof CreateWorkspaceBodySchema>,
@@ -618,6 +629,7 @@ export function registerWorkspaceRoutes(
     readonly workspaceGit: WorkspaceGitService;
     readonly secrets: ScopedSecretInjector;
     readonly networkPolicies: NetworkPolicyRecorder;
+    readonly dependencyDomains: readonly string[];
     readonly events: PreviewLifecycleEventPort;
     readonly previewMonitors: PreviewMonitorCoordinator;
     readonly governor: RunawayComputeGovernor;
@@ -790,6 +802,7 @@ export function registerWorkspaceRoutes(
   };
   const emitPreview = (
     record: WorkspaceAttachmentRecord,
+    execution: z.infer<typeof ExecutionScopeHeadersSchema>,
     operationKey: string,
     action: 'start' | 'restart',
     type: 'preview.starting' | 'preview.ready' | 'preview.failed',
@@ -800,8 +813,7 @@ export function registerWorkspaceRoutes(
         eventKey: `ws13:${operationKey}:${action}:${type}`,
         organizationId: record.row.organizationId,
         projectId: record.row.projectId,
-        runId: record.attachment.requiredTags.run_id,
-        taskId: record.attachment.requiredTags.task_id,
+        runId: execution.runId,
         occurredAt: deps.now().toISOString(),
         type,
         visibility: 'user',
@@ -810,6 +822,7 @@ export function registerWorkspaceRoutes(
     );
   const emitTerminalPreviewFailure = async (
     record: WorkspaceAttachmentRecord,
+    execution: z.infer<typeof ExecutionScopeHeadersSchema>,
     failureId: string,
     monitorLeaseToken: string,
   ): Promise<void> => {
@@ -818,8 +831,7 @@ export function registerWorkspaceRoutes(
         eventKey: `ws13:failure:${record.row.id}:${failureId}`,
         organizationId: record.row.organizationId,
         projectId: record.row.projectId,
-        runId: record.attachment.requiredTags.run_id,
-        taskId: record.attachment.requiredTags.task_id,
+        runId: execution.runId,
         occurredAt: deps.now().toISOString(),
         type: 'preview.failed',
         visibility: 'user',
@@ -835,6 +847,9 @@ export function registerWorkspaceRoutes(
     record: WorkspaceAttachmentRecord,
     providerWorkspaceId: string,
     activate: boolean,
+    execution: z.infer<typeof ExecutionScopeHeadersSchema> = {
+      runId: record.attachment.requiredTags.run_id,
+    },
   ): Promise<void> => {
     const existing = failureMonitors.get(record.row.id);
     if (activate && existing !== undefined) {
@@ -893,7 +908,7 @@ export function registerWorkspaceRoutes(
             return;
           }
           if (page.state === 'failed' && page.failureId !== null) {
-            await emitTerminalPreviewFailure(record, page.failureId, leaseToken);
+            await emitTerminalPreviewFailure(record, execution, page.failureId, leaseToken);
             await deps.previewMonitors.complete(record.row.id, leaseToken);
             return;
           }
@@ -1120,6 +1135,10 @@ export function registerWorkspaceRoutes(
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = CreateWorkspaceBodySchema.parse(request.body);
+      const networkDomains =
+        body.networkProfile === 'dependency_install'
+          ? [...body.integrationDomains, ...deps.dependencyDomains]
+          : body.integrationDomains;
       requireIdempotencyKey(request.headers['idempotency-key'], body.operationKey);
       const scope = readWorkspaceScope(request);
       if (
@@ -1218,7 +1237,7 @@ export function registerWorkspaceRoutes(
             await deps.provider.updateNetworkPolicy({
               providerWorkspaceId,
               profile: body.networkProfile,
-              allowedDomains: body.integrationDomains,
+              allowedDomains: networkDomains,
             });
             await deps.networkPolicies.record(
               NetworkPolicyRecordSchema.parse({
@@ -1226,7 +1245,7 @@ export function registerWorkspaceRoutes(
                 organizationId: scope.organizationId,
                 projectId: scope.projectId,
                 workspaceId: body.workspace.id,
-                policy: resolveNetworkPolicy(body.networkProfile, body.integrationDomains),
+                policy: resolveNetworkPolicy(body.networkProfile, networkDomains),
                 providerEnforced: true,
                 recordedAt: deps.now(),
               }),
@@ -1982,6 +2001,7 @@ export function registerWorkspaceRoutes(
       async (request: FastifyRequest) => {
         const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
         const { contract } = DevServerBodySchema.parse(request.body);
+        const execution = readExecutionScope(request);
         const key = readIdempotencyKey(request.headers['idempotency-key']);
         const record = await resolveAttachment(workspaceId, request);
         const providerWorkspaceId = z.string().min(1).parse(record.row.providerWorkspaceId);
@@ -1993,7 +2013,7 @@ export function registerWorkspaceRoutes(
             'zapp.sandbox.id': workspaceId,
           },
           async () => {
-            await emitPreview(record, key, action, 'preview.starting');
+            await emitPreview(record, execution, key, action, 'preview.starting');
             let response: z.infer<typeof DevServerResponseSchema>;
             try {
               response = DevServerResponseSchema.parse(
@@ -2003,7 +2023,7 @@ export function registerWorkspaceRoutes(
               );
             } catch (error) {
               try {
-                await emitPreview(record, key, action, 'preview.failed', {
+                await emitPreview(record, execution, key, action, 'preview.failed', {
                   code: 'dev_server_operation_failed',
                 });
               } catch (eventError) {
@@ -2014,10 +2034,10 @@ export function registerWorkspaceRoutes(
               }
               throw error;
             }
-            await monitorTerminalPreviewFailure(record, providerWorkspaceId, true);
+            await monitorTerminalPreviewFailure(record, providerWorkspaceId, true, execution);
             // Delivery failure is not a dev-server failure. The caller retries the
             // same operation key; CP-13 and the agent both replay idempotently.
-            await emitPreview(record, key, action, 'preview.ready', {
+            await emitPreview(record, execution, key, action, 'preview.ready', {
               port: response.port,
               supervisorId: response.supervisorId,
             });

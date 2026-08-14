@@ -28,6 +28,7 @@ const RawSandboxServiceEnvSchema = z.object({
     .refine((value) => /^postgres(?:ql)?:\/\//u.test(value), 'Expected a PostgreSQL URL'),
   CONTROL_API_INTERNAL_URL: HttpUrlSchema,
   GIT_SERVICE_URL: HttpUrlSchema,
+  GIT_CLONE_BASE_URL: HttpUrlSchema,
   SERVICE_TOKEN_SECRET: placeholderSafeSecret(32),
   SERVICE_TOKEN_SECRET_PREVIOUS: z
     .union([placeholderSafeSecret(32), z.literal('')])
@@ -49,6 +50,7 @@ export interface SandboxServiceEnv {
   readonly databaseUrl: string;
   readonly controlApiInternalUrl: string;
   readonly gitServiceUrl: string;
+  readonly gitCloneBaseUrl: string;
   readonly serviceTokens: ServiceTokenConfig;
   readonly serviceTokenIssuer: typeof SERVICE_TOKEN_ISSUER;
   readonly modal: {
@@ -74,6 +76,7 @@ export const SandboxServiceEnvSchema: z.ZodType<
       databaseUrl: env.DATABASE_URL,
       controlApiInternalUrl: env.CONTROL_API_INTERNAL_URL,
       gitServiceUrl: env.GIT_SERVICE_URL,
+      gitCloneBaseUrl: env.GIT_CLONE_BASE_URL,
       serviceTokens: {
         secret: env.SERVICE_TOKEN_SECRET,
         ...(previousSecret === undefined || previousSecret === ''

@@ -112,10 +112,16 @@ const JsonSchemaNode: z.ZodTypeAny = z.lazy(() =>
           }
         }
       }),
+    z
+      .object({
+        description: z.string().optional(),
+        anyOf: z.array(JsonSchemaNode).min(1),
+      })
+      .strict(),
   ]),
 );
 
-export const InputJsonSchema = z
+const ObjectInputJsonSchema = z
   .object({
     type: z.literal('object'),
     description: z.string().optional(),
@@ -142,6 +148,34 @@ export const InputJsonSchema = z
       }
     }
   });
+
+function isObjectInputAlternative(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const schema = value as Record<string, unknown>;
+  if (schema.type === 'object') return true;
+  return Array.isArray(schema.anyOf) && schema.anyOf.every(isObjectInputAlternative);
+}
+
+const ObjectUnionInputJsonSchema = z
+  .object({
+    description: z.string().optional(),
+    anyOf: z.array(JsonSchemaNode).min(1),
+  })
+  .strict()
+  .superRefine((schema, context) => {
+    if (!schema.anyOf.every(isObjectInputAlternative)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'tool input alternatives must all describe objects',
+        path: ['anyOf'],
+      });
+    }
+  });
+
+export const InputJsonSchema = z.union([
+  ObjectInputJsonSchema,
+  ObjectUnionInputJsonSchema,
+]);
 
 const TextPartSchema = z.object({ type: z.literal('text'), text: z.string() }).strict();
 const ToolCallPartSchema = z

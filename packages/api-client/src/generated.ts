@@ -3866,6 +3866,9 @@ export interface paths {
                                     required?: string[];
                                     /** @enum {string} */
                                     type: "object";
+                                } | {
+                                    anyOf: unknown[];
+                                    description?: string;
                                 });
                                 description?: string;
                                 maxProperties?: number;
@@ -3924,11 +3927,73 @@ export interface paths {
                                         required?: string[];
                                         /** @enum {string} */
                                         type: "object";
+                                    } | {
+                                        anyOf: unknown[];
+                                        description?: string;
                                     };
                                 };
                                 required?: string[];
                                 /** @enum {string} */
                                 type: "object";
+                            } | {
+                                anyOf: ({
+                                    const?: string;
+                                    default?: string;
+                                    description?: string;
+                                    enum?: string[];
+                                    format?: string;
+                                    maxLength?: number;
+                                    minLength?: number;
+                                    pattern?: string;
+                                    /** @enum {string} */
+                                    type: "string";
+                                } | {
+                                    const?: number;
+                                    default?: number;
+                                    description?: string;
+                                    enum?: number[];
+                                    exclusiveMaximum?: number;
+                                    exclusiveMinimum?: number;
+                                    maximum?: number;
+                                    minimum?: number;
+                                    multipleOf?: number;
+                                    /** @enum {string} */
+                                    type: "number" | "integer";
+                                } | {
+                                    const?: boolean;
+                                    default?: boolean;
+                                    description?: string;
+                                    enum?: boolean[];
+                                    /** @enum {string} */
+                                    type: "boolean";
+                                } | {
+                                    description?: string;
+                                    /** @enum {string} */
+                                    type: "null";
+                                } | {
+                                    description?: string;
+                                    items: unknown;
+                                    maxItems?: number;
+                                    minItems?: number;
+                                    /** @enum {string} */
+                                    type: "array";
+                                    uniqueItems?: boolean;
+                                } | {
+                                    additionalProperties?: boolean | unknown;
+                                    description?: string;
+                                    maxProperties?: number;
+                                    minProperties?: number;
+                                    properties: {
+                                        [key: string]: unknown;
+                                    };
+                                    required?: string[];
+                                    /** @enum {string} */
+                                    type: "object";
+                                } | {
+                                    anyOf: unknown[];
+                                    description?: string;
+                                })[];
+                                description?: string;
                             };
                             name: string;
                         }[];

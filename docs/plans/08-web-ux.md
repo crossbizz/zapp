@@ -292,11 +292,11 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Binding execution expansion:** `docs/superpowers/plans/2026-08-13-immersive-builder-repair.md`
 **Files:** The exact Create/Modify lists in the binding execution expansion. No desktop files are in scope.
 
-- [ ] **Prompt feedback:** an API-accepted prompt is immediately visible with a truthful queued/running state before the first SSE event; the durable `message.user` event reconciles without duplication; failures retain the input and retry identity.
-- [ ] **Immersive layout:** the builder owns the full viewport, uses a compact header and bounded conversation column, preserves resizing/Mission Control/responsive panes, and removes the nested product-sidebar/mode-switcher hierarchy.
-- [ ] **Preview hierarchy:** the preview remains the dominant surface with one compact toolbar, a fill-height stage, and working route/device/open/refresh/share/select/console/error flows.
-- [ ] **Verify/review/ship:** focused and full web gates, accessibility/responsive browser acceptance, full-stack authenticated prompt-to-preview verification, repository verification, exact-head push, and green CI/Security.
-- [ ] Commit: `fix(web): repair immersive builder prompt and preview flow`
+- [x] **Prompt feedback:** an API-accepted prompt is immediately visible with a truthful queued/running state before the first SSE event; the durable `message.user` event reconciles without duplication; failures retain the input and retry identity.
+- [x] **Immersive layout:** the builder owns the full viewport, uses a compact header and bounded conversation column, preserves resizing/Mission Control/responsive panes, and removes the nested product-sidebar/mode-switcher hierarchy.
+- [x] **Preview hierarchy:** the preview remains the dominant surface with one compact toolbar, a fill-height stage, and working route/device/open/refresh/share/select/console/error flows.
+- [x] **Verify/review/ship:** focused and full web gates, accessibility/responsive browser acceptance, full-stack authenticated prompt-to-preview verification, repository verification, exact-head push, and green CI/Security.
+- [x] Commit: `fix(web): repair immersive builder prompt and preview flow`
 
 ---
 
@@ -311,6 +311,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-14 WEB-18-FIX-3 done — Repaired the real prompt-to-workspace pipeline, authenticated preview transport, persistent sandbox/Git lifecycle, and compact immersive builder; verified a real Anthropic run plus preview share/redeem chain, live Stytch-to-Google redirect on port 3000, web 132/132, preview proxy 110/110, sandbox 194 passed with 18 provider-gated skips, and the complete cold repository gate including private Forgejo clone.
 - 2026-08-13 WEB-4-FIX-1 done — Preserved the two one-second durable import polls while widening only the cold-run navigation observer; focused repeats passed 5/5, web lint/typecheck passed, and full repository verification including GATE-5 passed before the exact-head push gate.
 - 2026-08-13 WEB-18-FIX-2 done - Added exact-`APP_BASE_URL`, credentialed CORS with the full public API method set so the real shell can call the control plane from the browser; the focused test passed 2/2, control-api lint/typecheck passed, PostgreSQL plus the live Stytch adapter passed 5/5, and localhost:3000 reached the real Stytch OAuth host; interactive Google completion remains unverified because both controlled browsers block `test.stytch.com` with `ERR_BLOCKED_BY_CLIENT` before Google renders.
 - 2026-08-13 WEB-18 done - Shipped the reference-quality TypeScript product shell, real Stytch redirect login, API-backed dashboard/projects/settings/builder Manage/account/template/release/health flows, and tenant-scoped thumbnails; two visual/accessibility rounds closed, connected E1 passed, full web passed 126/126, the credentialed Stytch adapter gate passed 5/5, and `pnpm verify` passed 94/94 package tasks, 24/24 integration tasks, tenant isolation 55/55, with the disposable local test database moved to tmpfs after Docker Desktop fsync timeouts; Forgejo gate skipped because `FORGEJO_ADMIN_TOKEN` is unset.

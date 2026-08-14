@@ -214,6 +214,8 @@ interface RepositoryResponse {
 export interface TokenServiceOptions {
   readonly client: ForgejoClient;
   readonly audit: GitAuditSink;
+  /** Optional public origin used by remote workspaces instead of Forgejo's API origin. */
+  readonly cloneBaseUrl?: string;
   /** Injected in tests so expiry is asserted rather than waited for. */
   readonly now?: () => Date;
 }
@@ -221,6 +223,7 @@ export interface TokenServiceOptions {
 export function createTokenService(options: TokenServiceOptions): TokenService {
   const { client, audit } = options;
   const now = options.now ?? ((): Date => new Date());
+  const cloneBaseUrl = options.cloneBaseUrl?.replace(/\/+$/u, '');
 
   function repoPath(ref: string): string {
     const { owner, name } = parseInternalRepoRef(ref);
@@ -341,7 +344,12 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
         },
       });
 
-      return { token, username, cloneUrl, expiresAt };
+      return {
+        token,
+        username,
+        cloneUrl: cloneBaseUrl === undefined ? cloneUrl : `${cloneBaseUrl}/${ref}.git`,
+        expiresAt,
+      };
     } catch (error) {
       await deleteUser(username).catch(() => {
         // The restart-safe expiry sweep remains the fallback for this identity.

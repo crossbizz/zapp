@@ -88,6 +88,13 @@ interface PendingSend {
   readonly uploads: Map<number, Attachment>;
 }
 
+interface OptimisticMessage {
+  readonly content: string;
+  readonly expectedOrdinal: number;
+  readonly id: string;
+  readonly runId: string;
+}
+
 function payloadString(event: RunEvent, key: string): string | undefined {
   const value = event.data.payload[key];
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
@@ -267,6 +274,12 @@ function messageContent(submission: ConversationSubmission): string {
   });
 }
 
+function userMessageCount(events: readonly RunEvent[], content: string): number {
+  return events.filter(
+    (event) => event.type === 'message.user' && payloadString(event, 'content') === content,
+  ).length;
+}
+
 function newRunAttachmentContent(submission: ConversationSubmission): string {
   return submission.selectedElements.length === 0
     ? 'Use these reference images with my request.'
@@ -288,16 +301,19 @@ function ThreadStyles(): ReactElement {
     <style jsx global>{`
       .zapp-conversation-thread {
         display: flex;
-        min-height: 100%;
+        height: 100%;
+        min-height: 0;
         flex-direction: column;
-        gap: 0.625rem;
+        background: var(--zapp-surface-raised);
       }
       .zapp-conversation-items {
         display: flex;
         flex: 1;
+        min-height: 0;
         flex-direction: column;
         gap: 0.625rem;
-        padding-bottom: 0.35rem;
+        overflow-y: auto;
+        padding: 1rem 1rem 0.75rem;
       }
       .zapp-conversation-message {
         max-width: 92%;
@@ -361,11 +377,29 @@ function ThreadStyles(): ReactElement {
       .zapp-conversation-banner,
       .zapp-conversation-error,
       .zapp-conversation-cancelled {
-        margin: 0;
+        margin: 0.75rem 1rem 0;
         border-radius: var(--zapp-radius-panel);
         padding: 0.5rem 0.75rem;
         background: var(--zapp-surface-subtle);
         font-size: var(--zapp-text-14);
+      }
+      .zapp-conversation-run-status {
+        display: flex;
+        min-height: 1.75rem;
+        align-items: center;
+        gap: 0.45rem;
+        color: var(--zapp-text-secondary);
+        font-size: var(--zapp-text-12);
+        font-weight: 600;
+        padding: 0.65rem 1rem 0;
+      }
+      .zapp-conversation-run-status-dot {
+        width: 0.45rem;
+        height: 0.45rem;
+        flex: 0 0 auto;
+        border-radius: var(--zapp-radius-pill);
+        background: var(--zapp-accent);
+        box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--zapp-accent) 12%, transparent);
       }
       .zapp-conversation-error {
         border: 1px solid var(--zapp-status-danger);
@@ -373,27 +407,30 @@ function ThreadStyles(): ReactElement {
         background: var(--zapp-danger-surface);
       }
       .zapp-conversation-composer {
-        position: sticky;
         z-index: 2;
-        bottom: 0;
         display: grid;
-        gap: 0.625rem;
-        margin: 0 -0.35rem -0.35rem;
-        padding: 0.65rem;
+        flex: 0 0 auto;
+        gap: 0.45rem;
+        margin: 0.65rem;
+        padding: 0.55rem;
         border: 1px solid var(--zapp-border);
-        border-radius: var(--zapp-radius-card);
+        border-radius: var(--zapp-radius-panel);
         background: var(--zapp-surface-raised);
         box-shadow: var(--zapp-shadow-card);
       }
       .zapp-conversation-composer textarea {
         width: 100%;
-        resize: vertical;
-        border: 1px solid var(--zapp-border);
-        border-radius: var(--zapp-radius-panel);
-        padding: 0.75rem;
+        min-height: 3.5rem;
+        max-height: 9rem;
+        resize: none;
+        border: 0;
+        border-radius: 0.5rem;
+        padding: 0.55rem 0.6rem;
         color: var(--zapp-text-primary);
         background: var(--zapp-surface-raised);
         font: inherit;
+        font-size: var(--zapp-text-14);
+        outline: 0;
       }
       .zapp-conversation-composer-actions,
       .zapp-conversation-images {
@@ -401,6 +438,10 @@ function ThreadStyles(): ReactElement {
         flex-wrap: wrap;
         align-items: center;
         gap: 0.5rem;
+      }
+      .zapp-conversation-composer-actions .zapp-button,
+      .zapp-conversation-composer-actions .zapp-icon-button {
+        min-height: 2rem;
       }
       .zapp-conversation-composer-spacer {
         flex: 1;
@@ -468,6 +509,7 @@ export function Thread({
   const [currentRun, setCurrentRun] = useState<BuilderRun>();
   const [loading, setLoading] = useState(true);
   const [operationError, setOperationError] = useState<string>();
+  const [optimisticMessages, setOptimisticMessages] = useState<readonly OptimisticMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const pendingSendRef = useRef<PendingSend | undefined>(undefined);
@@ -480,6 +522,11 @@ export function Thread({
     activeRunStatuses.has(currentRun.status) &&
     !cancelled &&
     !completed;
+  const visibleOptimisticMessages = optimisticMessages.filter(
+    (message) =>
+      message.runId === currentRun?.id &&
+      userMessageCount(events, message.content) < message.expectedOrdinal,
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -489,6 +536,7 @@ export function Thread({
       .then((response) => {
         if (controller.signal.aborted) return;
         const run = response.items[0];
+        setOptimisticMessages([]);
         setCurrentRun(run);
         onRunChange(run);
         setOperationError(undefined);
@@ -510,6 +558,42 @@ export function Thread({
     if (adoptedRun === undefined || adoptedRun.id === currentRun?.id) return;
     setCurrentRun(adoptedRun);
   }, [adoptedRun, currentRun?.id]);
+
+  useEffect(() => {
+    if (
+      currentRun === undefined ||
+      !activeRunStatuses.has(currentRun.status) ||
+      cancelled ||
+      completed
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async (): Promise<void> => {
+      try {
+        const response = await createControlPlaneClient(organizationId).listRuns(
+          projectId,
+          controller.signal,
+        );
+        const refreshed = response.items.find((run) => run.id === currentRun.id);
+        if (refreshed !== undefined && refreshed.status !== currentRun.status) {
+          setCurrentRun(refreshed);
+          onRunChange(refreshed);
+        }
+      } catch {
+        // The SSE connection still owns event delivery. A transient status read
+        // must not replace its reconnect behavior with an error banner.
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 1_000);
+      }
+    };
+    timer = setTimeout(() => void poll(), 1_000);
+    return () => {
+      controller.abort();
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [cancelled, completed, currentRun, onRunChange, organizationId, projectId]);
 
   const pendingSend = (submission: ConversationSubmission): PendingSend => {
     const fingerprint = submissionFingerprint(submission);
@@ -558,7 +642,7 @@ export function Thread({
     submission: ConversationSubmission,
     pending: PendingSend,
     attachments: readonly Attachment[],
-  ): Promise<void> => {
+  ): Promise<BuilderRun> => {
     const client = createControlPlaneClient(organizationId);
     const created = await client.createRun(
       projectId,
@@ -581,6 +665,25 @@ export function Thread({
     }
     setCurrentRun(created.run);
     onRunChange(created.run);
+    return created.run;
+  };
+
+  const appendOptimisticMessage = (run: BuilderRun, content: string): void => {
+    setOptimisticMessages((current) => {
+      const durableCount = currentRun?.id === run.id ? userMessageCount(events, content) : 0;
+      const pendingCount = current.filter(
+        (message) => message.runId === run.id && message.content === content,
+      ).length;
+      return [
+        ...current,
+        {
+          content,
+          expectedOrdinal: durableCount + pendingCount + 1,
+          id: crypto.randomUUID(),
+          runId: run.id,
+        },
+      ];
+    });
   };
 
   const send = async (submission: ConversationSubmission): Promise<boolean> => {
@@ -590,6 +693,7 @@ export function Thread({
     const pending = pendingSend(submission);
     try {
       const attachments = await uploadImages(submission, pending);
+      let acceptedRun: BuilderRun;
       if (active) {
         try {
           await createControlPlaneClient(organizationId).sendRunMessage(
@@ -597,6 +701,7 @@ export function Thread({
             { attachments: [...attachments], content: messageContent(submission) },
             pending.messageKey,
           );
+          acceptedRun = currentRun;
         } catch (error) {
           if (!(
             error instanceof ZappApiError &&
@@ -605,11 +710,12 @@ export function Thread({
           )) {
             throw error;
           }
-          await createRun(submission, pending, attachments);
+          acceptedRun = await createRun(submission, pending, attachments);
         }
       } else {
-        await createRun(submission, pending, attachments);
+        acceptedRun = await createRun(submission, pending, attachments);
       }
+      appendOptimisticMessage(acceptedRun, submission.content);
       pendingSendRef.current = undefined;
       return true;
     } catch {
@@ -655,6 +761,26 @@ export function Thread({
           Run cancelled
         </p>
       ) : null}
+      {currentRun === undefined ? null : (
+        <div aria-label="Build status" className="zapp-conversation-run-status" role="status">
+          <span aria-hidden="true" className="zapp-conversation-run-status-dot" />
+          <span>
+            {cancelled || currentRun.status === 'cancelled'
+              ? 'Build cancelled'
+              : completed || currentRun.status === 'completed'
+                ? 'Build complete'
+                : currentRun.status === 'failed'
+                  ? 'Build failed'
+                  : currentRun.status === 'queued'
+                    ? 'Build queued'
+                    : currentRun.status === 'paused'
+                      ? 'Build paused'
+                      : currentRun.status === 'waiting_for_approval'
+                        ? 'Waiting for approval'
+                        : 'Agent is running'}
+          </span>
+        </div>
+      )}
       <div className="zapp-conversation-items">
         {loading && items.length === 0 ? <p role="status">Loading conversation…</p> : null}
         {!hasUserMessage && initialPrompt !== undefined ? (
@@ -683,12 +809,31 @@ export function Thread({
           if (item.kind === 'card') {
             if (currentRun === undefined) return null;
             const props = { organizationId, runId: currentRun.id } as const;
-            if (item.card.kind === 'question') return <QuestionCard card={item.card} key={item.key} {...props} />;
-            if (item.card.kind === 'specification') return <SpecSummaryCard card={item.card} key={item.key} {...props} />;
-            if (item.card.kind === 'plan') return <PlanReviewCard card={item.card} key={item.key} {...props} />;
+            if (item.card.kind === 'question')
+              return <QuestionCard card={item.card} key={item.key} {...props} />;
+            if (item.card.kind === 'specification')
+              return <SpecSummaryCard card={item.card} key={item.key} {...props} />;
+            if (item.card.kind === 'plan')
+              return <PlanReviewCard card={item.card} key={item.key} {...props} />;
             return <ApprovalCard card={item.card} key={item.key} {...props} />;
           }
           if (item.kind === 'phase') {
+            if (currentRun?.status === 'failed' && item.state === 'running') {
+              return (
+                <article
+                  aria-label={`${item.name} progress`}
+                  className="zapp-conversation-progress"
+                  data-state="failed"
+                  key={item.key}
+                  role="status"
+                >
+                  <div>
+                    <strong>{item.name}</strong>
+                    <span>Failed</span>
+                  </div>
+                </article>
+              );
+            }
             return (
               <ProgressCard
                 {...(item.completedAt === undefined ? {} : { completedAt: item.completedAt })}
@@ -713,6 +858,9 @@ export function Thread({
             </button>
           );
         })}
+        {visibleOptimisticMessages.map((message) => (
+          <MessageBubble content={message.content} key={message.id} role="user" />
+        ))}
       </div>
       <Composer
         active={active}

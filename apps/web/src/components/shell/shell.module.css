@@ -310,6 +310,10 @@
   margin-left: var(--zapp-shell-sidebar-width);
 }
 
+.immersive .main {
+  margin-left: 0;
+}
+
 .contextWarning {
   position: fixed;
   z-index: 25;

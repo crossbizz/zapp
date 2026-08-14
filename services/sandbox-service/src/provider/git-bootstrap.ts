@@ -142,6 +142,46 @@ export interface WorkspaceGitServiceOptions {
   readonly commands: WorkspaceGitCommandPort;
 }
 
+export type WorkspaceGitBootstrapFailureReason =
+  | 'authentication_failed'
+  | 'connection_failed'
+  | 'dns_resolution_failed'
+  | 'git_command_failed'
+  | 'repository_not_found'
+  | 'tls_failed';
+
+/** Safe, credential-free diagnostics for the internal workspace boundary. */
+export class WorkspaceGitBootstrapError extends Error {
+  readonly name = 'WorkspaceGitBootstrapError';
+
+  constructor(
+    readonly stage: string,
+    readonly exitCode: number,
+    readonly reason: WorkspaceGitBootstrapFailureReason,
+  ) {
+    super(`Workspace Git bootstrap failed at ${stage} (${reason})`);
+  }
+}
+
+function classifyGitFailure(stderr: string): WorkspaceGitBootstrapFailureReason {
+  if (
+    /could not resolve host|name or service not known|temporary failure in name resolution/iu.test(
+      stderr,
+    )
+  ) {
+    return 'dns_resolution_failed';
+  }
+  if (/ssl|tls|certificate/iu.test(stderr)) return 'tls_failed';
+  if (/authentication failed|access denied|could not read username|\b(?:401|403)\b/iu.test(stderr)) {
+    return 'authentication_failed';
+  }
+  if (/repository not found|\b404\b/iu.test(stderr)) return 'repository_not_found';
+  if (/failed to connect|couldn't connect|connection refused|connection timed out/iu.test(stderr)) {
+    return 'connection_failed';
+  }
+  return 'git_command_failed';
+}
+
 function commandKey(operationKey: string, step: string): string {
   return `op_${createHash('sha256').update(`${operationKey}:${step}`).digest('hex')}`;
 }
@@ -221,7 +261,11 @@ async function requireSuccess(
 ): Promise<void> {
   const result = await execute(commands, input, step, args);
   if (result.exitCode !== 0) {
-    throw new Error('Workspace Git bootstrap failed');
+    throw new WorkspaceGitBootstrapError(
+      step,
+      result.exitCode,
+      classifyGitFailure(result.stderr),
+    );
   }
 }
 
@@ -241,13 +285,43 @@ export function createWorkspaceGitService(
         '-c',
         `url.${credentialUrl}.insteadOf=${cleanCloneUrl}`,
         'clone',
-        '--branch',
-        input.branchName,
-        '--single-branch',
+        '--no-checkout',
         '--no-tags',
         cleanCloneUrl,
         '.',
       ]);
+      const remoteBranch = `refs/remotes/origin/${input.branchName}`;
+      const branch = await execute(options.commands, input, 'find-branch', [
+        'show-ref',
+        '--verify',
+        '--quiet',
+        remoteBranch,
+      ]);
+      if (branch.exitCode === 0) {
+        await requireSuccess(options.commands, input, 'checkout-branch', [
+          'checkout',
+          '--force',
+          '-B',
+          input.branchName,
+          '--track',
+          remoteBranch,
+        ]);
+      } else if (branch.exitCode === 1) {
+        const repository = await execute(options.commands, input, 'find-any-ref', [
+          'show-ref',
+          '--quiet',
+        ]);
+        if (repository.exitCode !== 1) {
+          throw new Error('Workspace Git bootstrap failed');
+        }
+        await requireSuccess(options.commands, input, 'checkout-unborn-branch', [
+          'symbolic-ref',
+          'HEAD',
+          `refs/heads/${input.branchName}`,
+        ]);
+      } else {
+        throw new Error('Workspace Git bootstrap failed');
+      }
       await requireSuccess(options.commands, input, 'scrub-origin', [
         'remote',
         'set-url',

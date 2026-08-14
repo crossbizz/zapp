@@ -156,6 +156,68 @@ describe('AR-10 durable run control signals', () => {
     });
   });
 
+  it('terminates a failed builder session instead of retrying the workflow task forever', async () => {
+    const statuses: string[] = [];
+    const failedTransition = deferred<undefined>();
+    const activities: RunActivities = {
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
+      ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar10-failed' }),
+      runBuilderSession: () =>
+        Promise.resolve({
+          status: 'failed',
+          commits: [],
+          artifacts: [],
+          summary: 'provider request failed',
+        }),
+      commitAndPush: () => Promise.reject(new Error('failed run must not commit')),
+      emitEvents: () => Promise.resolve(),
+      transitionRunStatus: ({ status }) => {
+        statuses.push(status);
+        if (status === 'failed') failedTransition.resolve(undefined);
+        return Promise.resolve();
+      },
+      estimateRunCost: approvalActivityNotExpected,
+      requestBudgetIncrease: approvalActivityNotExpected,
+      checkpointBudgetStop: approvalActivityNotExpected,
+    };
+    const taskQueue = `ar10-failed-${Date.now().toString(36)}`;
+    const worker = await createRunWorker({
+      connection: environment.nativeConnection,
+      taskQueue,
+      activities,
+      testOnlyBypassActivityIdempotency: true,
+    });
+
+    await worker.runUntil(async () => {
+      const input = workflowInput('run_01J00000000000000000000016');
+      const handle = await environment.client.workflow.start(runWorkflow, {
+        taskQueue,
+        workflowId: input.workflowId,
+        args: [input],
+      });
+      const result = handle.result();
+      const terminalResult = result.then(
+        () => 'unexpected-success' as const,
+        () => 'rejected' as const,
+      );
+      const outcome = await Promise.race([
+        failedTransition.promise.then(() => terminalResult),
+        new Promise<'still-running'>((resolve) => {
+          setTimeout(() => {
+            resolve('still-running');
+          }, 20_000);
+        }),
+      ]);
+      if (outcome === 'still-running') {
+        await handle.terminate('test cleanup for non-terminal workflow');
+        await result.catch(() => undefined);
+      }
+      expect(outcome).toBe('rejected');
+    });
+
+    expect(statuses).toEqual(['running', 'failed']);
+  }, 30_000);
+
   it('finishes the active turn, checkpoints, pauses, reports status, and resumes once', async () => {
     const firstTurn = deferred<{
       status: 'yielded';
@@ -550,9 +612,9 @@ describe('AR-10 durable run control signals', () => {
       'Complete the current builder turn.',
       'Complete the current builder turn.',
     ]);
-    expect(controls[0]).toEqual({ yieldAfterTool: true, redirect: null });
+    expect(controls[0]).toEqual({ yieldAfterTool: false, redirect: null });
     expect(controls[1]).toEqual({
-      yieldAfterTool: true,
+      yieldAfterTool: false,
       redirect: {
         instruction: 'Use the existing repository adapter and keep the public API unchanged.',
         operationKey: operationKey('f'),

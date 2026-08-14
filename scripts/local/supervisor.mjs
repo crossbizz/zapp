@@ -63,9 +63,8 @@ export async function defaultWaitForHttp(
 }
 
 async function defaultVerifyImages(config) {
-  const { createModalImagePublisher } = await import(
-    '../../services/sandbox-service/dist/provider/modal.js'
-  );
+  const { createModalImagePublisher } =
+    await import('../../services/sandbox-service/dist/provider/modal.js');
   const provider = createModalImagePublisher({
     credentials: {
       tokenId: config.env.MODAL_TOKEN_ID,
@@ -173,6 +172,7 @@ export async function runLocal(options = {}) {
     await run('docker', ['--version']);
     await run('docker', ['compose', 'version']);
     await run('docker', ['info']);
+    await run('cloudflared', ['--version']);
     for (const port of config.ports) {
       if (!(await checkPort(port))) {
         throw new LocalPreflightError(`Local application port ${String(port)} is already in use`);
@@ -184,6 +184,25 @@ export async function runLocal(options = {}) {
     const forgejoEnv = await loadForgejoEnv();
     Object.assign(config.env, forgejoEnv);
     config.redactions.push(forgejoEnv.FORGEJO_ADMIN_TOKEN);
+    supervisor.start(
+      service(
+        'forgejo-tunnel',
+        'cloudflared',
+        ['tunnel', '--no-autoupdate', '--url', forgejoEnv.FORGEJO_URL],
+        config,
+      ),
+    );
+    const tunnelMatch = await raceReady(
+      supervisor.waitForLineMatch(
+        'forgejo-tunnel',
+        /https:\/\/[a-z0-9-]+\.trycloudflare\.com/u,
+      ),
+    );
+    const gitCloneBaseUrl = tunnelMatch[0];
+    config.env.GIT_CLONE_BASE_URL = gitCloneBaseUrl;
+    await raceReady(
+      supervisor.waitForLine('forgejo-tunnel', 'Registered tunnel connection'),
+    );
     await runPnpm(['db:migrate']);
     await runPnpm(['turbo', 'run', 'build', '--filter=!@zapp/desktop']);
     await controlled(verifyImages(config));
@@ -238,7 +257,10 @@ export async function runLocal(options = {}) {
         'web',
         ['--filter', '@zapp/web', 'dev', '--hostname', '127.0.0.1', '--port', '3000'],
         config,
-        { NEXT_PUBLIC_CONTROL_API_URL: 'http://127.0.0.1:4000' },
+        {
+          NEXT_PUBLIC_CONTROL_API_URL: 'http://127.0.0.1:4000',
+          WATCHPACK_POLLING: 'true',
+        },
       ),
       'http://127.0.0.1:3000/login',
     );

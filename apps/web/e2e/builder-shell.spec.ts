@@ -57,9 +57,11 @@ async function signIn(page: Page): Promise<void> {
   await page.goto('/login');
   await page.getByRole('link', { name: 'Sign in' }).click();
   await expect(page).toHaveURL('/');
-  await expect(page.getByRole('heading', {
-    name: "Start with one prompt. We'll take it to production.",
-  })).toBeVisible();
+  await expect(
+    page.getByRole('heading', {
+      name: "Start with one prompt. We'll take it to production.",
+    }),
+  ).toBeVisible();
 }
 
 async function mockProjectRead(
@@ -122,17 +124,36 @@ test.beforeEach(async ({ page }) => {
   await page.request.get(`${apiBaseUrl}/__reset`);
 });
 
-test('loads an organization-scoped shell with truthful header actions and surface tabs', async ({
+test('loads a compact immersive builder with truthful header actions and surface tabs', async ({
   page,
 }) => {
   await page.setViewportSize({ height: 950, width: 1440 });
   const projectRequests = await openBuilder(page);
 
-  const sidebar = page.getByRole('complementary', { name: 'Workspace' });
-  await expect(sidebar).toBeVisible();
-  expect((await sidebar.boundingBox())?.width).toBeGreaterThan(200);
-  await expect(page.getByRole('region', { name: 'Conversation' })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Workspace' })).toHaveCount(0);
+  const topBar = page.getByRole('region', { name: 'Project editor' });
+  const conversation = page.getByRole('region', { name: 'Conversation' });
+  const workspace = page.getByRole('region', { name: 'Workspace' });
+  const composer = page.getByRole('form', { name: 'Message composer' });
+  const topBarBounds = await topBar.boundingBox();
+  const conversationBounds = await conversation.boundingBox();
+  const workspaceBounds = await workspace.boundingBox();
+  const composerBounds = await composer.boundingBox();
+  if (
+    topBarBounds === null ||
+    conversationBounds === null ||
+    workspaceBounds === null ||
+    composerBounds === null
+  ) {
+    throw new Error('The immersive builder geometry was not rendered.');
+  }
+  expect(topBarBounds.height).toBeLessThanOrEqual(56);
+  expect(conversationBounds.width).toBeGreaterThanOrEqual(400);
+  expect(conversationBounds.width).toBeLessThanOrEqual(520);
+  expect(workspaceBounds.width).toBeGreaterThan(conversationBounds.width);
+  expect(composerBounds.y + composerBounds.height).toBeLessThanOrEqual(950);
+  await expect(page.getByRole('group', { name: 'Builder mode' })).toBeVisible();
+  await expect(page.getByRole('tablist', { name: 'Project surfaces' })).toHaveCount(1);
   await expect(page.getByText('Compatible')).toBeVisible();
   await expect(page.getByText('Last saved version', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Preview', { exact: true }).first()).toBeVisible();
@@ -184,17 +205,11 @@ test('loads an organization-scoped shell with truthful header actions and surfac
   expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
 });
 
-test('uses the compact product rail while keeping both builder panes at 1180px', async ({
-  page,
-}) => {
+test('keeps the immersive editor and both builder panes at 1180px', async ({ page }) => {
   await page.setViewportSize({ height: 800, width: 1180 });
   await openBuilder(page);
 
-  const rail = page.getByRole('complementary', { name: 'Workspace' });
-  await expect(rail).toBeVisible();
-  const bounds = await rail.boundingBox();
-  if (bounds === null) throw new Error('The workspace rail was not rendered.');
-  expect(bounds.width).toBeLessThan(100);
+  await expect(page.getByRole('complementary', { name: 'Workspace' })).toHaveCount(0);
   await expect(page.getByRole('region', { name: 'Conversation' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();
 });
@@ -232,7 +247,10 @@ test('keeps conversation mounted while Preview and Manage restore from the URL',
   await page.getByRole('button', { name: 'Integrations', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Integrations', exact: true })).toBeVisible();
   await expect(page).toHaveURL(
-    new RegExp(`/projects/${projectId}\\?mode=manage&view=code&section=integrations&pane=workspace$`, 'u'),
+    new RegExp(
+      `/projects/${projectId}\\?mode=manage&view=code&section=integrations&pane=workspace$`,
+      'u',
+    ),
   );
   await expect(conversation).toHaveAttribute('data-mount-probe', 'preserved');
 
@@ -256,7 +274,7 @@ test('resizes panes by pointer and keyboard and restores the project width on re
   await openBuilder(page);
 
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
-  await expect(separator).toHaveAttribute('aria-valuenow', '40');
+  await expect(separator).toHaveAttribute('aria-valuenow', '30');
   const bounds = await separator.boundingBox();
   if (bounds === null) throw new Error('The pane separator was not rendered.');
   await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
@@ -265,7 +283,7 @@ test('resizes panes by pointer and keyboard and restores the project width on re
   await page.mouse.up();
 
   const pointerWidth = Number(await separator.getAttribute('aria-valuenow'));
-  expect(pointerWidth).toBeGreaterThan(40);
+  expect(pointerWidth).toBeGreaterThan(30);
   await separator.focus();
   await page.keyboard.press('ArrowLeft');
   const keyboardWidth = Number(await separator.getAttribute('aria-valuenow'));
@@ -306,7 +324,7 @@ test('persists a multi-step pointer resize exactly once when the drag completes'
   }
   await page.mouse.up();
 
-  expect(Number(await separator.getAttribute('aria-valuenow'))).toBeGreaterThan(40);
+  expect(Number(await separator.getAttribute('aria-valuenow'))).toBeGreaterThan(30);
   expect(
     await page.evaluate(() => {
       const state = window as typeof window & { conversationWidthWrites?: number };
@@ -374,7 +392,7 @@ test('ignores non-initiating pointers during resize and persists once for the in
   );
 
   await dispatchWindowPointer('pointermove', 22, bounds.x + 200);
-  await expect(separator).toHaveAttribute('aria-valuenow', '40');
+  await expect(separator).toHaveAttribute('aria-valuenow', '30');
   await dispatchWindowPointer('pointerup', 22, bounds.x + 200);
   expect(
     await page.evaluate(() => {
@@ -384,7 +402,7 @@ test('ignores non-initiating pointers during resize and persists once for the in
   ).toBe(0);
 
   await dispatchWindowPointer('pointermove', 11, bounds.x + 120);
-  expect(Number(await separator.getAttribute('aria-valuenow'))).toBeGreaterThan(40);
+  expect(Number(await separator.getAttribute('aria-valuenow'))).toBeGreaterThan(30);
   await dispatchWindowPointer('pointerup', 11, bounds.x + 120);
   expect(
     await page.evaluate(() => {
@@ -392,7 +410,7 @@ test('ignores non-initiating pointers during resize and persists once for the in
       return state.conversationWidthWrites;
     }),
   ).toBe(1);
-  expect(await storedConversationWidth(page)).toBeGreaterThan(40);
+  expect(await storedConversationWidth(page)).toBeGreaterThan(30);
 });
 
 test('keeps resize and Mission Control operational when preference writes fail', async ({
@@ -419,7 +437,7 @@ test('keeps resize and Mission Control operational when preference writes fail',
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(separator).toHaveAttribute('aria-valuenow', '42');
+  await expect(separator).toHaveAttribute('aria-valuenow', '32');
   await expect(page.getByRole('status')).toHaveText('Preferences could not be saved.');
   await expect(page.getByRole('heading', { name: 'Project Apollo' })).toBeVisible();
 
@@ -447,7 +465,7 @@ test('keeps the warning until every failed preference key saves successfully', a
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(separator).toHaveAttribute('aria-valuenow', '42');
+  await expect(separator).toHaveAttribute('aria-valuenow', '32');
   await expect(page.getByRole('status')).toHaveText('Preferences could not be saved.');
 
   await page.getByRole('button', { name: 'Mission Control' }).click();
@@ -478,7 +496,7 @@ test('normalizes an undersized restored width before announcing or resizing it',
       if (split === null) throw new Error('The pane separator has no split container.');
       return split.getBoundingClientRect().width;
     });
-    const pixelMinimumPercentage = (380 / splitWidth) * 100;
+    const pixelMinimumPercentage = (400 / splitWidth) * 100;
     const announced = Number(await separator.getAttribute('aria-valuenow'));
     const announcedMinimum = Number(await separator.getAttribute('aria-valuemin'));
     const persisted = await storedConversationWidth(page);
@@ -507,20 +525,20 @@ test('preserves a deliberate desktop split across mobile and back', async ({ pag
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(separator).toHaveAttribute('aria-valuenow', '42');
-  expect(await storedConversationWidth(page)).toBe(42);
+  await expect(separator).toHaveAttribute('aria-valuenow', '32');
+  expect(await storedConversationWidth(page)).toBe(32);
 
   await page.setViewportSize({ height: 900, width: 900 });
   await expect(page.getByRole('navigation', { name: 'Builder pane' })).toBeVisible();
   await expect(separator).toBeHidden();
   await settleResponsiveLayout(page);
-  expect(await storedConversationWidth(page)).toBe(42);
+  expect(await storedConversationWidth(page)).toBe(32);
 
   await page.setViewportSize({ height: 900, width: 1440 });
   await expect(separator).toBeVisible();
   await settleResponsiveLayout(page);
-  await expect(separator).toHaveAttribute('aria-valuenow', '42');
-  expect(await storedConversationWidth(page)).toBe(42);
+  await expect(separator).toHaveAttribute('aria-valuenow', '32');
+  expect(await storedConversationWidth(page)).toBe(32);
 });
 
 test('temporarily clamps a low preference for inline Mission Control without persisting it', async ({
@@ -529,24 +547,24 @@ test('temporarily clamps a low preference for inline Mission Control without per
   await page.setViewportSize({ height: 900, width: 1440 });
   await mockProjectRead(page);
   await signIn(page);
-  await setStoredConversationWidth(page, 28);
+  await setStoredConversationWidth(page, 26);
   await page.goto(`/projects/${projectId}`);
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
   const compactWidth = Number(await separator.getAttribute('aria-valuenow'));
-  expect(compactWidth).toBeGreaterThan(28);
-  expect(await storedConversationWidth(page)).toBe(28);
+  expect(compactWidth).toBeGreaterThan(26);
+  expect(await storedConversationWidth(page)).toBe(26);
 
   await page.getByRole('button', { name: 'Mission Control' }).click();
   await expect(page.getByRole('complementary', { name: 'Mission Control' })).toBeVisible();
   await expect
     .poll(async () => Number(await separator.getAttribute('aria-valuenow')))
     .toBeGreaterThan(compactWidth);
-  expect(await storedConversationWidth(page)).toBe(28);
+  expect(await storedConversationWidth(page)).toBe(26);
 
   await page.getByRole('button', { name: 'Close' }).click();
   await expect(page.getByRole('complementary', { name: 'Mission Control' })).toHaveCount(0);
   await expect(separator).toHaveAttribute('aria-valuenow', String(compactWidth));
-  expect(await storedConversationWidth(page)).toBe(28);
+  expect(await storedConversationWidth(page)).toBe(26);
 });
 
 test('announces a fractional 1180px minimum without an invalid ARIA range', async ({ page }) => {
@@ -575,7 +593,7 @@ test('announces a fractional 1180px minimum without an invalid ARIA range', asyn
   expect(values.now).toBeGreaterThanOrEqual(values.minimum);
   expect(values.minimum).toBeLessThanOrEqual(values.maximum);
   expect(values.now).toBe(Math.max(values.minimum, Math.round(values.actualPercentage)));
-  expect(values.minimum).toBe(Math.ceil((380 / values.splitWidth) * 100));
+  expect(values.minimum).toBe(Math.ceil((400 / values.splitWidth) * 100));
 });
 
 test('keeps Deploy disabled when the project has no approved release', async ({ page }) => {
@@ -583,7 +601,28 @@ test('keeps Deploy disabled when the project has no approved release', async ({ 
   await expect(page.getByRole('button', { name: 'Deploy' })).toBeDisabled();
 });
 
-test('approves a readiness-evaluated release before deploying without leaving the builder', async ({ page }) => {
+test('does not hammer an unavailable release service', async ({ page }) => {
+  let requests = 0;
+  await page.route(
+    new RegExp(`^${apiBaseUrl}/v1/projects/${projectId}/releases`, 'u'),
+    async (route) => {
+      requests += 1;
+      await route.fulfill({ body: 'release service unavailable', status: 503 });
+    },
+  );
+
+  await openBuilder(page);
+  await expect(page.getByRole('button', { name: 'Deploy' })).toBeDisabled();
+  await expect.poll(() => requests).toBeGreaterThanOrEqual(1);
+  const initialRequests = requests;
+  await page.waitForTimeout(2_500);
+  expect(requests).toBe(initialRequests);
+  expect(initialRequests).toBeLessThanOrEqual(2);
+});
+
+test('approves a readiness-evaluated release before deploying without leaving the builder', async ({
+  page,
+}) => {
   const releaseId = 'rel_01J00000000000000000000000';
   const deploymentId = 'dep_01J00000000000000000000000';
   const release = {
@@ -609,18 +648,29 @@ test('approves a readiness-evaluated release before deploying without leaving th
       status: 200,
     });
   await page.route(new RegExp(`^${apiBaseUrl}/v1/projects/${projectId}/releases`, 'u'), (route) =>
-    respond(route, { items: [{ ...release, supportLevel: 'compatible', activeProduction: false, deployments: [] }], nextCursor: null, rollbackTargets: [] }),
+    respond(route, {
+      items: [{ ...release, supportLevel: 'compatible', activeProduction: false, deployments: [] }],
+      nextCursor: null,
+      rollbackTargets: [],
+    }),
   );
   await page.route(`${apiBaseUrl}/v1/releases/${releaseId}`, (route) =>
     respond(route, { release, readiness: { state: 'ready', findings: [] } }),
   );
-  await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/deployment-preview?retarget=false`, (route) =>
-    respond(route, {
-      title: 'First deploy',
-      deploymentType: 'first_deploy',
-      effects: { productionData: 'Created', secrets: 'Applied', url: 'Created', activeUsers: 'No users affected' },
-      requiresExplicitDataDisposition: false,
-    }),
+  await page.route(
+    `${apiBaseUrl}/v1/releases/${releaseId}/deployment-preview?retarget=false`,
+    (route) =>
+      respond(route, {
+        title: 'First deploy',
+        deploymentType: 'first_deploy',
+        effects: {
+          productionData: 'Created',
+          secrets: 'Applied',
+          url: 'Created',
+          activeUsers: 'No users affected',
+        },
+        requiresExplicitDataDisposition: false,
+      }),
   );
   let approved = false;
   await page.route(`${apiBaseUrl}/v1/releases/${releaseId}/approve`, (route) => {
@@ -647,10 +697,17 @@ test('approves a readiness-evaluated release before deploying without leaving th
         release: { id: releaseId, commitSha: release.commitSha },
         evidence: { statusLink: `/v1/releases/${releaseId}/evidence` },
         productionHealth: { status: 'healthy' },
-        monitoring: { grafanaDashboardLinks: [], faroAppLink: 'https://grafana.example.test/faro', posthogAnnotationLink: 'https://posthog.example.test/release' },
+        monitoring: {
+          grafanaDashboardLinks: [],
+          faroAppLink: 'https://grafana.example.test/faro',
+          posthogAnnotationLink: 'https://posthog.example.test/release',
+        },
         customDomainAction: { method: 'POST', href: `/v1/projects/${projectId}/domains` },
         previousHealthyRelease: null,
-        previewChanges: { requireRedeploy: true, note: 'Preview changes require a new release and redeploy before they reach production.' },
+        previewChanges: {
+          requireRedeploy: true,
+          note: 'Preview changes require a new release and redeploy before they reach production.',
+        },
       },
     }),
   );
@@ -739,10 +796,7 @@ test('defaults to Conversation and switches to Workspace below 1024px', async ({
     'aria-pressed',
     'true',
   );
-  await expect(page.getByRole('button', { name: 'Open navigation' })).toBeVisible();
-  await page.getByRole('button', { name: 'Open navigation' }).click();
-  await expect(page.getByRole('dialog', { name: 'Workspace navigation' })).toBeVisible();
-  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'Open navigation' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Workspace' }).click();
   await expect(page.getByRole('region', { name: 'Conversation' })).toBeHidden();
   await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();

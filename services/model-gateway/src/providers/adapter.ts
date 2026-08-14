@@ -1,6 +1,7 @@
 import {
   jsonSchema,
   tool,
+  type JSONSchema7,
   type LanguageModelUsage,
   type ModelMessage,
   type SystemModelMessage,
@@ -23,17 +24,83 @@ import type {
 import { ModelTerminalError } from './types.js';
 import type { ProviderId } from '../models.js';
 
+type JSONSchema7Definition = NonNullable<JSONSchema7['properties']>[string];
+
+function objectAlternatives(schema: JSONSchema7): JSONSchema7[] {
+  if (schema.type === 'object') return [schema];
+  if (schema.anyOf === undefined) return [];
+  return schema.anyOf.flatMap((alternative) =>
+    typeof alternative === 'boolean' ? [] : objectAlternatives(alternative),
+  );
+}
+
+function sameSchema(left: JSONSchema7Definition, right: JSONSchema7Definition): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * Anthropic requires a tool input schema whose root is an object and rejects a
+ * top-level anyOf. The execution boundary still validates the model's chosen
+ * arguments against the original Zod union; this merged schema is provider
+ * guidance and deliberately does not weaken runtime validation.
+ */
+function providerToolSchema(schema: JSONSchema7): JSONSchema7 {
+  if (schema.anyOf === undefined || schema.type === 'object') return schema;
+  const alternatives = objectAlternatives(schema);
+  if (alternatives.length === 0) return schema;
+
+  const properties: Record<string, JSONSchema7Definition> = {};
+  for (const alternative of alternatives) {
+    for (const [name, definition] of Object.entries(alternative.properties ?? {})) {
+      const current = properties[name];
+      if (current === undefined || sameSchema(current, definition)) {
+        properties[name] = definition;
+        continue;
+      }
+      const variants =
+        typeof current !== 'boolean' && current.anyOf !== undefined
+          ? [...current.anyOf]
+          : [current];
+      if (!variants.some((variant) => sameSchema(variant, definition))) {
+        variants.push(definition);
+      }
+      properties[name] = { anyOf: variants };
+    }
+  }
+
+  const requiredSets = alternatives.map((alternative) => new Set(alternative.required ?? []));
+  const required = [...(requiredSets[0] ?? new Set<string>())].filter((name) =>
+    requiredSets.every((names) => names.has(name)),
+  );
+  return {
+    type: 'object',
+    description:
+      schema.description ?? 'Provide the fields for exactly one supported input shape.',
+    properties,
+    ...(required.length === 0 ? {} : { required }),
+    ...(alternatives.every((alternative) => alternative.additionalProperties === false)
+      ? { additionalProperties: false }
+      : {}),
+  };
+}
+
 function convertTools(input: ProviderInput): Record<string, AiSdkTool> | undefined {
   if (input.request.tools === undefined) return undefined;
 
   return Object.fromEntries(
-    input.request.tools.map((neutralTool) => [
-      neutralTool.name,
-      tool({
-        description: neutralTool.description,
-        inputSchema: jsonSchema(neutralTool.inputJsonSchema),
-      }) as AiSdkTool,
-    ]),
+    input.request.tools.map((neutralTool) => {
+      const inputJsonSchema =
+        'anyOf' in neutralTool.inputJsonSchema
+          ? providerToolSchema(neutralTool.inputJsonSchema)
+          : neutralTool.inputJsonSchema;
+      return [
+        neutralTool.name,
+        tool({
+          description: neutralTool.description,
+          inputSchema: jsonSchema(inputJsonSchema),
+        }) as AiSdkTool,
+      ];
+    }),
   );
 }
 

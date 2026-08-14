@@ -13,6 +13,7 @@ import {
   creditBalanceExhaustedSignal,
   redirectRunSignal,
   runWorkflow,
+  runModeGuardrails,
   shouldAutoApproveBuildPlan,
   type RunWorkflowInput,
 } from '../src/workflows/run.js';
@@ -48,6 +49,14 @@ describe('AR-15 Ask and Prototype modes', () => {
   afterEach(async () => {
     await environment?.teardown();
     environment = undefined;
+  });
+
+  it('directs Build mode to implement blank web projects without unrelated discovery', () => {
+    const guardrails = runModeGuardrails('build');
+
+    expect(guardrails.modeInstructions).toContain('Prefer TypeScript');
+    expect(guardrails.modeInstructions).toContain('do not inspect git history');
+    expect(guardrails.modeInstructions).toContain('run the preview smoke test');
   });
 
   it('keeps Ask read-only, warns on an uncited code claim, and does not commit', async () => {

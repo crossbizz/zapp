@@ -1,10 +1,21 @@
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
 
-import { buildWorkflow, runWorkflow } from '../src/workflows/run.js';
+import type { Client } from '@temporalio/client';
+import { MockActivityEnvironment } from '@temporalio/testing';
+import {
+  buildWorkflow,
+  runWorkflow,
+  SESSION_ACTIVITY_HEARTBEAT_TIMEOUT,
+} from '../src/workflows/run.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { loadRunWorkerEnv } from '../src/env.js';
-import { composeRunWorker } from '../src/runtime/run-worker.js';
+import {
+  composeProductionActivities,
+  composeRunWorker,
+  responseErrorFromResponse,
+} from '../src/runtime/run-worker.js';
 import { runRunWorkerServer } from '../src/run-server.js';
 import {
   createLocalM1TemporalOrchestrator,
@@ -12,9 +23,16 @@ import {
   TASK_QUEUES,
 } from '../src/worker.js';
 
+function localDatabaseUrl(): string {
+  const url = new URL('postgres://127.0.0.1:5432/zapp');
+  url.username = 'zapp';
+  url.password = 'zapp';
+  return url.toString();
+}
+
 const VALID_ENV = {
   NODE_ENV: 'development',
-  DATABASE_URL: 'postgres://zapp:zapp@127.0.0.1:5432/zapp',
+  DATABASE_URL: localDatabaseUrl(),
   TEMPORAL_ADDRESS: '127.0.0.1:7233',
   TEMPORAL_NAMESPACE: 'default',
   CONTROL_API_INTERNAL_URL: 'http://127.0.0.1:4000',
@@ -41,7 +59,367 @@ const RUN_INPUT = {
   operationKey: `op_${'a'.repeat(64)}`,
 } as const;
 
+function requestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  return input instanceof URL ? input.href : input.url;
+}
+
+function requestBodyText(body: BodyInit | null | undefined): string {
+  if (typeof body !== 'string') throw new Error('Expected a JSON request body');
+  return body;
+}
+
 describe('the local M1 routing profile', () => {
+  it('gives long-running Builder tools enough heartbeat headroom', () => {
+    expect(SESSION_ACTIVITY_HEARTBEAT_TIMEOUT).toBe('30 seconds');
+  });
+
+  it('publishes session events through the production event boundary', async () => {
+    const published: unknown[] = [];
+    const encoder = new TextEncoder();
+    const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = requestUrl(input);
+      if (url === `${VALID_ENV.MODEL_GATEWAY_URL}/internal/v1/complete`) {
+        const request = JSON.parse(requestBodyText(init?.body)) as { completionId: string };
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                for (const event of [
+                  { type: 'text-delta', text: 'The build is ready.' },
+                  {
+                    type: 'usage',
+                    provider: 'anthropic',
+                    model: 'claude-test',
+                    finishReason: 'stop',
+                    inputTokens: 20,
+                    outputTokens: 5,
+                    totalTokens: 25,
+                  },
+                  {
+                    type: 'usage.recorded',
+                    completionId: request.completionId,
+                    usage: [
+                      {
+                        provider: 'anthropic',
+                        model: 'claude-test',
+                        inputTokens: 20,
+                        outputTokens: 5,
+                        cacheReadInputTokens: 0,
+                        cacheWriteInputTokens: 0,
+                        occurredAt: '2026-08-14T12:00:00.000Z',
+                      },
+                    ],
+                    credits: {
+                      used: '0.0100',
+                      reserved: '0.0000',
+                      ceiling: '100.0000',
+                      version: 1,
+                    },
+                  },
+                  { type: 'done' },
+                ]) {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+                }
+                controller.close();
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+            },
+          ),
+        );
+      }
+      if (url.includes('/internal/runs/') && url.endsWith('/events')) {
+        published.push(JSON.parse(requestBodyText(init?.body)) as unknown);
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      throw new Error(`Unexpected production activity request: ${url}`);
+    });
+    const activities = await composeProductionActivities({
+      env: loadRunWorkerEnv(VALID_ENV),
+      database: {} as never,
+      fetchImpl,
+    });
+    const client = {
+      withAbortSignal: <T>(_signal: AbortSignal, operation: () => T): T => operation(),
+      activity: {
+        heartbeat: () => Promise.resolve(),
+        reportCancellation: () => Promise.resolve(),
+      },
+    } as unknown as Client;
+    const environment = new MockActivityEnvironment(undefined, { client });
+
+    const result = await environment.run(
+      (input) => activities.runBuilderSession(input),
+      {
+        runId: RUN_INPUT.runId,
+        organizationId: RUN_INPUT.organizationId,
+        projectId: RUN_INPUT.projectId,
+        workspaceId: `ws_${'2'.repeat(26)}`,
+        mode: 'build' as const,
+        model: null,
+        prompt: 'Confirm the build is ready.',
+        allowedTools: [],
+        modeInstructions: 'Return a concise build result.',
+        budget: { maxCredits: 100 },
+        idempotencyKey: 'publish-production-session-events',
+      },
+    );
+
+    expect(result).toMatchObject({ status: 'completed', summary: 'The build is ready.' });
+    expect(published.length).toBeGreaterThan(0);
+  });
+
+  it('reuses the ready workspace for the same tenant project branch', async () => {
+    const workspaceId = `ws_${'1'.repeat(26)}`;
+    const runSelection = {
+      from: vi.fn(() => ({
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(() =>
+              Promise.resolve([
+                { name: 'main', startedAt: new Date('2026-08-14T12:00:00.000Z') },
+              ]),
+            ),
+          })),
+        })),
+      })),
+    };
+    const workspaceSelection = {
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve([{ id: workspaceId }])),
+          })),
+        })),
+      })),
+    };
+    const select = vi
+      .fn()
+      .mockReturnValueOnce(runSelection)
+      .mockReturnValueOnce(workspaceSelection);
+    const fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            workspace: { id: workspaceId, status: 'ready' },
+            providerStatus: 'ready',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+    });
+    const activities = await composeProductionActivities({
+      env: loadRunWorkerEnv(VALID_ENV),
+      database: { select } as never,
+      fetchImpl,
+    });
+
+    await expect(
+      activities.ensureWorkspace({
+        runId: RUN_INPUT.runId,
+        organizationId: RUN_INPUT.organizationId,
+        projectId: RUN_INPUT.projectId,
+        branchId: RUN_INPUT.branchId,
+        appType: RUN_INPUT.appType,
+        idempotencyKey: 'reuse-ready-workspace',
+      }),
+    ).resolves.toEqual({ workspaceId });
+
+    expect(select).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      `${VALID_ENV.SANDBOX_SERVICE_URL}/internal/workspaces/${workspaceId}`,
+    );
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ method: 'GET' });
+  });
+
+  it('completes a no-op builder run by retaining the existing workspace commit', async () => {
+    const commitSha = 'a'.repeat(40);
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          readonly operation?: string;
+          readonly command?: string;
+          readonly args?: readonly string[];
+        };
+        let result: Record<string, unknown> | undefined;
+        if (request.url?.endsWith('/git') === true && body.operation === 'diff') {
+          result = { exitCode: 0, stdout: '', stderr: '' };
+        } else if (
+          request.url?.endsWith('/exec') === true &&
+          body.command === 'git' &&
+          JSON.stringify(body.args) ===
+            JSON.stringify(['ls-files', '--others', '--exclude-standard'])
+        ) {
+          result = {
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            durationMs: 1,
+            truncated: false,
+          };
+        } else if (
+          request.url?.endsWith('/exec') === true &&
+          body.command === 'git' &&
+          JSON.stringify(body.args) === JSON.stringify(['rev-parse', 'HEAD'])
+        ) {
+          result = {
+            exitCode: 0,
+            stdout: `${commitSha}\n`,
+            stderr: '',
+            durationMs: 1,
+            truncated: false,
+          };
+        }
+        response.statusCode = result === undefined ? 500 : 200;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify(result ?? { code: 'unexpected_no_op_commit_request' }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Test server did not bind');
+    const activities = await composeProductionActivities({
+      env: loadRunWorkerEnv({
+        ...VALID_ENV,
+        SANDBOX_SERVICE_URL: `http://127.0.0.1:${String(address.port)}`,
+      }),
+      database: {} as never,
+    });
+
+    try {
+      await expect(
+        activities.commitAndPush({
+          runId: RUN_INPUT.runId,
+          organizationId: RUN_INPUT.organizationId,
+          projectId: RUN_INPUT.projectId,
+          workspaceId: `ws_${'4'.repeat(26)}`,
+          message: 'Verify existing project',
+          idempotencyKey: 'no-op-builder-run',
+        }),
+      ).resolves.toEqual({ commitSha, diffstat: [] });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        });
+      });
+    }
+  });
+
+  it('retires an unhealthy reusable workspace before provisioning its replacement', async () => {
+    const staleWorkspaceId = `ws_${'1'.repeat(26)}`;
+    const replacementWorkspaceId = `ws_${'3'.repeat(26)}`;
+    const runSelection = {
+      from: vi.fn(() => ({
+        innerJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn(() =>
+              Promise.resolve([
+                { name: 'main', startedAt: new Date('2026-08-14T12:00:00.000Z') },
+              ]),
+            ),
+          })),
+        })),
+      })),
+    };
+    const workspaceSelection = {
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(() => ({
+            limit: vi.fn(() => Promise.resolve([{ id: staleWorkspaceId }])),
+          })),
+        })),
+      })),
+    };
+    const select = vi
+      .fn()
+      .mockReturnValueOnce(runSelection)
+      .mockReturnValueOnce(workspaceSelection);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            workspace: { id: staleWorkspaceId, status: 'ready' },
+            providerStatus: 'started',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ workspace: { id: staleWorkspaceId } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ workspace: { id: replacementWorkspaceId } }), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    const activities = await composeProductionActivities({
+      env: loadRunWorkerEnv(VALID_ENV),
+      database: { select } as never,
+      fetchImpl,
+    });
+
+    await expect(
+      activities.ensureWorkspace({
+        runId: RUN_INPUT.runId,
+        organizationId: RUN_INPUT.organizationId,
+        projectId: RUN_INPUT.projectId,
+        branchId: RUN_INPUT.branchId,
+        appType: RUN_INPUT.appType,
+        idempotencyKey: 'replace-unhealthy-workspace',
+      }),
+    ).resolves.toEqual({ workspaceId: replacementWorkspaceId });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      `${VALID_ENV.SANDBOX_SERVICE_URL}/internal/workspaces/${staleWorkspaceId}/terminate`,
+    );
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' });
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe(
+      `${VALID_ENV.SANDBOX_SERVICE_URL}/internal/workspaces`,
+    );
+    expect(fetchImpl.mock.calls[2]?.[1]).toMatchObject({ method: 'POST' });
+  });
+
+  it('propagates only classified sandbox bootstrap diagnostics', async () => {
+    const secret = 'repository-token-that-must-not-cross-the-boundary';
+    const failure = await responseErrorFromResponse(
+      'Sandbox workspace provisioning',
+      new Response(
+        JSON.stringify({
+          code: 'workspace_git_bootstrap_failed',
+          message: 'The sandbox operation failed.',
+          details: {
+            stage: 'clone',
+            exitCode: 128,
+            reason: 'dns_resolution_failed',
+          },
+          secret,
+        }),
+        { status: 502, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+
+    expect(failure.message).toContain(
+      'workspace_git_bootstrap_failed: clone/dns_resolution_failed/128',
+    );
+    expect(failure.message).not.toContain(secret);
+  });
+
   it('requires every worker boundary and accepts only explicit development m1', () => {
     expect(loadRunWorkerEnv(VALID_ENV)).toMatchObject({
       nodeEnv: 'development',
@@ -110,6 +488,45 @@ describe('the local M1 routing profile', () => {
 });
 
 describe('the deployable agent-runs worker lifecycle', () => {
+  it('composes an explicit disabled feature-flag activity for the local M1 worker', async () => {
+    const connection = { close: vi.fn(() => Promise.resolve()) };
+    const database = {
+      db: {} as never,
+      sql: {} as never,
+      close: vi.fn(() => Promise.resolve()),
+    };
+    const worker = {
+      run: vi.fn(() => Promise.resolve()),
+      getState: vi.fn(() => 'STOPPED'),
+      shutdown: vi.fn(),
+    };
+    const createWorker = vi.fn(async (input: { activities: Record<string, unknown> }) => {
+      expect(typeof input.activities['evaluateFeatureFlag']).toBe('function');
+      const evaluate = input.activities['evaluateFeatureFlag'] as (
+        value: unknown,
+      ) => Promise<unknown>;
+      await expect(
+        evaluate({
+          organizationId: `org_${'0'.repeat(26)}`,
+          distinctId: 'local-m1-worker',
+          flag: 'autonomous-mode',
+        }),
+      ).resolves.toEqual({ enabled: false });
+      return worker;
+    });
+
+    const runtime = await composeRunWorker(loadRunWorkerEnv(VALID_ENV), {
+      createDatabase: vi.fn(() => database),
+      connectTemporal: vi.fn(() => Promise.resolve(connection as never)),
+      createWorker: createWorker as never,
+    });
+
+    await runtime.shutdown();
+    expect(createWorker).toHaveBeenCalledOnce();
+    expect(connection.close).toHaveBeenCalledOnce();
+    expect(database.close).toHaveBeenCalledOnce();
+  });
+
   it('composes the production queue and reports ready only after pollers are running', async () => {
     const order: string[] = [];
     let resolveRun = (): void => undefined;

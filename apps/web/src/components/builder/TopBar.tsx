@@ -14,6 +14,8 @@ const syncLabels: Readonly<Record<RepositorySyncState, string>> = {
 interface TopBarProps {
   readonly deploy: ReactNode;
   readonly missionControl: ReactNode;
+  readonly mode: 'manage' | 'preview';
+  readonly onModeChange: (mode: 'manage' | 'preview') => void;
   readonly projectId: string;
   readonly projectName: string;
   readonly supportLevel: 'compatible' | 'verified' | 'managed';
@@ -49,22 +51,44 @@ function SettingsIcon(): ReactElement {
 export function TopBar({
   deploy,
   missionControl,
+  mode,
+  onModeChange,
   projectId,
   projectName,
   supportLevel,
   syncState,
 }: TopBarProps): ReactElement {
   return (
-    <header className="zapp-builder-top-bar">
+    <div aria-label="Project editor" className="zapp-builder-top-bar" role="region">
       <div className="zapp-builder-project-identity">
-        <Link href="/projects">Projects</Link>
+        <Link aria-label="zapp.build home" className="zapp-builder-home-link" href="/">
+          <span aria-hidden="true">z</span>
+        </Link>
+        <span aria-hidden="true" className="zapp-builder-header-divider" />
+        <Link className="zapp-builder-projects-link" href="/projects">
+          Projects
+        </Link>
         <div className="zapp-builder-project-title">
           <h1 className="zapp-builder-project-name">{projectName}</h1>
         </div>
         <SupportLevelBadge level={supportLevel} />
-        <EnvBadge environment="preview" />
+      </div>
+      <div aria-label="Builder mode" className="zapp-builder-mode-switcher" role="group">
+        {(['preview', 'manage'] as const).map((item) => (
+          <button
+            aria-pressed={mode === item}
+            key={item}
+            onClick={() => {
+              onModeChange(item);
+            }}
+            type="button"
+          >
+            {item === 'preview' ? 'Preview' : 'Manage'}
+          </button>
+        ))}
       </div>
       <nav aria-label="Project actions" className="zapp-builder-project-actions">
+        <EnvBadge environment="preview" />
         <a
           className="zapp-builder-action-link"
           href={`/projects/${projectId}/settings/integrations`}
@@ -85,6 +109,6 @@ export function TopBar({
           <SettingsIcon />
         </a>
       </nav>
-    </header>
+    </div>
   );
 }

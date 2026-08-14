@@ -65,6 +65,57 @@ describe('AR-14 durable run budget approval loop', () => {
     }).success).toBe(true);
   });
 
+  it('does not request a credit increase for a session token limit', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar14-token-limit-${Date.now().toString(36)}`;
+    const statuses: string[] = [];
+    let approvalRequests = 0;
+    const activities: RunActivities = {
+      transitionRunStatus: ({ status }) => {
+        statuses.push(status);
+        return Promise.resolve();
+      },
+      storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
+      emitEvents: () => Promise.resolve(),
+      ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-token-limit' }),
+      runBuilderSession: () =>
+        Promise.resolve({
+          status: 'budget_exhausted',
+          errorCode: 'token_budget_exhausted',
+          commits: [],
+          artifacts: [],
+          summary: 'token boundary',
+        } as never),
+      commitAndPush: () => Promise.reject(new Error('commit not expected')),
+      estimateRunCost: () => Promise.resolve({ estimatedCredits: '1.0000' }),
+      requestBudgetIncrease: () => {
+        approvalRequests += 1;
+        return Promise.reject(new Error('credit approval not expected'));
+      },
+      checkpointBudgetStop: () => Promise.reject(new Error('checkpoint not expected')),
+    };
+    const worker = await createRunWorker({
+      connection: environment.nativeConnection,
+      taskQueue,
+      activities,
+      testOnlyBypassActivityIdempotency: true,
+    });
+
+    await worker.runUntil(async () => {
+      const workflowInput = input('run_01J00000000000000000000007');
+      const handle = await environment?.client.workflow.start(runWorkflow, {
+        taskQueue,
+        workflowId: workflowInput.workflowId,
+        args: [workflowInput],
+      });
+      if (handle === undefined) throw new Error('Temporal environment was not created');
+      await expect(handle.result()).rejects.toThrow();
+    });
+
+    expect(approvalRequests).toBe(0);
+    expect(statuses).toEqual(['running', 'failed']);
+  }, 30_000);
+
   it('defaults only a legacy activity payload that omitted the approval reason', async () => {
     const forwarded: unknown[] = [];
     const activities = createApprovalActivities({

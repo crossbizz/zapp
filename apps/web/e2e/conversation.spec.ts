@@ -36,7 +36,12 @@ const activeRun = {
   projectId,
   startedAt: '2026-08-10T12:00:00.000Z',
   startedBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
-  status: 'running',
+  status: 'running' as const,
+};
+
+type RunFixture = Omit<typeof activeRun, 'status'> & {
+  readonly status:
+    'cancelled' | 'completed' | 'failed' | 'paused' | 'queued' | 'running' | 'waiting_for_approval';
 };
 
 interface EventInput {
@@ -95,10 +100,7 @@ async function signIn(page: Page): Promise<void> {
   await expect(page).toHaveURL('/');
 }
 
-async function mockBuilder(
-  page: Page,
-  runs: readonly (typeof activeRun)[] = [activeRun],
-): Promise<void> {
+async function mockBuilder(page: Page, runs: readonly RunFixture[] = [activeRun]): Promise<void> {
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}`, async (route) => {
     await route.fulfill({
       body: JSON.stringify(projectRead),
@@ -115,7 +117,7 @@ async function mockBuilder(
   });
 }
 
-async function openBuilder(page: Page, runs?: readonly (typeof activeRun)[]): Promise<void> {
+async function openBuilder(page: Page, runs?: readonly RunFixture[]): Promise<void> {
   await mockBuilder(page, runs);
   await signIn(page);
   await page.goto(`/projects/${projectId}`);
@@ -126,30 +128,81 @@ test.beforeEach(async ({ page }) => {
   await page.request.get(`${apiBaseUrl}/__reset`);
 });
 
-test('runs every Mission Control lifecycle action through its exact public API', async ({ page }) => {
+test('runs every Mission Control lifecycle action through its exact public API', async ({
+  page,
+}) => {
   let runStatus = 'running';
   let approvalStatus = 'pending';
-  const lifecycleRequests: Array<{ action: 'cancel' | 'pause' | 'redirect' | 'resume'; body: unknown; idempotencyKey: string | undefined; method: string }> = [];
+  const lifecycleRequests: Array<{
+    action: 'cancel' | 'pause' | 'redirect' | 'resume';
+    body: unknown;
+    idempotencyKey: string | undefined;
+    method: string;
+  }> = [];
   const mission = () => ({
     run: { ...activeRun, status: runStatus },
     currentPhase: { id: 'phase_build', sequence: 1, title: 'Build checkout', status: 'running' },
     progress: { done: 1, total: 2 },
     taskGraph: {
       nodes: [
-        { id: 'task_form', phaseId: 'phase_build', title: 'Create form', status: 'failed', riskLevel: 'medium', assignedAgentRole: 'builder' },
-        { id: 'task_verify', phaseId: 'phase_build', title: 'Verify checkout', status: 'queued', riskLevel: 'low', assignedAgentRole: 'verifier' },
+        {
+          id: 'task_form',
+          phaseId: 'phase_build',
+          title: 'Create form',
+          status: 'failed',
+          riskLevel: 'medium',
+          assignedAgentRole: 'builder',
+        },
+        {
+          id: 'task_verify',
+          phaseId: 'phase_build',
+          title: 'Verify checkout',
+          status: 'queued',
+          riskLevel: 'low',
+          assignedAgentRole: 'verifier',
+        },
       ],
       edges: [{ from: 'task_form', to: 'task_verify' }],
     },
-    activeAgents: [{ agentId: 'agent-builder', role: 'builder', taskId: 'task_form', startedAt: '2026-08-10T12:00:00.000Z' }],
-    recentToolCalls: [{ sequence: 3, toolCallId: 'tool-write', toolName: 'write_file', status: 'failed', userSummary: 'Edited checkout form', durationMs: 42, taskId: 'task_form', agentId: 'agent-builder', occurredAt: '2026-08-10T12:00:03.000Z' }],
+    activeAgents: [
+      {
+        agentId: 'agent-builder',
+        role: 'builder',
+        taskId: 'task_form',
+        startedAt: '2026-08-10T12:00:00.000Z',
+      },
+    ],
+    recentToolCalls: [
+      {
+        sequence: 3,
+        toolCallId: 'tool-write',
+        toolName: 'write_file',
+        status: 'failed',
+        userSummary: 'Edited checkout form',
+        durationMs: 42,
+        taskId: 'task_form',
+        agentId: 'agent-builder',
+        occurredAt: '2026-08-10T12:00:03.000Z',
+      },
+    ],
     filesChanged: [{ path: 'src/checkout.tsx', additions: 12, deletions: 1 }],
     commits: [],
     testRuns: [],
     previewStatus: { status: 'ready', occurredAt: '2026-08-10T12:00:04.000Z' },
     screenshots: [],
     cost: { creditsUsed: 2, budget: 10 },
-    approvals: [{ approvalId: 'appr_plan', taskId: null, type: 'plan', status: approvalStatus, request: { artifactId: 'art_plan' }, response: null, requestedAt: '2026-08-10T12:00:05.000Z', resolvedAt: null }],
+    approvals: [
+      {
+        approvalId: 'appr_plan',
+        taskId: null,
+        type: 'plan',
+        status: approvalStatus,
+        request: { artifactId: 'art_plan' },
+        response: null,
+        requestedAt: '2026-08-10T12:00:05.000Z',
+        resolvedAt: null,
+      },
+    ],
     risks: [{ id: 'risk-1', severity: 'medium', summary: 'Checkout needs browser evidence' }],
     actions: {
       retryFailedTasks: [{ taskId: 'task_form', eligible: true, reason: 'eligible' }],
@@ -161,16 +214,31 @@ test('runs every Mission Control lifecycle action through its exact public API',
   });
   for (const action of ['pause', 'resume', 'redirect', 'cancel'] as const) {
     await page.route(`${apiBaseUrl}/v1/runs/${runId}/${action}`, async (route) => {
-      lifecycleRequests.push({ action, body: route.request().postDataJSON(), idempotencyKey: route.request().headers()['idempotency-key'], method: route.request().method() });
+      lifecycleRequests.push({
+        action,
+        body: route.request().postDataJSON(),
+        idempotencyKey: route.request().headers()['idempotency-key'],
+        method: route.request().method(),
+      });
       if (action === 'pause') runStatus = 'paused';
       if (action === 'resume' || action === 'redirect') runStatus = 'running';
       if (action === 'cancel') runStatus = 'cancelled';
-      await route.fulfill({ body: JSON.stringify({ run: { ...activeRun, status: runStatus } }), headers: corsHeaders(), status: 200 });
+      await route.fulfill({
+        body: JSON.stringify({ run: { ...activeRun, status: runStatus } }),
+        headers: corsHeaders(),
+        status: 200,
+      });
     });
   }
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/approvals/appr_plan`, async (route) => {
     approvalStatus = 'approved';
-    await route.fulfill({ body: JSON.stringify({ approval: { approvalId: 'appr_plan', kind: 'plan', status: 'approved' } }), headers: corsHeaders(), status: 200 });
+    await route.fulfill({
+      body: JSON.stringify({
+        approval: { approvalId: 'appr_plan', kind: 'plan', status: 'approved' },
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
   });
   await mockBuilder(page);
   await signIn(page);
@@ -179,7 +247,9 @@ test('runs every Mission Control lifecycle action through its exact public API',
   await page.getByRole('button', { name: 'Mission Control' }).click();
   await expect(page.getByText('Build checkout')).toBeVisible();
   await page.getByRole('tab', { name: 'Tasks' }).click();
-  await expect(page.getByRole('listitem').filter({ hasText: 'Create form' })).toContainText('failed');
+  await expect(page.getByRole('listitem').filter({ hasText: 'Create form' })).toContainText(
+    'failed',
+  );
   await expect(page.getByRole('button', { name: 'Retry failed task' })).toBeEnabled();
   await page.getByRole('button', { name: 'Pause' }).click();
   await page.getByRole('tab', { name: 'Overview' }).click();
@@ -195,7 +265,12 @@ test('runs every Mission Control lifecycle action through its exact public API',
   expect(lifecycleRequests).toEqual([
     { action: 'pause', body: null, idempotencyKey: expect.any(String), method: 'POST' },
     { action: 'resume', body: null, idempotencyKey: expect.any(String), method: 'POST' },
-    { action: 'redirect', body: { prompt: 'Use the accessible checkout instead' }, idempotencyKey: expect.any(String), method: 'POST' },
+    {
+      action: 'redirect',
+      body: { prompt: 'Use the accessible checkout instead' },
+      idempotencyKey: expect.any(String),
+      method: 'POST',
+    },
     { action: 'cancel', body: null, idempotencyKey: expect.any(String), method: 'POST' },
   ]);
   expect(new Set(lifecycleRequests.map(({ idempotencyKey }) => idempotencyKey)).size).toBe(4);
@@ -204,15 +279,63 @@ test('runs every Mission Control lifecycle action through its exact public API',
   await expect(page.getByText(/plan — approved/u)).toBeVisible();
 });
 
-test('submits typed interview answers and resolves specification and plan cards', async ({ page }) => {
+test('submits typed interview answers and resolves specification and plan cards', async ({
+  page,
+}) => {
   const specificationId = 'spec_01K27Q9C2W85CMN1V9S6Q3D4FA';
   const specificationApprovalId = 'appr_01K27Q9C2W85CMN1V9S6Q3D4FB';
   const planArtifactId = 'art_01K27Q9C2W85CMN1V9S6Q3D4FC';
   const planApprovalId = 'appr_01K27Q9C2W85CMN1V9S6Q3D4FD';
   const frames = [
-    eventFrame({ payload: { card: { version: 1, cardId: 'card_interview', kind: 'question', questions: [{ questionId: 'audience', prompt: 'Who is this for?', options: [{ label: 'Teams', tradeoff: 'Supports collaboration.', recommended: true }, { label: 'Individuals', tradeoff: 'Simpler permissions.', recommended: false }] }] } }, sequence: 1, type: 'conversation.card' }),
-    eventFrame({ payload: { card: { version: 1, cardId: 'card_specification', kind: 'specification', approvalId: specificationApprovalId, artifactId: specificationId, artifactVersion: 1 } }, sequence: 2, type: 'conversation.card' }),
-    eventFrame({ payload: { card: { version: 1, cardId: 'card_plan', kind: 'plan', approvalId: planApprovalId, artifactId: planArtifactId, approvalKind: 'plan_diff' } }, sequence: 3, type: 'conversation.card' }),
+    eventFrame({
+      payload: {
+        card: {
+          version: 1,
+          cardId: 'card_interview',
+          kind: 'question',
+          questions: [
+            {
+              questionId: 'audience',
+              prompt: 'Who is this for?',
+              options: [
+                { label: 'Teams', tradeoff: 'Supports collaboration.', recommended: true },
+                { label: 'Individuals', tradeoff: 'Simpler permissions.', recommended: false },
+              ],
+            },
+          ],
+        },
+      },
+      sequence: 1,
+      type: 'conversation.card',
+    }),
+    eventFrame({
+      payload: {
+        card: {
+          version: 1,
+          cardId: 'card_specification',
+          kind: 'specification',
+          approvalId: specificationApprovalId,
+          artifactId: specificationId,
+          artifactVersion: 1,
+        },
+      },
+      sequence: 2,
+      type: 'conversation.card',
+    }),
+    eventFrame({
+      payload: {
+        card: {
+          version: 1,
+          cardId: 'card_plan',
+          kind: 'plan',
+          approvalId: planApprovalId,
+          artifactId: planArtifactId,
+          approvalKind: 'plan_diff',
+        },
+      },
+      sequence: 3,
+      type: 'conversation.card',
+    }),
   ].join('');
   let submittedAnswers: unknown;
   const approvalBodies: unknown[] = [];
@@ -221,28 +344,123 @@ test('submits typed interview answers and resolves specification and plan cards'
   });
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/conversation-responses`, async (route) => {
     submittedAnswers = route.request().postDataJSON();
-    await route.fulfill({ body: JSON.stringify({ operationKey: `op_${'a'.repeat(64)}` }), headers: corsHeaders(), status: 202 });
+    await route.fulfill({
+      body: JSON.stringify({ operationKey: `op_${'a'.repeat(64)}` }),
+      headers: corsHeaders(),
+      status: 202,
+    });
   });
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/specifications/${specificationId}`, async (route) => {
-    const content = {
-      problem: 'Teams need a reliable release workspace.', targetUsers: ['Product teams'], goals: ['Ship safely'], nonGoals: ['Native mobile'], journeys: ['Create and deploy'], pagesRoutes: ['/'], rolesPermissions: ['Owner approves'], dataModel: ['Project'], integrations: ['GitHub'], functionalRequirements: ['Build project'], nonfunctionalRequirements: ['Accessible'], acceptanceCriteria: [{ id: 'AC-1', text: 'A release can be approved', priority: 'critical', criticalFlow: true }], assumptions: ['Authenticated user'], risks: ['Deployment failure'], definitionOfDone: ['Evidence attached'],
-    };
-    await route.fulfill({ body: JSON.stringify({ specification: { id: specificationId, organizationId, projectId, version: 1, status: 'draft', content, createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG', approvedBy: null, approvedAt: null } }), headers: corsHeaders(), status: 200 });
-  });
+  await page.route(
+    `${apiBaseUrl}/v1/runs/${runId}/specifications/${specificationId}`,
+    async (route) => {
+      const content = {
+        problem: 'Teams need a reliable release workspace.',
+        targetUsers: ['Product teams'],
+        goals: ['Ship safely'],
+        nonGoals: ['Native mobile'],
+        journeys: ['Create and deploy'],
+        pagesRoutes: ['/'],
+        rolesPermissions: ['Owner approves'],
+        dataModel: ['Project'],
+        integrations: ['GitHub'],
+        functionalRequirements: ['Build project'],
+        nonfunctionalRequirements: ['Accessible'],
+        acceptanceCriteria: [
+          {
+            id: 'AC-1',
+            text: 'A release can be approved',
+            priority: 'critical',
+            criticalFlow: true,
+          },
+        ],
+        assumptions: ['Authenticated user'],
+        risks: ['Deployment failure'],
+        definitionOfDone: ['Evidence attached'],
+      };
+      await route.fulfill({
+        body: JSON.stringify({
+          specification: {
+            id: specificationId,
+            organizationId,
+            projectId,
+            version: 1,
+            status: 'draft',
+            content,
+            createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+            approvedBy: null,
+            approvedAt: null,
+          },
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/plans/${planArtifactId}`, async (route) => {
-    await route.fulfill({ body: JSON.stringify({ plan: { artifactId: planArtifactId, approvalId: planApprovalId, approvalKind: 'plan_diff', phaseCount: 1, taskCount: 1, truncated: false, phases: [{ id: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE', sequence: 1, title: 'Checkout', status: 'queued', acceptanceCriteria: ['AC-1'], optional: false }], tasks: [{ id: 'task_01K27Q9C2W85CMN1V9S6Q3D4FF', phaseId: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE', title: 'Build checkout', status: 'queued', riskLevel: 'medium', acceptanceCriteria: ['AC-1'], dependencies: [], assignedAgentRole: 'builder' }] } }), headers: corsHeaders(), status: 200 });
+    await route.fulfill({
+      body: JSON.stringify({
+        plan: {
+          artifactId: planArtifactId,
+          approvalId: planApprovalId,
+          approvalKind: 'plan_diff',
+          phaseCount: 1,
+          taskCount: 1,
+          truncated: false,
+          phases: [
+            {
+              id: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE',
+              sequence: 1,
+              title: 'Checkout',
+              status: 'queued',
+              acceptanceCriteria: ['AC-1'],
+              optional: false,
+            },
+          ],
+          tasks: [
+            {
+              id: 'task_01K27Q9C2W85CMN1V9S6Q3D4FF',
+              phaseId: 'phase_01K27Q9C2W85CMN1V9S6Q3D4FE',
+              title: 'Build checkout',
+              status: 'queued',
+              riskLevel: 'medium',
+              acceptanceCriteria: ['AC-1'],
+              dependencies: [],
+              assignedAgentRole: 'builder',
+            },
+          ],
+        },
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
   });
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/approvals/*`, async (route) => {
     approvalBodies.push(route.request().postDataJSON());
-    await route.fulfill({ body: JSON.stringify({ approval: { approvalId: route.request().url().split('/').at(-1), kind: approvalBodies.length === 1 ? 'specification' : 'plan_diff', status: 'approved' } }), headers: corsHeaders(), status: 200 });
+    await route.fulfill({
+      body: JSON.stringify({
+        approval: {
+          approvalId: route.request().url().split('/').at(-1),
+          kind: approvalBodies.length === 1 ? 'specification' : 'plan_diff',
+          status: 'approved',
+        },
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
   });
 
   await openBuilder(page);
   await page.getByLabel('Agent questions').getByLabel(/Teams/u).check();
   await page.getByRole('button', { name: 'Submit answers' }).click();
   await expect(page.getByText('Answers submitted.')).toBeVisible();
-  expect(submittedAnswers).toMatchObject({ kind: 'question_answers', cardId: 'card_interview', answers: [{ questionId: 'audience', answer: 'Teams' }] });
-  await expect(page.getByRole('article', { name: 'Specification summary' })).toContainText('Teams need a reliable release workspace.');
+  expect(submittedAnswers).toMatchObject({
+    kind: 'question_answers',
+    cardId: 'card_interview',
+    answers: [{ questionId: 'audience', answer: 'Teams' }],
+  });
+  await expect(page.getByRole('article', { name: 'Specification summary' })).toContainText(
+    'Teams need a reliable release workspace.',
+  );
   await page.getByRole('button', { name: 'Start building' }).click();
   await expect(page.getByText('Specification approved.')).toBeVisible();
   const plan = page.getByRole('article', { name: 'Plan review' });
@@ -250,10 +468,15 @@ test('submits typed interview answers and resolves specification and plan cards'
   await expect(plan).toContainText('medium risk');
   await page.getByRole('button', { name: 'Approve plan' }).click();
   await expect(page.getByText('Plan approved.')).toBeVisible();
-  expect(approvalBodies).toEqual([{ kind: 'specification', decision: 'approved' }, { kind: 'plan_diff', decision: 'approved' }]);
+  expect(approvalBodies).toEqual([
+    { kind: 'specification', decision: 'approved' },
+    { kind: 'plan_diff', decision: 'approved' },
+  ]);
 });
 
-test('opens code and diff data and renders failed-test evidence with a Fix action', async ({ page }) => {
+test('opens code and diff data and renders failed-test evidence with a Fix action', async ({
+  page,
+}) => {
   const workspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FA';
   const testRunId = 'trun_01K27Q9C2W85CMN1V9S6Q3D4FB';
   const testCaseId = 'tcase_01K27Q9C2W85CMN1V9S6Q3D4FC';
@@ -261,13 +484,124 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
   const artifactId = 'art_01K27Q9C2W85CMN1V9S6Q3D4FE';
   const before = '1'.repeat(40);
   const after = '2'.repeat(40);
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => { await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 }); });
-  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => { await route.fulfill({ body: JSON.stringify({ workspaces: [{ id: workspaceId }] }), headers: corsHeaders(), status: 200 }); });
-  await page.route(new RegExp(`${apiBaseUrl}/v1/workspaces/${workspaceId}/files(?:\\?.*)?$`, 'u'), async (route) => { await route.fulfill({ body: JSON.stringify({ entries: [{ path: 'src/page.tsx', type: 'file' }], truncated: false }), headers: corsHeaders(), status: 200 }); });
-  await page.route(new RegExp(`${apiBaseUrl}/v1/workspaces/${workspaceId}/file(?:\\?.*)?$`, 'u'), async (route) => { await route.fulfill({ body: JSON.stringify({ path: 'src/page.tsx', dataBase64: Buffer.from('export default function Page() { return <h1>Checkout</h1>; }').toString('base64'), byteSize: 59, compareToken: 'a'.repeat(64) }), headers: corsHeaders(), status: 200 }); });
-  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/compare*`, async (route) => { await route.fulfill({ body: JSON.stringify({ beforeSha: before, afterSha: after, changedFiles: 1, files: [{ path: 'src/page.tsx', status: 'modified', additions: 2, deletions: 1 }], filesTruncated: false, patch: '+ Checkout', patchTruncated: false }), headers: corsHeaders(), status: 200 }); });
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/tests`, async (route) => { await route.fulfill({ body: JSON.stringify({ runs: [{ id: testRunId, organizationId: contractOrganizationId, runId, taskId, commitSha: after, type: 'browser', status: 'failed', startedAt: '2026-08-10T12:00:00.000Z', completedAt: '2026-08-10T12:00:02.000Z', summary: null, cases: [{ id: testCaseId, testRunId, name: 'checkout submits', status: 'failed', durationMs: 1200, criterionIds: ['AC-1'], evidenceArtifactIds: [artifactId], error: { message: 'button missing' } }], casesTruncated: false }] }), headers: corsHeaders(), status: 200 }); });
-  await page.route(`${apiBaseUrl}/v1/runs/${runId}/evidence/${artifactId}*`, async (route) => { await route.fulfill({ body: JSON.stringify({ artifact: { id: artifactId, organizationId: contractOrganizationId, projectId, runId, taskId, testRunId, testCaseId, criterionIds: ['AC-1'], kind: 'screenshot', description: 'Checkout form missing its submit button', contentType: 'image/png', byteSize: 100, contentHash: 'b'.repeat(64), createdAt: '2026-08-10T12:00:02.000Z' }, download: { url: 'https://evidence.zapp.test/screenshot.png', expiresAt: '2026-08-10T12:05:00.000Z' } }), headers: corsHeaders(), status: 200 }); });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ workspaces: [{ id: workspaceId }] }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(
+    new RegExp(`${apiBaseUrl}/v1/workspaces/${workspaceId}/files(?:\\?.*)?$`, 'u'),
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          entries: [{ path: 'src/page.tsx', type: 'file' }],
+          truncated: false,
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    new RegExp(`${apiBaseUrl}/v1/workspaces/${workspaceId}/file(?:\\?.*)?$`, 'u'),
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          path: 'src/page.tsx',
+          dataBase64: Buffer.from(
+            'export default function Page() { return <h1>Checkout</h1>; }',
+          ).toString('base64'),
+          byteSize: 59,
+          compareToken: 'a'.repeat(64),
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/compare*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        beforeSha: before,
+        afterSha: after,
+        changedFiles: 1,
+        files: [{ path: 'src/page.tsx', status: 'modified', additions: 2, deletions: 1 }],
+        filesTruncated: false,
+        patch: '+ Checkout',
+        patchTruncated: false,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/tests`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        runs: [
+          {
+            id: testRunId,
+            organizationId: contractOrganizationId,
+            runId,
+            taskId,
+            commitSha: after,
+            type: 'browser',
+            status: 'failed',
+            startedAt: '2026-08-10T12:00:00.000Z',
+            completedAt: '2026-08-10T12:00:02.000Z',
+            summary: null,
+            cases: [
+              {
+                id: testCaseId,
+                testRunId,
+                name: 'checkout submits',
+                status: 'failed',
+                durationMs: 1200,
+                criterionIds: ['AC-1'],
+                evidenceArtifactIds: [artifactId],
+                error: { message: 'button missing' },
+              },
+            ],
+            casesTruncated: false,
+          },
+        ],
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/evidence/${artifactId}*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        artifact: {
+          id: artifactId,
+          organizationId: contractOrganizationId,
+          projectId,
+          runId,
+          taskId,
+          testRunId,
+          testCaseId,
+          criterionIds: ['AC-1'],
+          kind: 'screenshot',
+          description: 'Checkout form missing its submit button',
+          contentType: 'image/png',
+          byteSize: 100,
+          contentHash: 'b'.repeat(64),
+          createdAt: '2026-08-10T12:00:02.000Z',
+        },
+        download: {
+          url: 'https://evidence.zapp.test/screenshot.png',
+          expiresAt: '2026-08-10T12:05:00.000Z',
+        },
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
 
   await openBuilder(page);
   await page.getByRole('tab', { name: 'Code' }).click();
@@ -358,6 +692,129 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
   await page.getByRole('button', { name: /0123456 Complete checkout flow/u }).click();
   await expect(page.getByRole('tab', { name: 'Code' })).toHaveAttribute('aria-selected', 'true');
   expect(eventRequests[0]?.headers()['x-organization-id']).toBe(organizationId);
+});
+
+test('shows an accepted queued prompt immediately and reconciles the durable user event once', async ({
+  page,
+}) => {
+  const prompt = 'Build the first usable client portal homepage.';
+  const createdRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FQ';
+  let releaseEvent: (() => void) | undefined;
+  const eventGate = new Promise<void>((resolve) => {
+    releaseEvent = resolve;
+  });
+
+  await page.route(`${apiBaseUrl}/v1/runs/${createdRunId}/events*`, async (route) => {
+    await eventGate;
+    await route.fulfill({
+      body: eventFrame({
+        payload: {
+          attachments: [],
+          content: prompt,
+          messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FR',
+          source: 'web',
+        },
+        sequence: 1,
+        type: 'message.user',
+      }),
+      headers: corsHeaders('text/event-stream'),
+      status: 200,
+    });
+  });
+  await openBuilder(page, []);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        body: JSON.stringify({
+          items: [{ ...activeRun, id: createdRunId, status: 'queued' }],
+          nextCursor: null,
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({
+        run: {
+          ...activeRun,
+          id: createdRunId,
+          status: 'queued',
+        },
+      }),
+      headers: corsHeaders(),
+      status: 201,
+    });
+  });
+
+  const composer = page.getByLabel('Message the agent');
+  await composer.fill(prompt);
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect(page.getByText(prompt, { exact: true })).toBeVisible({ timeout: 500 });
+  await expect(page.getByRole('status', { name: 'Build status' })).toContainText('Build queued');
+  await expect(composer).toHaveValue('');
+  await expect(page.getByRole('button', { name: 'Stop run' })).toBeVisible();
+
+  releaseEvent?.();
+  await expect(page.getByText(prompt, { exact: true })).toHaveCount(1);
+});
+
+test('reconciles a failed run from the public runs API when the event stream stays empty', async ({
+  page,
+}) => {
+  const prompt = 'Build a project status dashboard.';
+  const createdRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FS';
+  await page.route(`${apiBaseUrl}/v1/runs/${createdRunId}/events*`, async (route) => {
+    await route.fulfill({
+      body: '',
+      headers: corsHeaders('text/event-stream'),
+      status: 200,
+    });
+  });
+  await openBuilder(page, []);
+  await page.unroute(`${apiBaseUrl}/v1/projects/${projectId}/runs`);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    const run = { ...activeRun, id: createdRunId, status: 'failed' };
+    await route.fulfill({
+      body:
+        route.request().method() === 'POST'
+          ? JSON.stringify({ run: { ...run, status: 'queued' } })
+          : JSON.stringify({ items: [run], nextCursor: null }),
+      headers: corsHeaders(),
+      status: route.request().method() === 'POST' ? 201 : 200,
+    });
+  });
+
+  await page.getByLabel('Message the agent').fill(prompt);
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect(page.getByRole('status', { name: 'Build status' })).toContainText('Build queued');
+  await expect(page.getByRole('status', { name: 'Build status' })).toContainText('Build failed');
+  await expect(page.getByRole('button', { name: 'Stop run' })).toHaveCount(0);
+  await expect(page.getByText(prompt, { exact: true })).toBeVisible();
+});
+
+test('marks an interrupted running phase as failed when its run is terminal', async ({ page }) => {
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    await route.fulfill({
+      body: eventFrame({
+        payload: { name: 'Conversation', phase: 'conversation' },
+        sequence: 1,
+        type: 'phase.started',
+      }),
+      headers: corsHeaders('text/event-stream'),
+      status: 200,
+    });
+  });
+
+  await openBuilder(page, [{ ...activeRun, status: 'failed' }]);
+
+  await expect(page.getByRole('status', { name: 'Build status' })).toContainText('Build failed');
+  await expect(page.getByRole('status', { name: 'Conversation progress' })).toContainText('Failed');
+  await expect(page.getByRole('status', { name: 'Conversation progress' })).not.toContainText(
+    'In progress',
+  );
 });
 
 test('reconnects after a dropped stream and deduplicates replayed sequences', async ({ page }) => {
@@ -669,7 +1126,7 @@ test('starts a new run with the project-persisted mode and model when the latest
   const completedRun = {
     ...activeRun,
     completedAt: '2026-08-10T12:10:00.000Z',
-    status: 'completed',
+    status: 'completed' as const,
   };
   let createdRunBody: unknown;
   await page.addInitScript(

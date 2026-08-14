@@ -348,7 +348,7 @@ export function Composer({
         onPaste={pasteImages}
         placeholder="Ask for a change or tell the agent what to do next…"
         ref={messageInputRef}
-        rows={3}
+        rows={2}
         value={content}
       />
       <div className="zapp-conversation-composer-actions">

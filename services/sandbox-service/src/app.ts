@@ -18,6 +18,7 @@ import { createHttpServerTelemetry, tenantSafePinoOptions } from '@zapp/config';
 import {
   createGitTokenClient,
   createWorkspaceGitService,
+  WorkspaceGitBootstrapError,
   type GitTokenClientOptions,
   type WorkspaceGitService,
 } from './provider/git-bootstrap.js';
@@ -68,6 +69,15 @@ import {
 const httpServerTelemetry = createHttpServerTelemetry();
 
 const SERVICE_TOKEN_HEADER = 'x-zapp-service-token';
+
+function findWorkspaceGitBootstrapError(error: unknown): WorkspaceGitBootstrapError | undefined {
+  let current = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
+    if (current instanceof WorkspaceGitBootstrapError) return current;
+    current = current.cause;
+  }
+  return undefined;
+}
 
 export interface SandboxServiceTokenVerifier {
   verifyServiceToken(
@@ -129,6 +139,8 @@ interface BuildAppCommonOptions {
   readonly serviceTokens: SandboxServiceTokenVerifier;
   readonly secrets: ScopedSecretInjector;
   readonly networkPolicies: NetworkPolicyRecorder;
+  /** Code-owned Git origins required while dependency-install workspaces bootstrap. */
+  readonly dependencyDomains?: readonly string[];
   readonly previewTransport?: PreviewTransport;
   readonly previewFailurePollIntervalMs?: number;
   readonly now?: () => Date;
@@ -331,7 +343,7 @@ export function buildApp(options: BuildAppOptions) {
       done(null, body);
     },
   );
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof SandboxQuotaExceededError) {
       void reply.status(error.statusCode).send({
         code: error.code,
@@ -366,6 +378,28 @@ export function buildApp(options: BuildAppOptions) {
       return;
     }
     const statusCode = fastifyError.statusCode ?? 500;
+    const gitFailure = findWorkspaceGitBootstrapError(error);
+    if (gitFailure !== undefined) {
+      request.log.error(
+        {
+          errorCode: 'workspace_git_bootstrap_failed',
+          stage: gitFailure.stage,
+          exitCode: gitFailure.exitCode,
+          reason: gitFailure.reason,
+        },
+        'workspace Git bootstrap failed',
+      );
+      void reply.status(statusCode).send({
+        code: 'workspace_git_bootstrap_failed',
+        message: 'The sandbox operation failed.',
+        details: {
+          stage: gitFailure.stage,
+          exitCode: gitFailure.exitCode,
+          reason: gitFailure.reason,
+        },
+      });
+      return;
+    }
     void reply.status(statusCode).send({
       code: statusCode === 404 ? 'workspace_not_found' : 'sandbox_operation_failed',
       message:
@@ -405,6 +439,7 @@ export function buildApp(options: BuildAppOptions) {
     workspaceGit,
     secrets: options.secrets,
     networkPolicies: options.networkPolicies,
+    dependencyDomains: options.dependencyDomains ?? [],
     events,
     previewMonitors: options.previewMonitors,
     governor: options.governor,

@@ -23,7 +23,7 @@ describe('WS-9 project cache volume and branch writer lock', () => {
         { mountPath: '/cache', subPath: '/cache' },
       ],
       workspaceRoot: `/workspace/${BRANCH_ID}`,
-      lockFile: `/workspace/${BRANCH_ID}/.zapp-writer.lock`,
+      lockFile: `/workspace/.zapp-writer-${BRANCH_ID}.lock`,
       sandboxName: '<stable-hash>',
       environment: {
         NPM_CONFIG_STORE_DIR: '/cache/pnpm',
@@ -31,6 +31,7 @@ describe('WS-9 project cache volume and branch writer lock', () => {
         PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
       },
     });
+    expect(plan.lockFile.startsWith(`${plan.workspaceRoot}/`)).toBe(false);
   });
 
   it('exposes a stable typed conflict for the HTTP 409 boundary', () => {

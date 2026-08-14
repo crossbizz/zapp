@@ -49,10 +49,10 @@ import {
   type ManageSection,
 } from './builder-navigation';
 
-const defaultConversationWidth = 40;
-const minimumConversationWidth = 28;
-const maximumConversationWidth = 75;
-const minimumConversationPixels = 380;
+const defaultConversationWidth = 30;
+const minimumConversationWidth = 26;
+const maximumConversationWidth = 42;
+const minimumConversationPixels = 400;
 
 interface ShellProps {
   readonly projectId: string;
@@ -112,7 +112,9 @@ function BuilderStyles(): ReactElement {
   return (
     <style jsx global>{`
       .zapp-builder-shell {
-        min-height: 100vh;
+        height: 100dvh;
+        min-height: 36rem;
+        overflow: hidden;
         color: var(--zapp-text-primary);
         background: var(--zapp-surface-canvas);
         font-family: var(--zapp-font-sans);
@@ -121,12 +123,12 @@ function BuilderStyles(): ReactElement {
       .zapp-builder-top-bar {
         position: relative;
         z-index: 2;
-        display: flex;
-        min-height: 4.5rem;
+        display: grid;
+        min-height: 3.25rem;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
         align-items: center;
-        justify-content: space-between;
-        gap: 1rem;
-        padding: 0.75rem 1rem;
+        gap: 0.75rem;
+        padding: 0.4rem 0.65rem;
         border-bottom: 1px solid var(--zapp-border);
         background: var(--zapp-surface-raised);
       }
@@ -135,7 +137,7 @@ function BuilderStyles(): ReactElement {
       .zapp-builder-project-actions {
         display: flex;
         align-items: center;
-        gap: 0.625rem;
+        gap: 0.45rem;
       }
 
       .zapp-builder-project-identity {
@@ -145,7 +147,8 @@ function BuilderStyles(): ReactElement {
       .zapp-builder-project-name {
         overflow: hidden;
         margin: 0;
-        font-size: var(--zapp-text-18);
+        font-size: var(--zapp-text-14);
+        font-weight: 680;
         line-height: 1.3;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -157,35 +160,92 @@ function BuilderStyles(): ReactElement {
         gap: 0.05rem;
       }
 
+      .zapp-builder-home-link {
+        display: inline-grid;
+        width: 2rem;
+        height: 2rem;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 0.55rem;
+        color: var(--zapp-text-inverse);
+        background: var(--zapp-brand-gradient);
+        font-size: var(--zapp-text-14);
+        font-weight: 800;
+        text-decoration: none;
+      }
+
+      .zapp-builder-header-divider {
+        width: 1px;
+        height: 1.5rem;
+        background: var(--zapp-border);
+      }
+
+      .zapp-builder-projects-link {
+        color: var(--zapp-text-secondary);
+        font-size: var(--zapp-text-12);
+        text-decoration: none;
+      }
+
+      .zapp-builder-mode-switcher {
+        display: flex;
+        align-items: center;
+        gap: 0.125rem;
+        padding: 0.125rem;
+        border: 1px solid var(--zapp-border);
+        border-radius: 0.55rem;
+        background: var(--zapp-surface-subtle);
+      }
+
+      .zapp-builder-mode-switcher button {
+        min-width: 4.75rem;
+        min-height: 2rem;
+        border: 0;
+        border-radius: 0.45rem;
+        padding: 0.25rem 0.65rem;
+        color: var(--zapp-text-secondary);
+        background: transparent;
+        font: inherit;
+        font-size: var(--zapp-text-12);
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      .zapp-builder-mode-switcher button[aria-pressed='true'] {
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-raised);
+        box-shadow: 0 1px 2px rgb(24 24 27 / 0.1);
+      }
+
       .zapp-builder-save-state {
         color: var(--zapp-text-tertiary);
         font-size: var(--zapp-text-12);
       }
 
       .zapp-builder-project-actions {
-        flex-wrap: wrap;
+        min-width: 0;
+        flex-wrap: nowrap;
         justify-content: flex-end;
       }
 
       .zapp-builder-action-link,
       .zapp-builder-settings-link {
         display: inline-flex;
-        min-height: 2.5rem;
+        min-height: 2rem;
         align-items: center;
         justify-content: center;
         gap: 0.375rem;
-        padding: 0.45rem 0.75rem;
+        padding: 0.3rem 0.55rem;
         border: 1px solid var(--zapp-border);
         border-radius: var(--zapp-radius-pill);
         color: var(--zapp-text-primary);
         background: var(--zapp-surface-raised);
-        font-size: var(--zapp-text-14);
+        font-size: var(--zapp-text-12);
         font-weight: 600;
         text-decoration: none;
       }
 
       .zapp-builder-settings-link {
-        width: 2.5rem;
+        width: 2rem;
         padding: 0;
       }
 
@@ -202,8 +262,8 @@ function BuilderStyles(): ReactElement {
       }
 
       .zapp-builder-action-icon {
-        width: 1.125rem;
-        height: 1.125rem;
+        width: 1rem;
+        height: 1rem;
         flex: 0 0 auto;
       }
 
@@ -252,7 +312,8 @@ function BuilderStyles(): ReactElement {
 
       .zapp-builder-workspace {
         display: grid;
-        min-height: calc(100vh - 4.5rem);
+        height: calc(100dvh - 3.25rem);
+        min-height: 0;
         grid-template-columns: minmax(0, 1fr);
         transition: grid-template-columns 160ms ease;
       }
@@ -264,18 +325,24 @@ function BuilderStyles(): ReactElement {
       .zapp-builder-split {
         display: grid;
         min-width: 0;
+        height: 100%;
         min-height: 0;
-        grid-template-columns: minmax(380px, var(--conversation-width)) 0.625rem minmax(0, 1fr);
+        grid-template-columns: minmax(
+            400px,
+            clamp(400px, var(--conversation-width), 520px)
+          ) 0.375rem minmax(0, 1fr);
       }
 
       .zapp-builder-pane {
         min-width: 0;
-        overflow: auto;
-        padding: 1.25rem;
+        min-height: 0;
+        overflow: hidden;
+        padding: 0;
         background: var(--zapp-surface-raised);
       }
 
       .zapp-builder-pane:last-child {
+        border-left: 1px solid var(--zapp-border);
         background: var(--zapp-surface-canvas);
       }
 
@@ -285,8 +352,8 @@ function BuilderStyles(): ReactElement {
         cursor: col-resize;
         align-items: center;
         justify-content: center;
-        border-inline: 1px solid var(--zapp-border);
-        background: var(--zapp-surface-subtle);
+        border: 0;
+        background: var(--zapp-surface-canvas);
         touch-action: none;
       }
 
@@ -297,14 +364,15 @@ function BuilderStyles(): ReactElement {
       }
 
       .zapp-builder-separator-handle {
-        width: 0.2rem;
-        height: 2rem;
+        width: 0.125rem;
+        height: 1.5rem;
         border-radius: var(--zapp-radius-pill);
         background: var(--zapp-border-strong);
       }
 
       .zapp-builder-surface-tabs {
-        min-height: 100%;
+        height: 100%;
+        min-height: 0;
       }
 
       .zapp-builder-mission-control {
@@ -351,27 +419,33 @@ function BuilderStyles(): ReactElement {
 
       @media (max-width: 1023px) {
         .zapp-builder-shell {
+          height: auto;
+          min-height: 100dvh;
           padding-bottom: 4.5rem;
         }
 
         .zapp-builder-top-bar {
-          align-items: flex-start;
-          flex-direction: column;
+          min-height: 3.75rem;
+          grid-template-columns: minmax(0, 1fr) auto;
         }
 
         .zapp-builder-project-actions {
-          width: 100%;
-          justify-content: flex-start;
+          display: none;
+        }
+
+        .zapp-builder-mode-switcher {
+          grid-column: 2;
         }
 
         .zapp-builder-workspace,
         .zapp-builder-split {
           display: block;
-          min-height: calc(100vh - 10rem);
+          height: auto;
+          min-height: calc(100dvh - 8.25rem);
         }
 
         .zapp-builder-pane {
-          min-height: calc(100vh - 14.5rem);
+          min-height: calc(100dvh - 8.25rem);
         }
 
         .zapp-builder-pane[data-mobile-active='false'] {
@@ -398,20 +472,14 @@ function BuilderStyles(): ReactElement {
       }
 
       @media (max-width: 700px) {
-        .zapp-builder-project-identity,
-        .zapp-builder-project-actions {
-          align-items: flex-start;
-          flex-direction: column;
+        .zapp-builder-projects-link,
+        .zapp-builder-header-divider,
+        .zapp-builder-project-identity .zapp-support-level-badge {
+          display: none;
         }
 
-        .zapp-builder-project-actions,
-        .zapp-builder-project-actions > * {
-          width: 100%;
-        }
-
-        .zapp-builder-action-link,
-        .zapp-builder-settings-link {
-          width: 100%;
+        .zapp-builder-mode-switcher button {
+          min-width: 4rem;
         }
       }
     `}</style>
@@ -427,18 +495,37 @@ function MissionControlEmpty(): ReactElement {
   );
 }
 
-const missionTabs = ['Overview', 'Tasks', 'Agents', 'Activity', 'Files/Commits', 'Tests', 'Approvals', 'Risks'] as const;
+const missionTabs = [
+  'Overview',
+  'Tasks',
+  'Agents',
+  'Activity',
+  'Files/Commits',
+  'Tests',
+  'Approvals',
+  'Risks',
+] as const;
 type MissionTab = (typeof missionTabs)[number];
 type ApprovalKind = NonNullable<ResolveApprovalInput['kind']>;
 const approvalKinds = new Set<ApprovalKind>([
-  'budget_increase', 'specification', 'plan', 'plan_diff', 'migration', 'deploy',
+  'budget_increase',
+  'specification',
+  'plan',
+  'plan_diff',
+  'migration',
+  'deploy',
 ]);
 
 function isApprovalKind(value: string): value is ApprovalKind {
   return approvalKinds.has(value as ApprovalKind);
 }
 
-function MissionControlPanel({ organizationId, runId, onOpenPreview, onCompare }: {
+function MissionControlPanel({
+  organizationId,
+  runId,
+  onOpenPreview,
+  onCompare,
+}: {
   readonly organizationId: string;
   readonly runId: string;
   readonly onOpenPreview: () => void;
@@ -450,19 +537,24 @@ function MissionControlPanel({ organizationId, runId, onOpenPreview, onCompare }
   const [data, setData] = useState<MissionControlData>();
   const [redirect, setRedirect] = useState('');
 
-  const reload = useCallback(async (signal?: AbortSignal): Promise<void> => {
-    try {
-      setData(await client.getMissionControl(runId, signal));
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return;
-      setAnnouncement('Mission Control could not refresh.');
-    }
-  }, [client, runId]);
+  const reload = useCallback(
+    async (signal?: AbortSignal): Promise<void> => {
+      try {
+        setData(await client.getMissionControl(runId, signal));
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setAnnouncement('Mission Control could not refresh.');
+      }
+    },
+    [client, runId],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
     void reload(controller.signal);
-    const interval = window.setInterval(() => { void reload(controller.signal); }, 2_000);
+    const interval = window.setInterval(() => {
+      void reload(controller.signal);
+    }, 2_000);
     return () => {
       controller.abort();
       window.clearInterval(interval);
@@ -481,7 +573,11 @@ function MissionControlPanel({ organizationId, runId, onOpenPreview, onCompare }
     }
   };
 
-  const resolveApproval = (approvalId: string, type: string, decision: 'approved' | 'rejected'): void => {
+  const resolveApproval = (
+    approvalId: string,
+    type: string,
+    decision: 'approved' | 'rejected',
+  ): void => {
     if (!isApprovalKind(type)) {
       setAnnouncement('This approval type is not supported.');
       return;
@@ -494,7 +590,17 @@ function MissionControlPanel({ organizationId, runId, onOpenPreview, onCompare }
   if (data === undefined) return <p role="status">Loading Mission Control…</p>;
   const content: Record<MissionTab, ReactElement> = {
     Overview: <Overview data={data} />,
-    Tasks: <TaskGraph data={data} onRetry={(taskId) => { void runAction('Task retry', () => client.retryRunTask(runId, taskId)); }} onSkip={(phaseId) => { void runAction('Phase skip', () => client.skipRunPhase(runId, phaseId)); }} />,
+    Tasks: (
+      <TaskGraph
+        data={data}
+        onRetry={(taskId) => {
+          void runAction('Task retry', () => client.retryRunTask(runId, taskId));
+        }}
+        onSkip={(phaseId) => {
+          void runAction('Phase skip', () => client.skipRunPhase(runId, phaseId));
+        }}
+      />
+    ),
     Agents: <Agents data={data} />,
     Activity: <Activity data={data} />,
     'Files/Commits': <FilesCommits data={data} onCompare={onCompare} />,
@@ -502,20 +608,87 @@ function MissionControlPanel({ organizationId, runId, onOpenPreview, onCompare }
     Approvals: <Approvals data={data} onResolve={resolveApproval} />,
     Risks: <Risks data={data} />,
   };
-  return <div className="zapp-mission-content">
-    <div aria-label="Mission Control views" role="tablist">{missionTabs.map((tab) => <button aria-selected={activeTab === tab} key={tab} onClick={() => { setActiveTab(tab); }} role="tab" type="button">{tab}</button>)}</div>
-    <div aria-live="polite" className="zapp-mission-announcement">{announcement}</div>
-    <div aria-label={`${activeTab} view`} role="tabpanel">{content[activeTab]}</div>
-    <div aria-label="Run actions">
-      {data.run.status === 'paused' ? <button onClick={() => { void runAction('Resume', () => client.resumeRun(runId)); }} type="button">Resume</button> : <button onClick={() => { void runAction('Pause', () => client.pauseRun(runId)); }} type="button">Pause</button>}
-      <button onClick={() => { if (globalThis.confirm('Cancel this run?')) void runAction('Cancel', () => client.cancelRun(runId)); }} type="button">Cancel</button>
-      <button onClick={onOpenPreview} type="button">Open preview</button>
-      <form onSubmit={(event) => { event.preventDefault(); const prompt = redirect.trim(); if (prompt.length === 0) return; void runAction('Redirect', () => client.redirectRun(runId, prompt)); setRedirect(''); }}>
-        <label>Redirect instructions<input maxLength={4_000} onChange={(event) => { setRedirect(event.target.value); }} value={redirect} /></label>
-        <button disabled={redirect.trim().length === 0} type="submit">Redirect</button>
-      </form>
+  return (
+    <div className="zapp-mission-content">
+      <div aria-label="Mission Control views" role="tablist">
+        {missionTabs.map((tab) => (
+          <button
+            aria-selected={activeTab === tab}
+            key={tab}
+            onClick={() => {
+              setActiveTab(tab);
+            }}
+            role="tab"
+            type="button"
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+      <div aria-live="polite" className="zapp-mission-announcement">
+        {announcement}
+      </div>
+      <div aria-label={`${activeTab} view`} role="tabpanel">
+        {content[activeTab]}
+      </div>
+      <div aria-label="Run actions">
+        {data.run.status === 'paused' ? (
+          <button
+            onClick={() => {
+              void runAction('Resume', () => client.resumeRun(runId));
+            }}
+            type="button"
+          >
+            Resume
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              void runAction('Pause', () => client.pauseRun(runId));
+            }}
+            type="button"
+          >
+            Pause
+          </button>
+        )}
+        <button
+          onClick={() => {
+            if (globalThis.confirm('Cancel this run?'))
+              void runAction('Cancel', () => client.cancelRun(runId));
+          }}
+          type="button"
+        >
+          Cancel
+        </button>
+        <button onClick={onOpenPreview} type="button">
+          Open preview
+        </button>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const prompt = redirect.trim();
+            if (prompt.length === 0) return;
+            void runAction('Redirect', () => client.redirectRun(runId, prompt));
+            setRedirect('');
+          }}
+        >
+          <label>
+            Redirect instructions
+            <input
+              maxLength={4_000}
+              onChange={(event) => {
+                setRedirect(event.target.value);
+              }}
+              value={redirect}
+            />
+          </label>
+          <button disabled={redirect.trim().length === 0} type="submit">
+            Redirect
+          </button>
+        </form>
+      </div>
     </div>
-  </div>;
+  );
 }
 
 export function Shell({ projectId }: ShellProps): ReactElement {
@@ -867,7 +1040,16 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       title="Mission Control"
       trigger={missionTrigger}
     >
-      {activeRun === undefined ? <MissionControlEmpty /> : <MissionControlPanel organizationId={organizationId} runId={activeRun.id} onOpenPreview={previewSurface} onCompare={openCommit} />}
+      {activeRun === undefined ? (
+        <MissionControlEmpty />
+      ) : (
+        <MissionControlPanel
+          organizationId={organizationId}
+          runId={activeRun.id}
+          onOpenPreview={previewSurface}
+          onCompare={openCommit}
+        />
+      )}
     </Drawer>
   );
   const splitStyle = {
@@ -890,176 +1072,188 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       <AppShell
         activePath={`/projects/${projectId}`}
         invalidOrganization={false}
+        immersive
         onSignOut={() => session.signOut(organizationId)}
         onSwitchOrganization={session.switchOrganization}
         recentProjects={[{ id: projectId, name: project.project.name }]}
         session={readySession}
       >
-      <div className="zapp-builder-shell">
-        <TopBar
-          deploy={<BuilderDeploy organizationId={organizationId} projectId={projectId} />}
-          missionControl={missionControl}
-          projectId={projectId}
-          projectName={project.project.name}
-          supportLevel={project.project.supportLevel}
-          syncState="unavailable"
-        />
-        {readySession.invalidOrganization ? (
-          <p className="zapp-builder-notice" role="status">
-            Invalid organization selection. Showing your active organization.
-          </p>
-        ) : null}
-        {failedPreferenceKeys.size > 0 ? (
-          <p className="zapp-builder-notice" role="status">
-            Preferences could not be saved.
-          </p>
-        ) : null}
-        <IncidentBanner
-          onRunCreated={setActiveRun}
-          organizationId={organizationId}
-          projectId={projectId}
-        />
-        <div
-          className="zapp-builder-workspace"
-          data-inline-mission={inlineMissionControl && missionControlOpen ? 'open' : 'closed'}
-          data-testid="builder-workspace"
-        >
-          <div className="zapp-builder-split" ref={splitRef} style={splitStyle}>
-            <section
-              aria-label="Conversation"
-              className="zapp-builder-pane"
-              data-mobile-active={navigation.pane === 'conversation' ? 'true' : 'false'}
-              id="conversation-pane"
-            >
-              <Thread
-                {...(activeRun === undefined ? {} : { adoptedRun: activeRun })}
-                allowedModels={allowedModels}
-                branches={project.branches}
-                incomingImages={previewAttachments}
-                {...(firstPrompt === undefined ? {} : { initialPrompt: firstPrompt })}
-                onOpenCommit={openCommit}
-                onRunChange={setActiveRun}
-                organizationId={organizationId}
-                projectId={projectId}
-              />
-            </section>
-            <div
-              aria-controls="conversation-pane surface-pane"
-              aria-label="Resize conversation pane"
-              aria-orientation="vertical"
-              aria-valuemax={maximumConversationWidth}
-              aria-valuemin={announcedConversationMinimum}
-              aria-valuenow={announcedConversationWidth}
-              aria-valuetext={`${String(announcedConversationWidth)}% conversation`}
-              className="zapp-builder-separator"
-              onKeyDown={resizeWithKeyboard}
-              onPointerDown={beginResize}
-              role="separator"
-              tabIndex={0}
-            >
-              <span aria-hidden="true" className="zapp-builder-separator-handle" />
-            </div>
-            <section
-              aria-label="Workspace"
-              className="zapp-builder-pane"
-              data-mobile-active={navigation.pane === 'workspace' ? 'true' : 'false'}
-              id="surface-pane"
-            >
-              <WorkingSurface
-                {...(fallbackCommitSha === undefined || fallbackCommitSha === null
-                  ? {}
-                  : { fallbackCommitSha })}
-                focusPreviewRequest={focusPreviewRequest}
-                onAttachPreviewCapture={(file, capture) => {
-                  const id = crypto.randomUUID();
-                  return new Promise<boolean>((resolve) => {
-                    setPreviewAttachments((current) => [
-                      ...current,
-                      {
-                        capture,
-                        file,
-                        id,
-                        onConsumed(accepted) {
-                          setPreviewAttachments((pending) =>
-                            pending.filter((candidate) => candidate.id !== id),
-                          );
-                          if (accepted) {
-                            selectPane('conversation');
-                          }
-                          resolve(accepted);
-                        },
-                      },
-                    ]);
-                  });
-                }}
-                onAttachPreviewSelection={(file, selection: SelectedPreviewElement) => {
-                  const id = crypto.randomUUID();
-                  return new Promise<boolean>((resolve) => {
-                    setPreviewAttachments((current) => [
-                      ...current,
-                      {
-                        file,
-                        id,
-                        onConsumed(accepted) {
-                          setPreviewAttachments((pending) =>
-                            pending.filter((candidate) => candidate.id !== id),
-                          );
-                          if (accepted) selectPane('conversation');
-                          resolve(accepted);
-                        },
-                        selection,
-                      },
-                    ]);
-                  });
-                }}
-                onRunCreated={setActiveRun}
-                manageSection={navigation.manage}
-                mode={navigation.mode}
-                onManageSectionChange={selectManageSection}
-                onModeChange={selectMode}
-                onValueChange={(preview) => {
-                  setNavigation((current) => ({ ...current, preview }));
-                }}
-                organizationId={organizationId}
-                projectId={projectId}
-                {...(activeRun === undefined ? {} : { runId: activeRun.id })}
-                value={navigation.preview}
-              />
-            </section>
-          </div>
-          {inlineMissionControl && missionControlOpen ? (
-            <aside aria-label="Mission Control" className="zapp-builder-mission-control">
-              <div className="zapp-builder-mission-control-header">
-                <h2>Mission Control</h2>
-                <Button onClick={closeInlineMissionControl} variant="ghost">
-                  Close
-                </Button>
-              </div>
-              {activeRun === undefined ? <MissionControlEmpty /> : <MissionControlPanel organizationId={organizationId} runId={activeRun.id} onOpenPreview={previewSurface} onCompare={openCommit} />}
-            </aside>
+        <div className="zapp-builder-shell">
+          <TopBar
+            deploy={<BuilderDeploy organizationId={organizationId} projectId={projectId} />}
+            missionControl={missionControl}
+            mode={navigation.mode}
+            onModeChange={selectMode}
+            projectId={projectId}
+            projectName={project.project.name}
+            supportLevel={project.project.supportLevel}
+            syncState="unavailable"
+          />
+          {readySession.invalidOrganization ? (
+            <p className="zapp-builder-notice" role="status">
+              Invalid organization selection. Showing your active organization.
+            </p>
           ) : null}
+          {failedPreferenceKeys.size > 0 ? (
+            <p className="zapp-builder-notice" role="status">
+              Preferences could not be saved.
+            </p>
+          ) : null}
+          <IncidentBanner
+            onRunCreated={setActiveRun}
+            organizationId={organizationId}
+            projectId={projectId}
+          />
+          <div
+            className="zapp-builder-workspace"
+            data-inline-mission={inlineMissionControl && missionControlOpen ? 'open' : 'closed'}
+            data-testid="builder-workspace"
+          >
+            <div className="zapp-builder-split" ref={splitRef} style={splitStyle}>
+              <section
+                aria-label="Conversation"
+                className="zapp-builder-pane"
+                data-mobile-active={navigation.pane === 'conversation' ? 'true' : 'false'}
+                id="conversation-pane"
+              >
+                <Thread
+                  {...(activeRun === undefined ? {} : { adoptedRun: activeRun })}
+                  allowedModels={allowedModels}
+                  branches={project.branches}
+                  incomingImages={previewAttachments}
+                  {...(firstPrompt === undefined ? {} : { initialPrompt: firstPrompt })}
+                  onOpenCommit={openCommit}
+                  onRunChange={setActiveRun}
+                  organizationId={organizationId}
+                  projectId={projectId}
+                />
+              </section>
+              <div
+                aria-controls="conversation-pane surface-pane"
+                aria-label="Resize conversation pane"
+                aria-orientation="vertical"
+                aria-valuemax={maximumConversationWidth}
+                aria-valuemin={announcedConversationMinimum}
+                aria-valuenow={announcedConversationWidth}
+                aria-valuetext={`${String(announcedConversationWidth)}% conversation`}
+                className="zapp-builder-separator"
+                onKeyDown={resizeWithKeyboard}
+                onPointerDown={beginResize}
+                role="separator"
+                tabIndex={0}
+              >
+                <span aria-hidden="true" className="zapp-builder-separator-handle" />
+              </div>
+              <section
+                aria-label="Workspace"
+                className="zapp-builder-pane"
+                data-mobile-active={navigation.pane === 'workspace' ? 'true' : 'false'}
+                id="surface-pane"
+              >
+                <WorkingSurface
+                  {...(fallbackCommitSha === undefined || fallbackCommitSha === null
+                    ? {}
+                    : { fallbackCommitSha })}
+                  focusPreviewRequest={focusPreviewRequest}
+                  onAttachPreviewCapture={(file, capture) => {
+                    const id = crypto.randomUUID();
+                    return new Promise<boolean>((resolve) => {
+                      setPreviewAttachments((current) => [
+                        ...current,
+                        {
+                          capture,
+                          file,
+                          id,
+                          onConsumed(accepted) {
+                            setPreviewAttachments((pending) =>
+                              pending.filter((candidate) => candidate.id !== id),
+                            );
+                            if (accepted) {
+                              selectPane('conversation');
+                            }
+                            resolve(accepted);
+                          },
+                        },
+                      ]);
+                    });
+                  }}
+                  onAttachPreviewSelection={(file, selection: SelectedPreviewElement) => {
+                    const id = crypto.randomUUID();
+                    return new Promise<boolean>((resolve) => {
+                      setPreviewAttachments((current) => [
+                        ...current,
+                        {
+                          file,
+                          id,
+                          onConsumed(accepted) {
+                            setPreviewAttachments((pending) =>
+                              pending.filter((candidate) => candidate.id !== id),
+                            );
+                            if (accepted) selectPane('conversation');
+                            resolve(accepted);
+                          },
+                          selection,
+                        },
+                      ]);
+                    });
+                  }}
+                  onRunCreated={setActiveRun}
+                  manageSection={navigation.manage}
+                  mode={navigation.mode}
+                  onManageSectionChange={selectManageSection}
+                  onValueChange={(preview) => {
+                    setNavigation((current) => ({ ...current, preview }));
+                  }}
+                  organizationId={organizationId}
+                  projectId={projectId}
+                  {...(activeRun === undefined ? {} : { runId: activeRun.id })}
+                  {...(activeRun === undefined ? {} : { runStatus: activeRun.status })}
+                  value={navigation.preview}
+                />
+              </section>
+            </div>
+            {inlineMissionControl && missionControlOpen ? (
+              <aside aria-label="Mission Control" className="zapp-builder-mission-control">
+                <div className="zapp-builder-mission-control-header">
+                  <h2>Mission Control</h2>
+                  <Button onClick={closeInlineMissionControl} variant="ghost">
+                    Close
+                  </Button>
+                </div>
+                {activeRun === undefined ? (
+                  <MissionControlEmpty />
+                ) : (
+                  <MissionControlPanel
+                    organizationId={organizationId}
+                    runId={activeRun.id}
+                    onOpenPreview={previewSurface}
+                    onCompare={openCommit}
+                  />
+                )}
+              </aside>
+            ) : null}
+          </div>
+          <nav aria-label="Builder pane" className="zapp-builder-mobile-switcher">
+            <Button
+              aria-pressed={navigation.pane === 'conversation'}
+              onClick={() => {
+                selectPane('conversation');
+              }}
+              variant={navigation.pane === 'conversation' ? 'primary' : 'ghost'}
+            >
+              Conversation
+            </Button>
+            <Button
+              aria-pressed={navigation.pane === 'workspace'}
+              onClick={() => {
+                selectPane('workspace');
+              }}
+              variant={navigation.pane === 'workspace' ? 'primary' : 'ghost'}
+            >
+              Workspace
+            </Button>
+          </nav>
         </div>
-        <nav aria-label="Builder pane" className="zapp-builder-mobile-switcher">
-          <Button
-            aria-pressed={navigation.pane === 'conversation'}
-            onClick={() => {
-              selectPane('conversation');
-            }}
-            variant={navigation.pane === 'conversation' ? 'primary' : 'ghost'}
-          >
-            Conversation
-          </Button>
-          <Button
-            aria-pressed={navigation.pane === 'workspace'}
-            onClick={() => {
-              selectPane('workspace');
-            }}
-            variant={navigation.pane === 'workspace' ? 'primary' : 'ghost'}
-          >
-            Workspace
-          </Button>
-        </nav>
-      </div>
       </AppShell>
     </>
   );

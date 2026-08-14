@@ -19,7 +19,7 @@ const ProjectVolumePlanSchema = z
       z.object({ mountPath: z.literal('/cache'), subPath: z.literal('/cache') }).strict(),
     ]),
     workspaceRoot: z.string().startsWith('/workspace/br_'),
-    lockFile: z.string().endsWith('/.zapp-writer.lock'),
+    lockFile: z.string().regex(/^\/workspace\/\.zapp-writer-br_[0-9A-Z]+\.lock$/u),
     sandboxName: z.string().regex(/^zapp-writer-[a-f0-9]{32}$/),
     environment: z
       .object({
@@ -62,7 +62,7 @@ export function createProjectVolumePlan(untrustedInput: unknown): ProjectVolumeP
       { mountPath: '/cache', subPath: '/cache' },
     ],
     workspaceRoot,
-    lockFile: posix.join(workspaceRoot, '.zapp-writer.lock'),
+    lockFile: posix.join('/workspace', `.zapp-writer-${input.branchId}.lock`),
     sandboxName,
     environment: {
       NPM_CONFIG_STORE_DIR: '/cache/pnpm',

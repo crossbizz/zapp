@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   bridgePreviewWebSockets,
+  createFetchPreviewTransport,
   createPreviewTransport,
   sanitizePreviewRequestHeaders,
   sanitizePreviewResponseHeaders,
@@ -170,6 +171,27 @@ describe('WS-12 authenticated preview transport', () => {
     });
   });
 
+  it('allows an HTTP forwarded origin only for loopback development previews', () => {
+    expect(
+      sanitizePreviewRequestHeaders(
+        { accept: 'text/html' },
+        undefined,
+        new URL('http://share.preview.localhost:4000'),
+      ),
+    ).toEqual({
+      accept: 'text/html',
+      'x-forwarded-host': 'share.preview.localhost:4000',
+      'x-forwarded-proto': 'http',
+    });
+    expect(() =>
+      sanitizePreviewRequestHeaders(
+        { accept: 'text/html' },
+        undefined,
+        new URL('http://preview.example.com'),
+      ),
+    ).toThrow('Preview public origin must use HTTPS outside loopback development hosts');
+  });
+
   it('streams the fixed tunnel response, never accepts an upstream, and cancels on abort', async () => {
     const cancel = vi.fn<() => Promise<void>>(() => Promise.resolve());
     const request = vi.fn(() =>
@@ -299,6 +321,23 @@ describe('WS-12 authenticated preview transport', () => {
         applicationCookie: 'app=value',
       }),
     );
+
+    const localResponse = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${workspaceId}/preview/`,
+      headers: {
+        'x-zapp-service-token': 'internal',
+        'x-zapp-organization-id': organizationId,
+        'x-zapp-project-id': projectId,
+        'x-zapp-preview-public-origin': 'http://share.preview.localhost:4000',
+      },
+    });
+    expect(localResponse.statusCode, localResponse.body).toBe(201);
+    expect(request).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        publicOrigin: new URL('http://share.preview.localhost:4000'),
+      }),
+    );
     await app.close();
   });
 
@@ -416,6 +455,79 @@ describe('WS-12 authenticated preview transport', () => {
       outgoing.end();
     });
     await aborted;
+    await app.close();
+  });
+
+  it('keeps serving previews after a client disconnect aborts an active fetch stream', async () => {
+    let observedAbort!: () => void;
+    const aborted = new Promise<void>((resolve) => {
+      observedAbort = resolve;
+    });
+    let fetchCount = 0;
+    const fetchImplementation = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      fetchCount += 1;
+      if (fetchCount > 1) {
+        return Promise.resolve(new Response('service-alive', { status: 200 }));
+      }
+      const signal = init?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(Buffer.from('first'));
+          signal?.addEventListener(
+            'abort',
+            () => {
+              observedAbort();
+              controller.error(signal.reason);
+            },
+            { once: true },
+          );
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    });
+    const transport = createFetchPreviewTransport(
+      { resolvePreviewTunnel: () => Promise.resolve(new URL('https://provider.invalid')) },
+      fetchImplementation,
+    );
+    const app = Fastify({ logger: false });
+    app.decorate('requireService', () => Promise.resolve());
+    registerPreviewRoutes(app, {
+      rows: { get: () => Promise.resolve(previewRow()) },
+      transport,
+    });
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+
+    await new Promise<void>((resolve, reject) => {
+      const outgoing = httpRequest(
+        `${address}/internal/workspaces/${workspaceId}/preview/stream`,
+        {
+          headers: {
+            'x-zapp-organization-id': organizationId,
+            'x-zapp-project-id': projectId,
+            'x-zapp-preview-public-origin': 'https://share.preview.zapp.test',
+          },
+        },
+        (response) => {
+          response.once('data', () => response.destroy());
+          response.once('close', resolve);
+        },
+      );
+      outgoing.once('error', reject);
+      outgoing.end();
+    });
+    await aborted;
+
+    const nextResponse = await app.inject({
+      method: 'GET',
+      url: `/internal/workspaces/${workspaceId}/preview/health`,
+      headers: {
+        'x-zapp-organization-id': organizationId,
+        'x-zapp-project-id': projectId,
+        'x-zapp-preview-public-origin': 'https://share.preview.zapp.test',
+      },
+    });
+    expect(nextResponse.statusCode).toBe(200);
+    expect(nextResponse.body).toBe('service-alive');
     await app.close();
   });
 

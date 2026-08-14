@@ -29,6 +29,7 @@ export interface SurfaceTabsProps {
   readonly organizationId: string;
   readonly projectId: string;
   readonly runId?: string;
+  readonly runStatus?: BuilderRun['status'];
   readonly value: SurfaceTab;
 }
 
@@ -55,6 +56,7 @@ export function SurfaceTabs({
   organizationId,
   projectId,
   runId,
+  runStatus,
   value,
 }: SurfaceTabsProps): ReactElement {
   const tabsRef = useRef<HTMLDivElement>(null);
@@ -63,16 +65,19 @@ export function SurfaceTabs({
   const moveTabFocus = (event: KeyboardEvent<HTMLButtonElement>): void => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     const tabs = [
-      ...(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(':scope > [role="tab"]') ?? []),
+      ...(event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+        ':scope > [role="tab"]',
+      ) ?? []),
     ];
     const currentIndex = tabs.indexOf(event.currentTarget);
     if (currentIndex < 0 || tabs.length === 0) return;
     event.preventDefault();
-    const nextIndex = event.key === 'Home'
-      ? 0
-      : event.key === 'End'
-        ? tabs.length - 1
-        : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    const nextIndex =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? tabs.length - 1
+          : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
     const next = tabs[nextIndex];
     next?.focus();
     next?.click();
@@ -98,6 +103,7 @@ export function SurfaceTabs({
           organizationId={organizationId}
           projectId={projectId}
           {...(runId === undefined ? {} : { runId })}
+          {...(runStatus === undefined ? {} : { runStatus })}
         />
       );
       break;

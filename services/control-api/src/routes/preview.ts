@@ -196,8 +196,10 @@ function previewOrigin(
   previewBaseDomain: string,
 ): URL {
   const domain = z.string().trim().min(1).parse(previewBaseDomain).toLowerCase();
+  const hostname = new URL(`http://${domain}`).hostname.toLowerCase();
+  const protocol = hostname === 'localhost' || hostname.endsWith('.localhost') ? 'http' : 'https';
   return new URL(
-    `https://${orgLocator(organizationId)}-${PreviewShareLocatorSchema.parse(shareId)}.${domain}`,
+    `${protocol}://${orgLocator(organizationId)}-${PreviewShareLocatorSchema.parse(shareId)}.${domain}`,
   );
 }
 
@@ -229,8 +231,15 @@ function publicShare(row: StoredPreviewShare, appBaseUrl: URL) {
 }
 
 function originIdentity(host: string, previewBaseDomain: string) {
-  const suffix = `.${previewBaseDomain.toLowerCase()}`;
-  const hostname = host.split(':', 1)[0]?.toLowerCase() ?? '';
+  let hostname: string;
+  let domainHostname: string;
+  try {
+    hostname = new URL(`http://${host}`).hostname.toLowerCase();
+    domainHostname = new URL(`http://${previewBaseDomain}`).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  const suffix = `.${domainHostname}`;
   if (!hostname.endsWith(suffix)) return undefined;
   const locator = hostname.slice(0, -suffix.length);
   const match = /^([0-9a-hjkmnp-tv-z]{26})-([0-9a-hjkmnp-tv-z]{26})$/u.exec(locator);

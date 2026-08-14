@@ -1,11 +1,12 @@
 'use client';
 
-import { Button, EnvBadge } from '@zapp/ui';
-import { type ReactElement } from 'react';
+import { Button, EnvBadge, IconButton } from '@zapp/ui';
+import { type ReactElement, type ReactNode } from 'react';
 
 export type PreviewDevice = 'desktop' | 'mobile' | 'tablet';
 
 interface PreviewToolbarProps {
+  readonly children?: ReactNode;
   readonly device: PreviewDevice;
   readonly onDeviceChange: (device: PreviewDevice) => void;
   readonly onOpen: () => void;
@@ -23,6 +24,7 @@ const devices: readonly { readonly label: string; readonly value: PreviewDevice 
 ];
 
 export function PreviewToolbar({
+  children,
   device,
   onDeviceChange,
   onOpen,
@@ -33,7 +35,7 @@ export function PreviewToolbar({
   sharing,
 }: PreviewToolbarProps): ReactElement {
   return (
-    <header className="zapp-preview-toolbar">
+    <div aria-label="Preview controls" className="zapp-preview-toolbar" role="toolbar">
       <EnvBadge environment="preview" />
       <div aria-label="Preview path" className="zapp-preview-path">
         {path}
@@ -52,13 +54,18 @@ export function PreviewToolbar({
           </button>
         ))}
       </div>
+      {children}
       <div className="zapp-preview-toolbar-actions">
-        <Button onClick={onOpen} variant="ghost">
-          Open in new tab
-        </Button>
-        <Button onClick={onRefresh} variant="ghost">
-          Refresh
-        </Button>
+        <IconButton label="Open in new tab" onClick={onOpen}>
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M14 5h5v5M19 5l-8 8M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" />
+          </svg>
+        </IconButton>
+        <IconButton label="Refresh" onClick={onRefresh}>
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M20 6v5h-5M4 18v-5h5M6.1 9a7 7 0 0 1 11.5-2.6L20 11M4 13l2.4 4.6A7 7 0 0 0 17.9 15" />
+          </svg>
+        </IconButton>
         <Button disabled={sharing} onClick={onShare} variant="secondary">
           {sharing ? 'Creating link…' : 'Share link'}
         </Button>
@@ -71,6 +78,6 @@ export function PreviewToolbar({
           </label>
         </div>
       )}
-    </header>
+    </div>
   );
 }

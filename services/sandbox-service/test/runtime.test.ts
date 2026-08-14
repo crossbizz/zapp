@@ -12,14 +12,22 @@ import {
 } from '../src/runtime.js';
 import { createPostgresNetworkPolicyRecorder } from '../src/network/postgres.js';
 
+function localDatabaseUrl(): string {
+  const url = new URL('postgres://127.0.0.1:5432/zapp');
+  url.username = 'zapp';
+  url.password = 'zapp';
+  return url.toString();
+}
+
 function environment(): SandboxServiceEnv {
   return {
     nodeEnv: 'test',
     host: '127.0.0.1',
     port: 4400,
-    databaseUrl: 'postgres://zapp:zapp@127.0.0.1:5432/zapp',
+    databaseUrl: localDatabaseUrl(),
     controlApiInternalUrl: 'http://127.0.0.1:4000',
     gitServiceUrl: 'http://127.0.0.1:4500',
+    gitCloneBaseUrl: 'https://git-edge.example.test/root',
     serviceTokens: { secret: 's'.repeat(64) },
     serviceTokenIssuer: SERVICE_TOKEN_ISSUER,
     modal: {
@@ -117,6 +125,22 @@ afterEach(() => {
 });
 
 describe('sandbox runtime composition', () => {
+  it('keeps the workspace-agent credential stable across service restarts', async () => {
+    const first = harness();
+    const second = harness();
+    const firstRuntime = await composeSandboxRuntime(environment(), first.factories);
+    const secondRuntime = await composeSandboxRuntime(environment(), second.factories);
+
+    const firstToken = (first.received.provider as { readonly agentToken: string }).agentToken;
+    const secondToken = (second.received.provider as { readonly agentToken: string }).agentToken;
+    expect(firstToken).toBe(secondToken);
+    expect(firstToken).not.toBe(environment().serviceTokens.secret);
+    expect(firstToken).toHaveLength(64);
+
+    await firstRuntime.close();
+    await secondRuntime.close();
+  });
+
   it('binds locked Modal, PostgreSQL, scoped internal clients, shallow health, and starts once', async () => {
     const test = harness();
     const runtime = await composeSandboxRuntime(environment(), test.factories);
@@ -144,6 +168,7 @@ describe('sandbox runtime composition', () => {
           baseUrl: environment().gitServiceUrl,
           serviceTokens: environment().serviceTokens,
         },
+        dependencyDomains: ['git-edge.example.test'],
       },
     });
 

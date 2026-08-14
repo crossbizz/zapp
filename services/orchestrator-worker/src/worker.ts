@@ -78,6 +78,8 @@ export const TaskQueueSchema = z.enum([
 ]);
 export type TaskQueue = z.infer<typeof TaskQueueSchema>;
 
+export const DEFAULT_MAX_HEARTBEAT_THROTTLE_INTERVAL = '1 second';
+
 interface CommonRunWorkerOptions {
   readonly connection: NativeConnection;
   readonly activities: RunActivities;
@@ -140,9 +142,8 @@ export function createRunWorker(options: RunWorkerOptions): Promise<Worker> {
     ...(options.shutdownGraceTime === undefined
       ? {}
       : { shutdownGraceTime: options.shutdownGraceTime }),
-    ...(options.maxHeartbeatThrottleInterval === undefined
-      ? {}
-      : { maxHeartbeatThrottleInterval: options.maxHeartbeatThrottleInterval }),
+    maxHeartbeatThrottleInterval:
+      options.maxHeartbeatThrottleInterval ?? DEFAULT_MAX_HEARTBEAT_THROTTLE_INTERVAL,
   });
 }
 

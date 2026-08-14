@@ -361,13 +361,15 @@ export const ACTIVITY_RETRY_POLICY: RetryPolicy = {
   ],
 };
 
+export const SESSION_ACTIVITY_HEARTBEAT_TIMEOUT = '30 seconds';
+
 const workspace = proxyActivities<WorkspaceActivities>({
   startToCloseTimeout: '2 minutes',
   retry: ACTIVITY_RETRY_POLICY,
 });
 const session = proxyActivities<SessionActivities>({
   startToCloseTimeout: '30 minutes',
-  heartbeatTimeout: '1500 milliseconds',
+  heartbeatTimeout: SESSION_ACTIVITY_HEARTBEAT_TIMEOUT,
   cancellationType: 'WAIT_CANCELLATION_COMPLETED',
   retry: ACTIVITY_RETRY_POLICY,
 });
@@ -466,7 +468,8 @@ const ASK_MODE_INSTRUCTIONS =
   'Use only read-only tools. Cite every code claim with path:line, a commit ref, or test/runtime evidence.';
 const PROTOTYPE_MODE_INSTRUCTIONS =
   'Optimize for a working preview. Start the dev server, run the preview smoke test, and label every mock or incomplete integration. Finish with exactly one strict JSON object and no other text: {"summary":"<user-facing summary>","mocks":[{"name":"<mock name>","reason":"<why it is mocked>"}]}.';
-const DEFAULT_MODE_INSTRUCTIONS = 'Follow the run mode and complete the requested verified work.';
+const DEFAULT_MODE_INSTRUCTIONS =
+  'Implement the requested application directly. Prefer TypeScript. Inspect the execution contract and file tree once. If the repository is blank or scaffold-only, do not inspect git history, database schema, release state, empty logs, or unrelated integrations. Create runnable application files immediately, install dependencies, start the development server, run the preview smoke test, and fix any reported errors. Continue until the requested verification succeeds.';
 
 function buildTaskPrompt(
   input: RunWorkflowInput,
@@ -1954,7 +1957,10 @@ async function executeRunWorkflow(
               modeInstructions: guardrails.modeInstructions,
               budget: input.budget,
               control: {
-                yieldAfterTool: true,
+                // The Temporal activity heartbeat owns the durable transcript for the
+                // lifetime of this session. Starting a new activity after every tool
+                // would discard that checkpoint and replay the first model turn.
+                yieldAfterTool: false,
                 redirect:
                   pendingRedirects[0] === undefined
                     ? null
@@ -2010,6 +2016,16 @@ async function executeRunWorkflow(
           continueSession = true;
           break;
         case 'budget_exhausted': {
+          if (
+            sessionResult.errorCode !== undefined &&
+            sessionResult.errorCode !== 'credit_budget_exhausted' &&
+            sessionResult.errorCode !== 'budget_exceeded'
+          ) {
+            throw ApplicationFailure.nonRetryable(
+              `Builder session exhausted its ${sessionResult.errorCode} limit`,
+              `builder_session_${sessionResult.errorCode}`,
+            );
+          }
           if (input.budget === null) throw new Error('builder_session_budget_exhausted');
           const currentCeiling = `${String(input.budget.maxCredits)}.0000`;
           const requested = await approvals.requestBudgetIncrease({
@@ -2119,7 +2135,10 @@ async function executeRunWorkflow(
         case 'needs_approval':
         case 'failed':
         case 'cancelled':
-          throw new Error(`builder_session_${sessionResult.status}`);
+          throw ApplicationFailure.nonRetryable(
+            `Builder session ended with terminal status: ${sessionResult.status}`,
+            `builder_session_${sessionResult.status}`,
+          );
       }
       if (pendingRedirects.length > 0) {
         continueSession = true;

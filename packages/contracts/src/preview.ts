@@ -1,7 +1,19 @@
 import { z } from 'zod';
 
 import { idSchema } from './ids.js';
-import { HttpsUrlSchema } from './primitives.js';
+const PreviewUrlSchema = z.string().url().superRefine((value, context) => {
+  const isLoopbackHttp =
+    /^http:\/\/(?:localhost|(?:[a-z0-9-]+\.)+localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d{1,5})?(?:[/?#]|$)/iu.test(
+      value,
+    );
+
+  if (!value.startsWith('https://') && !isLoopbackHttp) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'URL must use https outside loopback development hosts',
+    });
+  }
+});
 
 export const PreviewShareLocatorSchema = z.string().regex(/^[0-9a-hjkmnp-tv-z]{26}$/u);
 export const PreviewSharePolicySchema = z.enum(['org', 'anyone_with_link']);
@@ -9,7 +21,7 @@ export const PreviewSharePolicySchema = z.enum(['org', 'anyone_with_link']);
 export const PreviewHandleSchema = z
   .object({
     id: PreviewShareLocatorSchema,
-    url: HttpsUrlSchema,
+    url: PreviewUrlSchema,
     expiresAt: z.string().datetime(),
     policy: PreviewSharePolicySchema,
   })
@@ -20,7 +32,7 @@ export const PreviewShareSchema = z
     id: PreviewShareLocatorSchema,
     workspaceId: idSchema('ws'),
     projectId: idSchema('proj'),
-    url: HttpsUrlSchema,
+    url: PreviewUrlSchema,
     expiresAt: z.string().datetime(),
     policy: PreviewSharePolicySchema,
     createdAt: z.string().datetime(),
@@ -49,7 +61,7 @@ export const PreviewSessionExchangeBodySchema = z
   .strict();
 export const PreviewSessionExchangeResultSchema = z
   .object({
-    previewOrigin: HttpsUrlSchema,
+    previewOrigin: PreviewUrlSchema,
     grant: z.string().regex(/^pbg_[A-Za-z0-9_-]{43}$/u),
     expiresAt: z.string().datetime(),
   })

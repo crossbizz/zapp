@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
 import {
@@ -188,9 +189,9 @@ function assertCommittedResponse(
     completion.runId !== expectedIdentity.runId ||
     completion.taskId !== expectedIdentity.taskId ||
     completion.requestFingerprint !== expectedIdentity.requestFingerprint ||
-    JSON.stringify(completion.events) !== JSON.stringify(events) ||
-    JSON.stringify(completion.usage) !== JSON.stringify(usage) ||
-    JSON.stringify(completion.terminal) !== JSON.stringify(terminal)
+    !isDeepStrictEqual(completion.events, events) ||
+    !isDeepStrictEqual(completion.usage, usage) ||
+    !isDeepStrictEqual(completion.terminal, terminal)
   ) {
     throw new Error('The completion accounting service committed a different response.');
   }

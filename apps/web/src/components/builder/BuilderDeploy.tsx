@@ -41,19 +41,24 @@ export function BuilderDeploy({
       try {
         const page = await createControlPlaneClient(organizationId).listProjectReleases(projectId);
         if (!active) return;
-        const release = page.items.find(({ status: nextStatus }) => nextStatus === 'approved') ??
-          page.items.find(({ status: nextStatus }) =>
-            nextStatus === 'candidate' || nextStatus === 'ready' || nextStatus === 'warnings');
+        const release =
+          page.items.find(({ status: nextStatus }) => nextStatus === 'approved') ??
+          page.items.find(
+            ({ status: nextStatus }) =>
+              nextStatus === 'candidate' || nextStatus === 'ready' || nextStatus === 'warnings',
+          );
         if (release !== undefined) {
           setReleaseId(release.id);
           setReleaseStatus(release.status as ReleaseStatus);
           setStatus('');
           return;
         }
+        timer = setTimeout(() => {
+          void discoverRelease();
+        }, 1_000);
       } catch {
         if (active) setStatus('Deployment is unavailable until a release is ready.');
       }
-      if (active) timer = setTimeout(() => { void discoverRelease(); }, 1_000);
     };
     void discoverRelease();
     return () => {
@@ -125,29 +130,52 @@ export function BuilderDeploy({
 
   return (
     <>
-      <button disabled={releaseId === undefined} onClick={() => { void open(); }} type="button">
+      <button
+        disabled={releaseId === undefined}
+        onClick={() => {
+          void open();
+        }}
+        type="button"
+      >
         Deploy
       </button>
-      <p aria-live="polite">{status}</p>
+      <p aria-live="polite" className="zapp-sr-only">
+        {status}
+      </p>
       {step === 'readiness' && readiness !== undefined ? (
         <ReadinessSheet
-          onAction={() => { setStatus('Resolve the readiness finding before deployment.'); }}
-          onClose={() => { setStep(undefined); }}
-          onContinue={() => { void continueAfterReadiness(); }}
+          onAction={() => {
+            setStatus('Resolve the readiness finding before deployment.');
+          }}
+          onClose={() => {
+            setStep(undefined);
+          }}
+          onContinue={() => {
+            void continueAfterReadiness();
+          }}
           readiness={readiness}
         />
       ) : null}
       {step === 'confirm' && preview !== undefined ? (
         <ConfirmDialog
           disposition={disposition}
-          onBack={() => { setStep('readiness'); }}
-          onConfirm={() => { void confirm(); }}
+          onBack={() => {
+            setStep('readiness');
+          }}
+          onConfirm={() => {
+            void confirm();
+          }}
           onDisposition={setDisposition}
           preview={preview}
         />
       ) : null}
       {step === 'timeline' && progress !== undefined ? (
-        <StageTimeline onAction={() => { setStatus('Deployment action requested.'); }} progress={progress} />
+        <StageTimeline
+          onAction={() => {
+            setStatus('Deployment action requested.');
+          }}
+          progress={progress}
+        />
       ) : null}
       {step === 'success' && progress !== undefined ? <SuccessCard progress={progress} /> : null}
     </>

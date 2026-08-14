@@ -899,6 +899,15 @@ describe('workspace-agent RPC daemon', () => {
       },
     });
 
+    const repeatedStart = await requireApp().inject({
+      method: 'POST',
+      url: '/dev-server/start',
+      headers: authorization(token, 'repeat-healthy-dev-server-start'),
+      payload: { contract },
+    });
+    expect(repeatedStart.statusCode, repeatedStart.body).toBe(200);
+    expect(repeatedStart.json()).toEqual(first);
+
     const restarted = await requireApp().inject({
       method: 'POST',
       url: '/dev-server/restart',
@@ -911,6 +920,39 @@ describe('workspace-agent RPC daemon', () => {
     expect(second.pid).not.toBe(first.pid);
     expect(second.supervisorId).not.toBe(first.supervisorId);
     await waitForProcessExit(first.pid);
+  });
+
+  test('starts generated-app development servers with the standard development environment', async () => {
+    const port = await availablePort();
+    const script = [
+      "process.stdout.write('NODE_ENV=' + (process.env.NODE_ENV ?? 'unset') + '\\n');",
+      `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(port)}, '127.0.0.1');`,
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    const contract = executionContract(
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+      port,
+    );
+
+    const started = await requireApp().inject({
+      method: 'POST',
+      url: '/dev-server/start',
+      headers: authorization(),
+      payload: { contract },
+    });
+    expect(started.statusCode, started.body).toBe(200);
+    const logs = await requireApp().inject({
+      method: 'GET',
+      url: '/dev-server/logs?after=0&limit=20',
+      headers: authorization(),
+    });
+
+    expect(logs.statusCode, logs.body).toBe(200);
+    expect(
+      logs
+        .json<{ entries: { message: string }[] }>()
+        .entries.some(({ message }) => message.includes('NODE_ENV=development')),
+    ).toBe(true);
   });
 
   test('WS-13 streams bounded dev-server logs strictly after a cursor', async () => {

@@ -30,6 +30,7 @@ function deployed() {
       // Unreachable on purpose: nothing here should get far enough to dial it,
       // and a test that quietly did would be a test that needs a Git host.
       baseUrl: 'http://127.0.0.1:1',
+      cloneBaseUrl: 'http://127.0.0.1:1',
       adminToken: 'unused-in-this-suite',
       timeoutMs: 100,
     },
@@ -114,7 +115,12 @@ describe('the deployed composition', () => {
       const forged = await serviceToken();
       const { app: wrongSecretApp } = composeApp({
         logger: false,
-        forgejo: { baseUrl: 'http://127.0.0.1:1', adminToken: 'x', timeoutMs: 100 },
+        forgejo: {
+          baseUrl: 'http://127.0.0.1:1',
+          cloneBaseUrl: 'http://127.0.0.1:1',
+          adminToken: 'x',
+          timeoutMs: 100,
+        },
         serviceTokens: { secret: `${SERVICE_SECRET}-different` },
         database: unusedDatabase(),
         templates: createTemplateRegistry([{

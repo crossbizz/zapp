@@ -1,24 +1,12 @@
 .workingSurface {
   min-width: 0;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
 }
 
-.modeSwitcher {
-  display: flex;
-  width: fit-content;
-  gap: 0.2rem;
-  margin: 0 auto 0.85rem;
-  padding: 0.2rem;
-  border: 1px solid var(--zapp-border);
-  border-radius: var(--zapp-radius-panel);
-  background: var(--zapp-surface-raised);
-  box-shadow: var(--zapp-shadow-card);
-}
-
-.modeButton,
 .surfaceTab,
 .moreTab {
-  min-height: 2.25rem;
+  min-height: 2rem;
   border: 0;
   border-radius: calc(var(--zapp-radius-panel) - 0.25rem);
   color: var(--zapp-text-secondary);
@@ -29,12 +17,6 @@
   cursor: pointer;
 }
 
-.modeButton {
-  min-width: 5.5rem;
-  padding: 0.35rem 0.85rem;
-}
-
-.modeButton[aria-pressed='true'],
 .surfaceTab[aria-selected='true'],
 .moreTab[aria-selected='true'] {
   color: var(--zapp-text-primary);
@@ -42,7 +24,6 @@
   box-shadow: inset 0 0 0 1px var(--zapp-border);
 }
 
-.modeButton:focus-visible,
 .surfaceTab:focus-visible,
 .moreTab:focus-visible {
   outline: 3px solid var(--zapp-focus);
@@ -51,6 +32,8 @@
 
 .previewSurface {
   min-width: 0;
+  height: 100%;
+  min-height: 0;
 }
 
 .surfaceTabs,
@@ -61,22 +44,22 @@
 }
 
 .surfaceTabs {
-  position: sticky;
-  z-index: 1;
-  top: -1.25rem;
-  margin: -1.25rem -1.25rem 0;
-  padding: 0.65rem 1rem;
+  min-height: 2.75rem;
+  padding: 0.35rem 0.65rem;
   border-bottom: 1px solid var(--zapp-border);
   background: color-mix(in srgb, var(--zapp-surface-raised) 94%, transparent);
   backdrop-filter: blur(16px);
 }
 
 .surfaceTab {
-  padding: 0.35rem 0.75rem;
+  padding: 0.25rem 0.65rem;
 }
 
 .moreTabs {
-  padding: 0.65rem 0 0;
+  min-height: 2.25rem;
+  padding: 0.25rem 0.65rem;
+  border-bottom: 1px solid var(--zapp-border);
+  background: var(--zapp-surface-raised);
 }
 
 .moreTab {
@@ -86,7 +69,13 @@
 
 .surfacePanel {
   min-width: 0;
-  padding-top: 0.85rem;
+  height: calc(100% - 2.75rem);
+  min-height: 0;
+  overflow: auto;
+}
+
+.moreTabs + .surfacePanel {
+  height: calc(100% - 5rem);
 }
 
 .filesView > p {
@@ -96,13 +85,8 @@
 }
 
 @media (max-width: 1023px) {
-  .modeSwitcher {
-    position: sticky;
-    z-index: 2;
-    top: 0;
-  }
-
-  .surfaceTabs {
-    top: 3rem;
+  .workingSurface,
+  .previewSurface {
+    min-height: calc(100dvh - 8.25rem);
   }
 }

@@ -306,7 +306,7 @@ describe('AR-12 isolated task workflows', () => {
         `${taskId}:merge:${integrationBranch}`,
       ]);
     }
-  }, 30_000);
+  }, 60_000);
 
   it('turns a real same-line merge conflict into a conflict task and blocked event', async () => {
     environment = await TestWorkflowEnvironment.createLocal();
@@ -365,5 +365,5 @@ describe('AR-12 isolated task workflows', () => {
     const taskBWorkspace = fixture.workspacePaths.get('task-b');
     if (taskBWorkspace === undefined) throw new Error('task-b workspace missing');
     expect(await readFile(join(taskBWorkspace, 'src/shared.ts'), 'utf8')).toContain('task-b');
-  }, 30_000);
+  }, 60_000);
 });

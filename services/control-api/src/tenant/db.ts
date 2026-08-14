@@ -1945,7 +1945,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
             .where(
               and(eq(agentRuns.organizationId, orgId), eq(agentRuns.projectId, projectId)),
             )
-            .orderBy(desc(agentRuns.id))
+            .orderBy(desc(agentRuns.startedAt), desc(agentRuns.id))
             .limit(limit);
         },
 

@@ -1,14 +1,6 @@
 import { fileURLToPath } from 'node:url';
 
-import {
-  branches,
-  createDb,
-  organizations,
-  projects,
-  users,
-  workspaces,
-  type Db,
-} from '@zapp/db';
+import { branches, createDb, organizations, projects, users, type Db } from '@zapp/db';
 import { newId } from '@zapp/contracts';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
@@ -108,17 +100,6 @@ describe.skipIf(!hasDatabase)('Postgres workspace state', () => {
       name: 'main',
       status: 'active',
     });
-    await database.insert(workspaces).values({
-      id: workspaceId,
-      organizationId,
-      projectId,
-      branchId,
-      provider: 'modal',
-      status: 'requested',
-      resourceProfile: 'small',
-      createdAt,
-    });
-
     let now = createdAt;
     const first = createPostgresWorkspaceStateStore(database, () => now);
     const row = {
@@ -216,10 +197,7 @@ describe.skipIf(!hasDatabase)('Postgres workspace state', () => {
       buildApp({
         provider,
         rows: createPostgresWorkspaceStateStore(database, () => new Date(meteringNow)),
-        previewMonitors: createPostgresWorkspaceStateStore(
-          database,
-          () => new Date(meteringNow),
-        ),
+        previewMonitors: createPostgresWorkspaceStateStore(database, () => new Date(meteringNow)),
         governor: {
           admit: () => Promise.reject(new Error('not used')),
           release: () => Promise.resolve(),

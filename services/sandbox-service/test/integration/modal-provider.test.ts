@@ -16,7 +16,10 @@ import {
   SandboxQuotaExceededError,
   type RunawayComputeGovernor,
 } from '../../src/lifecycle/governor.js';
-import type { WorkspaceGitService } from '../../src/provider/git-bootstrap.js';
+import {
+  WorkspaceGitBootstrapError,
+  type WorkspaceGitService,
+} from '../../src/provider/git-bootstrap.js';
 import {
   createModalSandboxProvider,
   type ModalWorkspaceCreateOptions,
@@ -2516,7 +2519,8 @@ describe('create status terminate and idempotency', () => {
       '/bin/bash',
       '-lc',
     ]);
-    expect(command[4]).toContain(`/workspace/${IDS.branchId}/.zapp-writer.lock`);
+    expect(command[4]).toContain(`/workspace/.zapp-writer-${IDS.branchId}.lock`);
+    expect(command[4]).not.toContain(`/workspace/${IDS.branchId}/.zapp-writer.lock`);
     expect({ ...creationWithoutCommand, sandboxName: '<stable-hash>' }).toEqual(
       {
         environment: 'zapp-dev',
@@ -2807,6 +2811,7 @@ describe('create status terminate and idempotency', () => {
       rows,
       workspaceGit: WORKSPACE_GIT_FIXTURE,
       serviceTokens,
+      dependencyDomains: ['git-edge.example.test'],
       networkPolicies: { record },
       now: () => NOW,
     });
@@ -2843,7 +2848,12 @@ describe('create status terminate and idempotency', () => {
       workspaceId: IDS.workspaceId,
       policy: {
         profile: 'dependency_install',
-        outboundDomains: ['api.stripe.com', 'github.com', 'registry.npmjs.org'],
+        outboundDomains: [
+          'api.stripe.com',
+          'git-edge.example.test',
+          'github.com',
+          'registry.npmjs.org',
+        ],
         blockAll: false,
       },
       providerEnforced: true,
@@ -2856,7 +2866,12 @@ describe('create status terminate and idempotency', () => {
     expect(sdk.sandbox.networkPolicyUpdates).toEqual([
       {
         outboundCidrAllowlist: [],
-        outboundDomainAllowlist: ['api.stripe.com', 'github.com', 'registry.npmjs.org'],
+        outboundDomainAllowlist: [
+          'api.stripe.com',
+          'git-edge.example.test',
+          'github.com',
+          'registry.npmjs.org',
+        ],
       },
     ]);
     const blockedSdk = new FakeModalWorkspaceSdk();
@@ -3230,6 +3245,66 @@ describe('create status terminate and idempotency', () => {
     const replay = await app.inject(request);
     expect(replay.statusCode).toBe(502);
     expect(sdk.creates).toHaveLength(1);
+  });
+
+  it('returns a safe classified Git bootstrap failure after compensating the workspace', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+      now: () => NOW,
+      clockMs: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+    const rows = new MemoryWorkspaceRows();
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: {
+        bootstrap: () =>
+          Promise.reject(new WorkspaceGitBootstrapError('clone', 128, 'dns_resolution_failed')),
+        push: () => Promise.reject(new Error('Unexpected workspace Git push')),
+      },
+      serviceTokens,
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/internal/workspaces',
+      headers: {
+        'x-zapp-service-token': SERVICE_TOKEN,
+        'x-zapp-organization-id': IDS.organizationId,
+        'x-zapp-project-id': IDS.projectId,
+        'idempotency-key': OPERATION_KEY,
+      },
+      payload: {
+        workspace: requestedRow(),
+        branchName: 'main',
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        env: {},
+        networkProfile: 'dependency_install',
+        operationKey: OPERATION_KEY,
+      },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({
+      code: 'workspace_git_bootstrap_failed',
+      message: 'The sandbox operation failed.',
+      details: {
+        stage: 'clone',
+        exitCode: 128,
+        reason: 'dns_resolution_failed',
+      },
+    });
+    expect(sdk.sandbox.terminateCalls).toBe(1);
   });
 
   it('requires service authentication and rejects missing idempotency or extra boundary fields', async () => {
@@ -3685,6 +3760,7 @@ describe('agent proxy and unguarded conformance', () => {
   });
 
   it('WS-13 maps cursor logs and emits idempotent attributed preview lifecycle events', async () => {
+    const currentRunId = newId('run');
     const sdk = new FakeModalWorkspaceSdk();
     sdk.present = true;
     const provider = createModalSandboxProvider({
@@ -3761,6 +3837,7 @@ describe('agent proxy and unguarded conformance', () => {
       'x-zapp-service-token': SERVICE_TOKEN,
       'x-zapp-organization-id': IDS.organizationId,
       'x-zapp-project-id': IDS.projectId,
+      'x-zapp-run-id': currentRunId,
       'idempotency-key': OPERATION_KEY,
     };
     try {
@@ -3793,11 +3870,11 @@ describe('agent proxy and unguarded conformance', () => {
           expect.objectContaining({
             organizationId: IDS.organizationId,
             projectId: IDS.projectId,
-            runId: IDS.runId,
-            taskId: IDS.taskId,
+            runId: currentRunId,
           }),
         ]),
       );
+      expect(storedEvents.every((event) => event.taskId === undefined)).toBe(true);
       expect(JSON.stringify(storedEvents)).not.toContain(sdk.sandbox.providerWorkspaceId);
 
       const transientReadyFailure = vi.fn((event: (typeof storedEvents)[number]) => {
@@ -4320,6 +4397,7 @@ describe('agent proxy and unguarded conformance', () => {
       'x-zapp-service-token': SERVICE_TOKEN,
       'x-zapp-organization-id': IDS.organizationId,
       'x-zapp-project-id': IDS.projectId,
+      'x-zapp-run-id': IDS.runId,
       'idempotency-key': OPERATION_KEY,
     };
     try {
@@ -4365,7 +4443,7 @@ describe('agent proxy and unguarded conformance', () => {
           headers,
           payload: { contract: EXECUTION_CONTRACT },
         });
-        expect(response.statusCode).toBe(200);
+        expect(response.statusCode, response.body).toBe(200);
         expect(response.json()).toMatchObject({ port: 4173, ownership: 'process_group' });
       }
 

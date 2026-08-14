@@ -24,6 +24,13 @@ const LOCAL_FORGEJO_ENV = {
   FORGEJO_ADMIN_TOKEN: 'generated-local-forgejo-token',
 };
 
+function localDatabaseUrl() {
+  const url = new URL('postgres://127.0.0.1:5432/zapp');
+  url.username = 'zapp';
+  url.password = 'zapp';
+  return url.toString();
+}
+
 const LOCK = {
   version: 1,
   environments: {
@@ -85,10 +92,11 @@ test('loads the explicit M1 environment, immutable images, ports, and --no-open'
   assert.equal(config.env.MODEL_GATEWAY_URL, 'http://127.0.0.1:4100');
   assert.equal(config.env.SANDBOX_SERVICE_URL, 'http://127.0.0.1:4400');
   assert.equal(config.env.GIT_SERVICE_URL, 'http://127.0.0.1:4500');
+  assert.equal(config.env.SANDBOX_GLOBAL_LIMIT, '100');
   assert.equal(config.env.SANDBOX_OWNER_ID, 'sandbox-local');
   assert.equal(config.env.SERVICE_TOKEN_ISSUER, 'zapp-control-plane');
   assert.equal(config.env.ARTIFACT_REGION, 'us-east-1');
-  assert.equal(config.env.PREVIEW_BASE_DOMAIN, 'preview.localhost');
+  assert.equal(config.env.PREVIEW_BASE_DOMAIN, 'preview.localhost:4000');
   assert.deepEqual(config.ports, [3000, 4000, 4100, 4400, 4500]);
   assert.equal(config.imageLock.modalEnvironment, 'zapp-dev');
   assert.equal(config.imageLock.images.length, 2);
@@ -100,7 +108,7 @@ test('pins the Docker Postgres endpoint instead of inheriting a remote database'
     DATABASE_URL: 'postgres://remote.example/zapp',
   });
 
-  assert.equal(config.env.DATABASE_URL, 'postgres://zapp:zapp@127.0.0.1:5432/zapp');
+  assert.equal(config.env.DATABASE_URL, localDatabaseUrl());
 });
 
 test('derives stable, separate local keys for an older environment file', async () => {
@@ -216,6 +224,39 @@ test('prefixes, redacts, bounds logs and stops process groups in reverse order',
   ]);
 });
 
+test('returns the first matching child line for dynamic local endpoints', async () => {
+  let child;
+  const supervisor = createProcessSupervisor({
+    spawnImpl() {
+      child = new FakeChild(150);
+      return child;
+    },
+    killImpl() {
+      queueMicrotask(() => child.emit('exit', 0, 'SIGTERM'));
+    },
+  });
+  supervisor.start({
+    name: 'forgejo-tunnel',
+    command: 'cloudflared',
+    args: [],
+    env: {},
+    required: true,
+  });
+  const pending = supervisor.waitForLineMatch(
+    'forgejo-tunnel',
+    /https:\/\/([a-z0-9-]+\.trycloudflare\.com)/u,
+  );
+  child.stderr.emit(
+    'data',
+    Buffer.from('2026-08-14 INF + https://local-m1.trycloudflare.com\n'),
+  );
+
+  const match = await pending;
+
+  assert.equal(match[0], 'https://local-m1.trycloudflare.com');
+  await supervisor.stopAll();
+});
+
 test('propagates a child spawn error without hanging shutdown', async () => {
   let child;
   const supervisor = createProcessSupervisor({
@@ -250,6 +291,11 @@ test('propagates a required child crash and never calls a Docker teardown', asyn
       }
     },
     waitForLine: () => Promise.resolve(),
+    waitForLineMatch: () =>
+      Promise.resolve([
+        'https://local-m1.trycloudflare.com',
+        'local-m1.trycloudflare.com',
+      ]),
     stopAll: () => {
       stopOrder.push('stop');
       return Promise.resolve();
@@ -294,6 +340,7 @@ test('propagates a required child crash and never calls a Docker teardown', asyn
     started.find((spec) => spec.name === 'web').env.NEXT_PUBLIC_CONTROL_API_URL,
     'http://127.0.0.1:4000',
   );
+  assert.equal(started.find((spec) => spec.name === 'web').env.WATCHPACK_POLLING, 'true');
 });
 
 test('reports the exact occupied application port before starting infrastructure', async () => {
@@ -359,6 +406,13 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
       events.push(`ready:${name}`);
       return Promise.resolve();
     },
+    waitForLineMatch(name) {
+      events.push(`endpoint:${name}`);
+      return Promise.resolve([
+        'https://local-m1.trycloudflare.com',
+        'local-m1.trycloudflare.com',
+      ]);
+    },
     stopAll() {
       events.push('stop');
       resolveFailure();
@@ -377,6 +431,7 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
       return Promise.resolve(true);
     },
     waitForHttp: (url) => {
+      assert.doesNotMatch(url, /trycloudflare\.com/u);
       events.push(`ready:${url}`);
       return Promise.resolve();
     },
@@ -398,6 +453,7 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
     'exec:docker:--version',
     'exec:docker:compose version',
     'exec:docker:info',
+    'exec:cloudflared:--version',
     'exec:npx:-y pnpm@9.15.0 exec bash scripts/dev-up.sh',
     'exec:npx:-y pnpm@9.15.0 db:migrate',
     'exec:npx:-y pnpm@9.15.0 turbo run build --filter=!@zapp/desktop',
@@ -407,6 +463,7 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
   assert.deepEqual(
     events.filter((event) => event.startsWith('start:')),
     [
+      'start:forgejo-tunnel',
       'start:git-service',
       'start:model-gateway',
       'start:sandbox-service',
@@ -417,9 +474,18 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
     ],
   );
   assert.equal(events.includes('open:http://127.0.0.1:3000'), true);
+  assert.equal(events.includes('ready:forgejo-tunnel'), true);
   assert.equal(
     started.find((spec) => spec.name === 'git-service').env.FORGEJO_ADMIN_TOKEN,
     LOCAL_FORGEJO_ENV.FORGEJO_ADMIN_TOKEN,
+  );
+  assert.equal(
+    started.find((spec) => spec.name === 'git-service').env.GIT_CLONE_BASE_URL,
+    'https://local-m1.trycloudflare.com',
+  );
+  assert.equal(
+    started.find((spec) => spec.name === 'sandbox-service').env.GIT_CLONE_BASE_URL,
+    'https://local-m1.trycloudflare.com',
   );
   assert.equal(events.at(-1), 'stop');
 });

@@ -12,6 +12,7 @@ import { DEFAULT_TOKEN_TTL_SECONDS } from '../src/tokens.js';
 
 const FORGEJO = {
   FORGEJO_URL: 'http://localhost:3300',
+  GIT_CLONE_BASE_URL: 'https://git-edge.example.test/root/',
   FORGEJO_ADMIN_TOKEN: 'a'.repeat(40),
 };
 
@@ -77,9 +78,16 @@ describe('loadForgejoEnv', () => {
   it('strips trailing slashes so paths do not double up', () => {
     // `${base}/api/v1` against `http://host/` is `http://host//api/v1`, which
     // some proxies answer with a redirect and some with a 404.
-    expect(loadForgejoEnv({ ...FORGEJO, FORGEJO_URL: 'http://localhost:3300//' }).baseUrl).toBe(
-      'http://localhost:3300',
-    );
+    expect(
+      loadForgejoEnv({
+        ...FORGEJO,
+        FORGEJO_URL: 'http://localhost:3300//',
+        GIT_CLONE_BASE_URL: 'https://git-edge.example.test/root//',
+      }),
+    ).toMatchObject({
+      baseUrl: 'http://localhost:3300',
+      cloneBaseUrl: 'https://git-edge.example.test/root',
+    });
   });
 
   it('defaults the deadline to half of the control plane’s', () => {

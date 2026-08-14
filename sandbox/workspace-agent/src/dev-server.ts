@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import process from 'node:process';
+import { isDeepStrictEqual } from 'node:util';
 import type { ExecutionContract } from '@zapp/contracts';
 import { resolveInRoot } from '@zapp/workspace-runtime';
 
@@ -296,6 +297,7 @@ export class DevServerSupervisor {
     const cwd = await resolveInRoot(this.workspaceRoot, contract.workspace_root);
     const child = spawn(contract.develop.command, {
       cwd,
+      env: { ...process.env, NODE_ENV: 'development' },
       shell: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
@@ -365,10 +367,25 @@ export class DevServerSupervisor {
   }
 
   start(contract: ExecutionContract): Promise<DevServerStartResult> {
-    return this.withTransition(() => {
+    return this.withTransition(async () => {
       this.crashRestarts = [];
       this.failureId = null;
-      return this.startUnlocked(contract);
+      const active = this.active;
+      if (
+        active !== undefined &&
+        processGroupExists(active.groupId) &&
+        isDeepStrictEqual(active.contract, contract) &&
+        (await listenerBelongsToProcessGroup(active.port, active.groupId)) &&
+        (await httpProbeSucceeds(active.port, active.healthPath))
+      ) {
+        return {
+          port: active.port,
+          pid: active.child.pid ?? active.groupId,
+          supervisorId: active.supervisorId,
+          ownership: 'process_group',
+        };
+      }
+      return await this.startUnlocked(contract);
     });
   }
 

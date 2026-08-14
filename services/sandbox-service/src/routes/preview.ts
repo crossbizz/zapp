@@ -5,7 +5,11 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import type { SandboxServiceApp } from '../app.js';
-import { adaptWebSocket, type PreviewTransport } from '../preview/transport.js';
+import {
+  adaptWebSocket,
+  isAllowedPreviewPublicOrigin,
+  type PreviewTransport,
+} from '../preview/transport.js';
 import type { WorkspaceLifecycleRow } from './workspaces.js';
 
 const PreviewParamsSchema = z
@@ -21,7 +25,10 @@ const PreviewPublicOriginSchema = z
   .string()
   .url()
   .transform((value) => new URL(value))
-  .refine((value) => value.protocol === 'https:', 'Preview public origin must use HTTPS');
+  .refine(
+    isAllowedPreviewPublicOrigin,
+    'Preview public origin must use HTTPS outside loopback development hosts',
+  );
 
 export interface PreviewWorkspaceRows {
   get(

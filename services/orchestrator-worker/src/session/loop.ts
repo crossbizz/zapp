@@ -15,6 +15,7 @@ import {
 } from '@zapp/agent-tools';
 import { startObservabilitySpan, withObservabilitySpan } from '@zapp/config';
 import {
+  idSchema,
   MessageUserPayloadSchema,
   RunModeSchema,
   TOOL_NAMES,
@@ -143,6 +144,7 @@ export const SessionResultSchema = z
     commits: z.array(z.string()),
     artifacts: z.array(z.string()),
     summary: z.string(),
+    errorCode: z.string().min(1).optional(),
     model: z.string().min(1).max(160).optional(),
     turn: z.number().int().nonnegative().safe().optional(),
     completedTools: z.array(z.enum(TOOL_NAMES)).optional(),
@@ -336,6 +338,41 @@ function visibleToolOutput(
   return { wrapped, value };
 }
 
+const MAX_INLINE_TIMELINE_PAYLOAD_BYTES = 48_000;
+const OVERSIZED_TIMELINE_OUTPUT_MESSAGE =
+  'Tool output exceeded the inline event limit and was omitted from the timeline.';
+
+function boundedTimelinePayload(
+  type: SessionEvent['type'],
+  payload: JsonValue,
+): JsonValue {
+  const payloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  if (payloadBytes <= MAX_INLINE_TIMELINE_PAYLOAD_BYTES) return payload;
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    return {
+      type: 'truncated',
+      byteSize: payloadBytes,
+      message: OVERSIZED_TIMELINE_OUTPUT_MESSAGE,
+    };
+  }
+  const source = payload as Record<string, JsonValue>;
+  const oversizedField = type === 'tool.output' ? 'output' : type === 'tool.completed' ? 'audit' : null;
+  const oversizedValue = oversizedField === null ? payload : source[oversizedField];
+  const truncated = {
+    type: 'truncated',
+    byteSize: Buffer.byteLength(JSON.stringify(oversizedValue ?? payload), 'utf8'),
+    message: OVERSIZED_TIMELINE_OUTPUT_MESSAGE,
+  };
+  return {
+    ...(typeof source['toolCallId'] === 'string' ? { toolCallId: source['toolCallId'] } : {}),
+    ...(typeof source['tool'] === 'string' ? { tool: source['tool'] } : {}),
+    ...(typeof source['userSummary'] === 'string'
+      ? { userSummary: source['userSummary'] }
+      : {}),
+    ...(oversizedField === null ? { details: truncated } : { [oversizedField]: truncated }),
+  };
+}
+
 function transcriptDraft(transcript: SessionTranscript): SessionTranscriptDraft {
   const draft: Partial<SessionTranscript> = { ...transcript };
   delete draft.version;
@@ -384,6 +421,9 @@ function terminal(
     commits: transcript.commits,
     artifacts: transcript.artifacts,
     summary: transcript.summary,
+    ...(transcript.terminalErrorCode === null
+      ? {}
+      : { errorCode: transcript.terminalErrorCode }),
     ...(transcript.model === null ? {} : { model: transcript.model }),
     turn: transcript.turns,
     ...(transcript.mode === 'prototype'
@@ -665,16 +705,17 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                     rawOutput,
                   ),
               };
+        const redactedPayload = redactJson(
+          { toolCallId: call.toolCallId, tool: call.toolName, ...userSummary, ...payload },
+          dependencies.redact,
+        );
         return SessionEventSchema.parse({
           eventKey: `${input.runId}:${taskId}:${call.toolCallId}:${suffix}`,
           runId: input.runId,
           taskId,
           type,
           occurredAt: new Date(now()).toISOString(),
-          payload: redactJson(
-            { toolCallId: call.toolCallId, tool: call.toolName, ...userSummary, ...payload },
-            dependencies.redact,
-          ),
+          payload: boundedTimelinePayload(type, redactedPayload),
         });
       };
       const enqueue = (event: SessionEvent): void => {
@@ -754,22 +795,36 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             return await finish(
               wallClockExceeded ? 'budget_exhausted' : 'cancelled',
               transcript.summary,
+              wallClockExceeded ? 'wall_clock_budget_exhausted' : 'cancelled',
             );
           }
           if (now() - startedAt >= input.budgets.maxWallClockMs) {
             controller.abort(new Error('session_wall_clock_budget'));
-            return await finish('budget_exhausted', transcript.summary);
+            return await finish(
+              'budget_exhausted',
+              transcript.summary,
+              'wall_clock_budget_exhausted',
+            );
           }
           if (transcript.pendingToolCalls.length === 0) {
             if (
               transcript.turns >= input.budgets.maxTurns ||
               transcript.tokensUsed >= input.budgets.maxTokens
             ) {
-              return await finish('budget_exhausted', transcript.summary);
+              return await finish(
+                'budget_exhausted',
+                transcript.summary,
+                transcript.turns >= input.budgets.maxTurns
+                  ? 'turn_budget_exhausted'
+                  : 'token_budget_exhausted',
+              );
             }
             const tools = input.tools.map((name) => {
               const definition = dependencies.tools.get(name);
-              const converted = zodToJsonSchema(definition.inputSchema, { target: 'jsonSchema7' });
+              const converted = zodToJsonSchema(definition.inputSchema, {
+                target: 'jsonSchema7',
+                $refStrategy: 'none',
+              });
               const inputJsonSchema: Record<string, unknown> = { ...converted };
               delete inputJsonSchema.$schema;
               delete inputJsonSchema.definitions;
@@ -780,12 +835,13 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               };
             });
             const completionId = completionIdFor(input.runId, taskId, transcript.turns);
+            const accountingTaskId = idSchema('task').safeParse(taskId);
             const requestBase: CompleteRequest = {
               completionId,
               organizationId: input.context.scope.organizationId,
               projectId: input.context.scope.projectId,
               runId: input.runId,
-              taskId,
+              ...(accountingTaskId.success ? { taskId: accountingTaskId.data } : {}),
               agentRole: input.role,
               messages: structuredClone(transcript.messages),
               tools,
@@ -1222,7 +1278,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             },
             Math.max(1, Math.floor(executionLeaseMs / 3)),
           );
-          let executionOutcome: ToolExecutionWithAudit | typeof ABORTED | undefined;
+          let executionOutcome: ToolExecutionWithAudit | undefined;
           let executionError: unknown;
           try {
             const execution = withObservabilitySpan(
@@ -1247,7 +1303,11 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
                   controller.signal,
                 ),
             );
-            executionOutcome = await raceWithAbort(execution, controller.signal);
+            // ToolRegistry already races the underlying operation against the
+            // caller signal and converts cancellation into ToolExecutionError.
+            // Await it directly so a late cancellation rejection always has an
+            // owning await instead of becoming an unhandled losing race.
+            executionOutcome = await execution;
           } catch (error: unknown) {
             executionError = error;
           } finally {
@@ -1255,15 +1315,6 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             await renewal;
           }
           if (renewalError !== undefined) throw renewalError;
-          if (executionOutcome === ABORTED) {
-            enqueue(eventFor('tool.failed', call, 'failed', { code: 'tool_cancelled' }));
-            await save();
-            return await finish(
-              now() - startedAt >= input.budgets.maxWallClockMs ? 'budget_exhausted' : 'cancelled',
-              transcript.summary,
-              'tool_cancelled',
-            );
-          }
           if (executionError !== undefined || executionOutcome === undefined) {
             const code =
               executionError instanceof ToolExecutionError ? executionError.code : 'tool_failed';

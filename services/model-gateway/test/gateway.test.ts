@@ -311,6 +311,48 @@ describe('strict request schemas', () => {
       LocalAgentCompletionRequestSchema.safeParse({ ...validRequest, accountingReplay }).success,
     ).toBe(false);
   });
+
+  it('accepts provider-neutral object unions while rejecting primitive root alternatives', () => {
+    const objectUnionTool = {
+      ...validRequest.tools[0],
+      inputJsonSchema: {
+        anyOf: [
+          {
+            type: 'object',
+            properties: { previewId: { type: 'string' }, route: { type: 'string' } },
+            required: ['previewId', 'route'],
+            additionalProperties: false,
+          },
+          {
+            type: 'object',
+            properties: { deploymentId: { type: 'string' }, route: { type: 'string' } },
+            required: ['deploymentId', 'route'],
+            additionalProperties: false,
+          },
+        ],
+      },
+    };
+
+    expect(
+      CompleteRequestSchema.safeParse({ ...validRequest, tools: [objectUnionTool] }).success,
+    ).toBe(true);
+    expect(
+      CompleteRequestSchema.safeParse({
+        ...validRequest,
+        tools: [
+          {
+            ...objectUnionTool,
+            inputJsonSchema: {
+              anyOf: [
+                objectUnionTool.inputJsonSchema.anyOf[0],
+                { type: 'string' },
+              ],
+            },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe('strict gateway stream event schema', () => {
@@ -1164,6 +1206,7 @@ const providerInput = {
 async function captureAdapter(
   providerName: string,
   create: (dependencies: AiSdkDependencies) => ProviderAdapter,
+  input: ProviderInput = providerInput,
 ) {
   const observed: {
     providerSettings?: Record<string, unknown>;
@@ -1200,7 +1243,7 @@ async function captureAdapter(
     },
   };
   const adapter = create(dependencies);
-  adapter.stream(providerInput);
+  adapter.stream(input);
   const tools = observed.streamOptions?.tools;
   let normalizedTools: Record<string, unknown> | undefined;
   if (tools !== undefined) {
@@ -1228,6 +1271,64 @@ async function captureAdapter(
 }
 
 describe('AI SDK provider adapters', () => {
+  it('lowers neutral object unions to a provider-supported object root', async () => {
+    const objectUnionInput = {
+      ...providerInput,
+      request: {
+        ...providerInput.request,
+        tools: [
+          {
+            name: 'capture_screenshot',
+            description: 'Capture a preview or deployment route.',
+            inputJsonSchema: {
+              anyOf: [
+                {
+                  type: 'object' as const,
+                  properties: { previewId: { type: 'string' as const } },
+                  required: ['previewId'],
+                  additionalProperties: false,
+                },
+                {
+                  type: 'object' as const,
+                  properties: { deploymentId: { type: 'string' as const } },
+                  required: ['deploymentId'],
+                  additionalProperties: false,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    } satisfies ProviderInput;
+
+    const captured = await captureAdapter(
+      'anthropic',
+      (dependencies) =>
+        createAnthropicAdapter({ apiKey: 'configured-in-test', dependencies }),
+      objectUnionInput,
+    );
+
+    expect(captured.streamOptions.tools).toMatchObject({
+      capture_screenshot: {
+        inputJsonSchema: {
+          type: 'object',
+          properties: {
+            previewId: { type: 'string' },
+            deploymentId: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+    });
+    expect(
+      (
+        captured.streamOptions.tools?.['capture_screenshot'] as {
+          inputJsonSchema: Record<string, unknown>;
+        }
+      ).inputJsonSchema,
+    ).not.toHaveProperty('anyOf');
+  });
+
   it('builds the Anthropic provider-correct model, message, and tool options', async () => {
     expect(
       await captureAdapter('anthropic', (dependencies) =>

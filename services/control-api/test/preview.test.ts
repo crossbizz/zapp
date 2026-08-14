@@ -7,6 +7,7 @@ import {
   createSandboxPreviewProxy,
   createInMemoryPreviewSessionStore,
   createInMemoryPreviewShareStore,
+  rewritePreviewOriginUrl,
   type PreviewProxyPort,
 } from '../src/routes/preview.js';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
@@ -26,6 +27,16 @@ const OWNER: AuthIdentity = {
 };
 
 describe('WS-12 public preview shares', () => {
+  it('recognizes a local preview host when the configured domain includes its port', () => {
+    expect(
+      rewritePreviewOriginUrl(
+        '/dashboard',
+        '01j00000000000000000000000-01h00000000000000000000000.preview.localhost:4000',
+        'preview.localhost:4000',
+      ),
+    ).toBe('/__zapp_preview_data/dashboard');
+  });
+
   it('creates and replays a secret-free share, exchanges and redeems it, proxies, then revokes', async () => {
     const data = new InMemoryTenantData();
     const shares = createInMemoryPreviewShareStore();

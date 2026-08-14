@@ -144,6 +144,58 @@ function trackedBackend(events: readonly BackendStreamEvent[]) {
 }
 
 describe('durable completion accounting', () => {
+  it('accepts a structurally identical committed tool input after JSONB key reordering', async () => {
+    const providerEvents = [
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'toolu_order_independent',
+        toolName: 'search_code',
+        input: { query: 'plan', path: '.' },
+      },
+      completedRecord().events[1],
+    ];
+    const provider = backend(providerEvents);
+    const completion = createUsageAccountedCompletion({
+      backend: provider,
+      accounting: {
+        claim: () =>
+          Promise.resolve({
+            status: 'claimed',
+            claimExpiresAt: '2026-08-09T16:05:00.000Z',
+            reservedCredits: '1.0000',
+            credits: { used: '0.0000', reserved: '1.0000', ceiling: '10.0000', version: 1 },
+          }),
+        commit: (input) =>
+          Promise.resolve({
+            completion: {
+              completionId: input.completionId,
+              organizationId: input.organizationId,
+              projectId: input.projectId,
+              runId: input.runId,
+              ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+              requestFingerprint: input.requestFingerprint,
+              events: input.events.map((event) =>
+                event.type === 'tool-call'
+                  ? { ...event, input: { path: '.', query: 'plan' } }
+                  : event,
+              ),
+              terminal: input.terminal,
+              usage: input.usage,
+            },
+            credits: { used: '0.1000', reserved: '0.0000', ceiling: '10.0000', version: 2 },
+            ledgerRowIds: ['usage-input'],
+          }),
+      },
+      claimOwner: 'gateway-one',
+      now: () => new Date('2026-08-09T16:00:00.000Z'),
+    });
+
+    await expect(collect(completion)).resolves.toEqual([
+      ...providerEvents,
+      expect.objectContaining({ type: 'usage.recorded' }),
+    ]);
+  });
+
   it('replays a committed version-one request after response loss without a second provider execution', async () => {
     const legacyRequest = {
       ...request,

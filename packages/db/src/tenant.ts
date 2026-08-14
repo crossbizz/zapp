@@ -216,7 +216,7 @@ export function forOrg(db: Database, organizationId: string): TenantDb {
           .select()
           .from(agentRuns)
           .where(and(eq(agentRuns.organizationId, orgId), eq(agentRuns.projectId, projectId)))
-          .orderBy(desc(agentRuns.id));
+          .orderBy(desc(agentRuns.startedAt), desc(agentRuns.id));
       },
 
       async getById(runId: string): Promise<AgentRun | undefined> {

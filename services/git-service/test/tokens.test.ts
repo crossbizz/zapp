@@ -31,7 +31,10 @@ const [OWNER, NAME] = REF.split('/') as [string, string];
 const NOW = new Date('2026-03-01T00:00:00.000Z');
 const TOKEN = 'forgejo-secret-token';
 
-function service(overrides: Record<string, Route> = {}) {
+function service(
+  overrides: Record<string, Route> = {},
+  options: { readonly cloneBaseUrl?: string } = {},
+) {
   const forgejo = createFakeForgejo({
     [`GET /repos/${OWNER}/${NAME}`]: {
       status: 200,
@@ -50,7 +53,12 @@ function service(overrides: Record<string, Route> = {}) {
   return {
     forgejo,
     audit,
-    tokens: createTokenService({ client: forgejo, audit, now: () => NOW }),
+    tokens: createTokenService({
+      client: forgejo,
+      audit,
+      now: () => NOW,
+      ...(options.cloneBaseUrl === undefined ? {} : { cloneBaseUrl: options.cloneBaseUrl }),
+    }),
   };
 }
 
@@ -175,6 +183,14 @@ describe('mint', () => {
     // Basic auth, because Forgejo's token endpoint refuses token auth — which is
     // the whole reason the ephemeral account has a password at all.
     expect(token?.auth).toBe('basic');
+  });
+
+  it('returns the configured externally reachable clone origin for sandbox grants', async () => {
+    const harness = service({}, { cloneBaseUrl: 'https://git-edge.example.test/root/' });
+
+    const minted = await harness.tokens.mint(INPUT);
+
+    expect(minted.cloneUrl).toBe(`https://git-edge.example.test/root/${REF}.git`);
   });
 
   it('asks for read permission and a read scope when read is asked for', async () => {

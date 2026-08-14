@@ -1007,16 +1007,22 @@ describe('preview proxy acceptance contract', () => {
     const events = await openSse(proxy.url);
     const eventCleanupIndex = cleanups.push(() => events.close()) - 1;
     const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    const page = await browser.newPage().catch(async (error: unknown) => {
+      await browser.close();
+      throw error;
+    });
     cleanups[eventCleanupIndex] = async () => {
       try {
-        // Cancel the proxy's streaming request before asking Chrome to close.
-        // Closing them concurrently can keep both transports waiting forever.
-        await events.close();
+        // Close the page first so its client-side SSE transport cannot hold Chrome open.
+        await page.close({ runBeforeUnload: false });
       } finally {
-        await browser.close();
+        try {
+          await events.close();
+        } finally {
+          await browser.close();
+        }
       }
     };
-    const page = await browser.newPage();
     await page.goto(`${proxy.url}/`);
 
     const result = await page.evaluate(() => {

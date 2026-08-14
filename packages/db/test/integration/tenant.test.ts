@@ -70,6 +70,28 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
       expect(runs.map((run) => run.id)).toEqual([alpha.runId]);
     });
 
+    it('lists the newest run first even when deterministic run ids are not chronological', async () => {
+      const [seededRun] = await handle.db
+        .select()
+        .from(agentRuns)
+        .where(eq(agentRuns.id, alpha.runId))
+        .limit(1);
+      expect(seededRun).toBeDefined();
+      if (seededRun === undefined) throw new Error('expected the seeded run');
+
+      const newestRunId = 'run_00000000000000000000000000';
+      await handle.db.insert(agentRuns).values({
+        ...seededRun,
+        id: newestRunId,
+        startedAt: new Date(seededRun.startedAt.getTime() + 1_000),
+        temporalWorkflowId: newestRunId,
+      });
+
+      const runs = await forOrg(handle.db, alpha.organizationId).runs.byProject(alpha.projectId);
+
+      expect(runs.map((run) => run.id)).toEqual([newestRunId, alpha.runId]);
+    });
+
     it('returns nothing for a project belonging to another tenant', async () => {
       const scoped = forOrg(handle.db, alpha.organizationId);
 

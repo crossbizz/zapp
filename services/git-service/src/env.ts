@@ -79,6 +79,8 @@ const ForgejoEnvSchema = z.object({
    * in a deployment (`terraform output forgejo_internal_url`).
    */
   FORGEJO_URL: z.string().url(),
+  /** Public origin returned to remote workspaces while API traffic stays private. */
+  GIT_CLONE_BASE_URL: z.string().url().optional(),
   FORGEJO_ADMIN_TOKEN: z.string().min(1),
   /**
    * How long a single Forgejo API call may take.
@@ -104,6 +106,7 @@ const ForgejoEnvSchema = z.object({
 
 export interface ForgejoEnv {
   readonly baseUrl: string;
+  readonly cloneBaseUrl: string;
   readonly adminToken: string;
   readonly timeoutMs: number;
 }
@@ -116,6 +119,7 @@ export function loadForgejoEnv(source: unknown = process.env): ForgejoEnv {
     // proxies answer with a redirect and some with a 404. Normalized once, here,
     // rather than defended against at every call site.
     baseUrl: env.FORGEJO_URL.replace(/\/+$/, ''),
+    cloneBaseUrl: (env.GIT_CLONE_BASE_URL ?? env.FORGEJO_URL).replace(/\/+$/, ''),
     adminToken: env.FORGEJO_ADMIN_TOKEN,
     timeoutMs: env.FORGEJO_TIMEOUT_MS,
   };

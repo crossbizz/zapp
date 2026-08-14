@@ -1125,7 +1125,13 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
 
     runs: {
       byProject(projectId, limit): Promise<AgentRun[]> {
-        const rows = mine(orgId, data.runs).filter((row) => row.projectId === projectId);
+        const rows = mine(orgId, data.runs)
+          .filter((row) => row.projectId === projectId)
+          .sort(
+            (left, right) =>
+              right.startedAt.getTime() - left.startedAt.getTime() ||
+              right.id.localeCompare(left.id),
+          );
         return Promise.resolve(limit === undefined ? rows : rows.slice(0, limit));
       },
       countActiveAutonomousRuns(): Promise<number> {

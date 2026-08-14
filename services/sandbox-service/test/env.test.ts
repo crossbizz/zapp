@@ -3,14 +3,22 @@ import { describe, expect, it } from 'vitest';
 
 import { loadSandboxServiceEnv } from '../src/env.js';
 
+function localDatabaseUrl(): string {
+  const url = new URL('postgres://127.0.0.1:5432/zapp');
+  url.username = 'zapp';
+  url.password = 'zapp';
+  return url.toString();
+}
+
 function validEnvironment(): Record<string, string> {
   return {
     NODE_ENV: 'test',
     SANDBOX_HOST: '127.0.0.1',
     SANDBOX_PORT: '4400',
-    DATABASE_URL: 'postgres://zapp:zapp@127.0.0.1:5432/zapp',
+    DATABASE_URL: localDatabaseUrl(),
     CONTROL_API_INTERNAL_URL: 'http://127.0.0.1:4000',
     GIT_SERVICE_URL: 'http://127.0.0.1:4500',
+    GIT_CLONE_BASE_URL: 'https://git-edge.example.test/root/',
     SERVICE_TOKEN_SECRET: 's'.repeat(64),
     SERVICE_TOKEN_ISSUER,
     MODAL_TOKEN_ID: 'ak-test-runtime',
@@ -27,9 +35,10 @@ describe('sandbox-service environment', () => {
       nodeEnv: 'test',
       host: '127.0.0.1',
       port: 4400,
-      databaseUrl: 'postgres://zapp:zapp@127.0.0.1:5432/zapp',
+      databaseUrl: localDatabaseUrl(),
       controlApiInternalUrl: 'http://127.0.0.1:4000',
       gitServiceUrl: 'http://127.0.0.1:4500',
+      gitCloneBaseUrl: 'https://git-edge.example.test/root',
       modal: {
         environment: 'dev',
         credentials: { tokenId: 'ak-test-runtime', tokenSecret: 'as-test-runtime' },
@@ -46,6 +55,7 @@ describe('sandbox-service environment', () => {
     'DATABASE_URL',
     'CONTROL_API_INTERNAL_URL',
     'GIT_SERVICE_URL',
+    'GIT_CLONE_BASE_URL',
     'SERVICE_TOKEN_SECRET',
     'SERVICE_TOKEN_ISSUER',
     'MODAL_TOKEN_ID',
