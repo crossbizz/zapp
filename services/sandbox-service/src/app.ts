@@ -98,6 +98,26 @@ declare module 'fastify' {
 
 export type SandboxServiceApp = FastifyInstance;
 
+/** Shallow process readiness; composition has completed before this route can exist. */
+export function registerSandboxHealthRoute(app: FastifyInstance): void {
+  app.get(
+    '/healthz',
+    {
+      schema: {
+        response: {
+          200: z
+            .object({
+              status: z.literal('ok'),
+              service: z.literal('sandbox-service'),
+            })
+            .strict(),
+        },
+      },
+    },
+    () => ({ status: 'ok' as const, service: 'sandbox-service' as const }),
+  );
+}
+
 interface BuildAppCommonOptions {
   readonly provider: WorkspaceAgentProvider;
   readonly rows: WorkspaceRowBoundary;
@@ -303,6 +323,7 @@ export function buildApp(options: BuildAppOptions) {
   app.setSerializerCompiler(serializerCompiler);
   app.decorateRequest('authenticatedServiceClaims', null);
   void app.register(websocket);
+  registerSandboxHealthRoute(app);
   app.addContentTypeParser(
     'application/octet-stream',
     { parseAs: 'buffer' },
