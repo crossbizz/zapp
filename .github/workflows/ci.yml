@@ -38,7 +38,9 @@ jobs:
   verify:
     name: verify (lint, types, build, tests, isolation gates)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A cold checkout currently needs just under 30 minutes for every gate;
+    # leave enough headroom for action post-job cleanup and runner variance.
+    timeout-minutes: 45
 
     services:
       postgres:

@@ -13,6 +13,10 @@ export default tseslint.config(
       '**/.next-e2e-*/**',
       '**/.turbo/**',
       '**/coverage/**',
+      // Playwright owns and replaces these directories while E2E tests run;
+      // lint must not race generated artifacts in the parallel Turbo DAG.
+      '**/test-results/**',
+      '**/playwright-report/**',
       // The OpenAPI generator owns this artifact; its source Zod schema is linted.
       'packages/api-client/src/generated.ts',
     ],
