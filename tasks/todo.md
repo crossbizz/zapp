@@ -107,6 +107,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] INT-1 GitHub App installation, discovery + verified webhooks (M1 pull-forward)
 - [x] INT-2 Durable GitHub import + internal mirror (M1 pull-forward)
 - [x] WEB-4 Dashboard + org switcher + import entry
+- [x] WEB-4-FIX-1 Cold-run durable import retry acceptance bound
 - [x] WEB-5 Builder two-pane shell
 - [x] WEB-6 Event-sourced conversation thread
 

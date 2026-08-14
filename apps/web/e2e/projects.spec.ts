@@ -1133,7 +1133,10 @@ test('retries a failed durable import with the exact project-create and import o
   expect(projectRequests).toHaveLength(1);
   expect(importRequests).toHaveLength(1);
   await reopenedDialog.getByRole('button', { name: 'Retry import' }).click();
-  await expect(page).toHaveURL('/projects/proj-import', { timeout: 4_000 });
+  // The retry fixture deliberately requires two one-second status polls. Leave
+  // enough observer slack for a saturated cold CI runner without changing the
+  // product's polling cadence or accepted-state navigation contract.
+  await expect(page).toHaveURL('/projects/proj-import', { timeout: 8_000 });
 
   expect(projectRequests).toHaveLength(2);
   expect(importRequests).toHaveLength(2);

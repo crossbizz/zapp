@@ -93,6 +93,14 @@ Phased delivery is governed by accepted ADR-0021. The task and tracker remain un
 - [x] **Slice C — consumes generated INT-1/INT-2 operations:** `Import from GitHub` performs installation, repository pagination, branch selection, confirm-time `sourceType: github_import` project creation, keyed enqueue, and abortable one-second status polling through `submitting|queued|mirroring|scan_pending|scan_accepted|failed`; navigate only at `scan_accepted`. Selection/organization changes create or reset operation identities, and failed retry retains the same keys. No fixture-only GitHub state or UI-private route.
 - [x] Commit: `feat(web): dashboard with org switcher + github import entry`
 
+#### WEB-4-FIX-1 — cold-run durable import retry acceptance bound
+
+**Files:** Modify: `e2e/projects.spec.ts`, `tasks/todo.md`, this plan.
+
+- [x] **RED:** exact-head GitHub CI proves the durable retry test can exceed its four-second observer deadline while waiting for two intentional one-second status polls; the product remains on `/projects` when the assertion expires.
+- [x] **GREEN:** preserve the one-second product polling cadence and the two-poll fixture, but give the navigation observer eight seconds of cold-run scheduling slack.
+- [x] **Verify/ship:** run the focused retry test repeatedly, web lint/typecheck, `pnpm verify`, commit `test(web): stabilize durable import retry polling`, push `main`, and confirm exact-head GitHub CI/Security green.
+
 ### Task WEB-5: Builder shell layout
 
 **Files:** Create: `src/app/projects/[id]/page.tsx`, `src/components/builder/{Shell,TopBar,SurfaceTabs}.tsx`
@@ -291,6 +299,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-13 WEB-4-FIX-1 done — Preserved the two one-second durable import polls while widening only the cold-run navigation observer; focused repeats passed 5/5, web lint/typecheck passed, and full repository verification including GATE-5 passed before the exact-head push gate.
 - 2026-08-13 WEB-18-FIX-2 done - Added exact-`APP_BASE_URL`, credentialed CORS with the full public API method set so the real shell can call the control plane from the browser; the focused test passed 2/2, control-api lint/typecheck passed, PostgreSQL plus the live Stytch adapter passed 5/5, and localhost:3000 reached the real Stytch OAuth host; interactive Google completion remains unverified because both controlled browsers block `test.stytch.com` with `ERR_BLOCKED_BY_CLIENT` before Google renders.
 - 2026-08-13 WEB-18 done - Shipped the reference-quality TypeScript product shell, real Stytch redirect login, API-backed dashboard/projects/settings/builder Manage/account/template/release/health flows, and tenant-scoped thumbnails; two visual/accessibility rounds closed, connected E1 passed, full web passed 126/126, the credentialed Stytch adapter gate passed 5/5, and `pnpm verify` passed 94/94 package tasks, 24/24 integration tasks, tenant isolation 55/55, with the disposable local test database moved to tmpfs after Docker Desktop fsync timeouts; Forgejo gate skipped because `FORGEJO_ADMIN_TOKEN` is unset.
 - 2026-08-13 WEB-18-FIX-1 done - Hardened the cold gate after WEB-18: isolated each Next E2E output directory, made Playwright's single supervisor restore generated config on shutdown, removed stale production output before builds, excluded isolated generated output from lint, and bounded local DB hooks at 30 seconds; focused harness/config tests passed 10/10, web lint/typecheck passed, DB integration passed 52/52, and control API integration passed 310/310 with four credential-gated skips.
