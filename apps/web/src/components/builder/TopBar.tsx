@@ -48,6 +48,17 @@ function SettingsIcon(): ReactElement {
   );
 }
 
+function ProjectsIcon(): ReactElement {
+  return (
+    <svg aria-hidden="true" className="zapp-builder-action-icon" viewBox="0 0 24 24">
+      <rect height="6" rx="1.25" width="6" x="4" y="4" />
+      <rect height="6" rx="1.25" width="6" x="14" y="4" />
+      <rect height="6" rx="1.25" width="6" x="4" y="14" />
+      <rect height="6" rx="1.25" width="6" x="14" y="14" />
+    </svg>
+  );
+}
+
 function BuilderModeIcon({ mode }: { readonly mode: 'manage' | 'preview' }): ReactElement {
   return mode === 'preview' ? (
     <svg aria-hidden="true" className="zapp-builder-action-icon" viewBox="0 0 24 24">
@@ -81,8 +92,13 @@ export function TopBar({
           <span aria-hidden="true">z</span>
         </Link>
         <span aria-hidden="true" className="zapp-builder-header-divider" />
-        <Link className="zapp-builder-projects-link" href="/projects">
-          Projects
+        <Link
+          aria-label="Projects"
+          className="zapp-builder-projects-link"
+          href="/projects"
+          title="All projects"
+        >
+          <ProjectsIcon />
         </Link>
         <div className="zapp-builder-project-title">
           <h1 className="zapp-builder-project-name">{projectName}</h1>

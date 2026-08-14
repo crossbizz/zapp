@@ -179,7 +179,19 @@ function BuilderStyles(): ReactElement {
       }
 
       .zapp-builder-projects-link {
-        display: none;
+        display: inline-grid;
+        width: 1.75rem;
+        height: 1.75rem;
+        flex: 0 0 auto;
+        place-items: center;
+        border-radius: 0.45rem;
+        color: var(--zapp-text-secondary);
+        text-decoration: none;
+      }
+
+      .zapp-builder-projects-link:hover {
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-subtle);
       }
 
       .zapp-builder-mode-switcher {
