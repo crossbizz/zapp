@@ -449,7 +449,9 @@ test('renders preview lifecycle states from structured events and public workspa
   await expect(page.getByText('The share link could not be created.')).toBeVisible();
   expect(sharePolicies.filter((policy) => policy === 'anyone_with_link')).toHaveLength(1);
   await page.getByRole('button', { name: 'Share link', exact: true }).click();
-  await expect(page.getByLabel('Share link')).toHaveValue(shareUrl);
+  await expect(page.getByRole('textbox', { name: 'Share link', exact: true })).toHaveValue(
+    shareUrl,
+  );
   const publicShareKeys = shareKeys.filter(
     (_, index) => sharePolicies[index] === 'anyone_with_link',
   );
