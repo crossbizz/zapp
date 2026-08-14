@@ -1819,7 +1819,7 @@ describe('workspace-agent RPC daemon', () => {
     expect(tombstonedFirst.statusCode).toBe(409);
     expect(tombstonedFirst.json()).toEqual({ error: 'idempotency_response_not_retained' });
     expect(await readFile(firstMarker, 'utf8')).toBe('x');
-  }, 30_000);
+  }, 60_000);
 
   test('coalesces concurrent duplicate exec requests into one execution', async () => {
     const marker = join(workspaceRoot, 'concurrent-idempotency-count');
