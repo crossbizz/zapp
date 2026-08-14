@@ -1,4 +1,4 @@
-import { EnvBadge, SupportLevelBadge } from '@zapp/ui';
+import { SupportLevelBadge } from '@zapp/ui';
 import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
 
@@ -48,6 +48,22 @@ function SettingsIcon(): ReactElement {
   );
 }
 
+function BuilderModeIcon({ mode }: { readonly mode: 'manage' | 'preview' }): ReactElement {
+  return mode === 'preview' ? (
+    <svg aria-hidden="true" className="zapp-builder-action-icon" viewBox="0 0 24 24">
+      <rect height="13" rx="1.8" width="18" x="3" y="4" />
+      <path d="M9 21h6M12 17v4" fill="none" stroke="currentColor" strokeLinecap="round" />
+    </svg>
+  ) : (
+    <svg aria-hidden="true" className="zapp-builder-action-icon" viewBox="0 0 24 24">
+      <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" strokeLinecap="round" />
+      <circle cx="9" cy="6" fill="currentColor" r="1.8" />
+      <circle cx="15" cy="12" fill="currentColor" r="1.8" />
+      <circle cx="11" cy="18" fill="currentColor" r="1.8" />
+    </svg>
+  );
+}
+
 export function TopBar({
   deploy,
   missionControl,
@@ -76,19 +92,20 @@ export function TopBar({
       <div aria-label="Builder mode" className="zapp-builder-mode-switcher" role="group">
         {(['preview', 'manage'] as const).map((item) => (
           <button
+            aria-label={item === 'preview' ? 'Preview' : 'Manage'}
             aria-pressed={mode === item}
             key={item}
             onClick={() => {
               onModeChange(item);
             }}
+            title={`${item === 'preview' ? 'Preview' : 'Manage'} mode`}
             type="button"
           >
-            {item === 'preview' ? 'Preview' : 'Manage'}
+            <BuilderModeIcon mode={item} />
           </button>
         ))}
       </div>
       <nav aria-label="Project actions" className="zapp-builder-project-actions">
-        <EnvBadge environment="preview" />
         <a
           className="zapp-builder-action-link"
           href={`/projects/${projectId}/settings/integrations`}

@@ -6,7 +6,7 @@
 
 .surfaceTab,
 .moreTab {
-  min-height: 2rem;
+  min-height: 1.75rem;
   border: 0;
   border-radius: calc(var(--zapp-radius-panel) - 0.25rem);
   color: var(--zapp-text-secondary);
@@ -44,15 +44,41 @@
 }
 
 .surfaceTabs {
-  min-height: 2.75rem;
-  padding: 0.35rem 0.65rem;
+  min-height: 2.5rem;
+  padding: 0.25rem 0.5rem;
   border-bottom: 1px solid var(--zapp-border);
   background: color-mix(in srgb, var(--zapp-surface-raised) 94%, transparent);
   backdrop-filter: blur(16px);
 }
 
 .surfaceTab {
-  padding: 0.25rem 0.65rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+}
+
+.surfaceTab[data-compact-tab='icon'] {
+  width: 1.75rem;
+  padding-inline: 0;
+}
+
+.surfaceTabIcon {
+  display: inline-grid;
+  width: 0.95rem;
+  height: 0.95rem;
+  place-items: center;
+}
+
+.surfaceTabIcon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.65;
 }
 
 .moreTabs {
@@ -69,13 +95,13 @@
 
 .surfacePanel {
   min-width: 0;
-  height: calc(100% - 2.75rem);
+  height: calc(100% - 2.5rem);
   min-height: 0;
   overflow: auto;
 }
 
 .moreTabs + .surfacePanel {
-  height: calc(100% - 5rem);
+  height: calc(100% - 4.75rem);
 }
 
 .filesView > p {

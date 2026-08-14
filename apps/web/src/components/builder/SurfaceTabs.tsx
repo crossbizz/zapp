@@ -46,6 +46,37 @@ const moreTabs = [
 ] as const satisfies readonly (readonly [SurfaceTab, string])[];
 const moreValues = new Set<SurfaceTab>(moreTabs.map(([tab]) => tab));
 
+function SurfaceIcon({ tab }: { readonly tab: 'code' | 'files' | 'more' | 'preview' }): ReactElement {
+  switch (tab) {
+    case 'preview':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.1 3.6 8.5s-1.2 6.2-3.6 8.5C9.6 18.2 8.4 15.4 8.4 12S9.6 5.8 12 3.5Z" />
+        </svg>
+      );
+    case 'files':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="M6 3.5h8l4 4V20H6V3.5Z" />
+          <path d="M14 3.5V8h4" />
+        </svg>
+      );
+    case 'code':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="m8.5 7-5 5 5 5M15.5 7l5 5-5 5M14 4l-4 16" />
+        </svg>
+      );
+    case 'more':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="m4 7 8-4 8 4-8 4-8-4ZM4 12l8 4 8-4M4 17l8 4 8-4" />
+        </svg>
+      );
+  }
+}
+
 export function SurfaceTabs({
   fallbackCommitSha,
   focusPreviewRequest,
@@ -87,7 +118,7 @@ export function SurfaceTabs({
     if (focusPreviewRequest === 0) return;
     const preview = [
       ...(tabsRef.current?.querySelectorAll<HTMLElement>('[role="tab"]') ?? []),
-    ].find((tab) => tab.textContent.trim() === 'Preview');
+    ].find((tab) => tab.getAttribute('aria-label') === 'Preview');
     preview?.focus();
   }, [focusPreviewRequest]);
 
@@ -140,8 +171,10 @@ export function SurfaceTabs({
         {primaryTabs.map(([tab, label]) => (
           <button
             aria-controls="project-surface-panel"
+            aria-label={label}
             aria-selected={value === tab}
             className={styles.surfaceTab}
+            data-compact-tab={tab === 'preview' ? 'labelled' : 'icon'}
             key={tab}
             onClick={() => {
               onValueChange(tab);
@@ -149,24 +182,33 @@ export function SurfaceTabs({
             onKeyDown={moveTabFocus}
             role="tab"
             tabIndex={value === tab ? 0 : -1}
+            title={label}
             type="button"
           >
-            {label}
+            <span className={styles.surfaceTabIcon}>
+              <SurfaceIcon tab={tab} />
+            </span>
+            {tab === 'preview' ? <span>{label}</span> : null}
           </button>
         ))}
         <button
           aria-controls="project-surface-panel"
+          aria-label="More"
           aria-selected={moreActive}
           className={styles.surfaceTab}
+          data-compact-tab="icon"
           onClick={() => {
             onValueChange(moreActive ? value : 'logs');
           }}
           onKeyDown={moveTabFocus}
           role="tab"
           tabIndex={moreActive ? 0 : -1}
+          title="More"
           type="button"
         >
-          More
+          <span className={styles.surfaceTabIcon}>
+            <SurfaceIcon tab="more" />
+          </span>
         </button>
       </div>
       {moreActive ? (

@@ -298,6 +298,17 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] **Verify/review/ship:** focused and full web gates, accessibility/responsive browser acceptance, full-stack authenticated prompt-to-preview verification, repository verification, exact-head push, and green CI/Security.
 - [x] Commit: `fix(web): repair immersive builder prompt and preview flow`
 
+#### WEB-18-FIX-4 - compact reference editor chrome and balanced workspace
+
+**Reference audit:** Live signed-in Lovable and Base44 editors plus the supplied screenshots.
+**Files:** Modify builder/preview presentation components and their focused Playwright coverage. No API contract or desktop file changes are in scope.
+
+- [x] Replace prominent text device controls with 23-28px icon controls that retain accessible names and titles.
+- [x] Keep Preview as the visible primary surface while Files, Code, More, Preview/Manage, select, refresh, and open actions use compact icon chrome.
+- [x] Rebalance the desktop conversation/workspace split to 44/56 by default while preserving pointer, keyboard, persistence, responsive panes, and Mission Control behavior.
+- [x] Verify the focused preview acceptance, full builder shell suite, web lint/typecheck, and a signed-in browser interaction audit with no console errors.
+- [x] Commit: `style(web): refine builder editor chrome`
+
 ---
 
 ## Testing strategy
@@ -311,6 +322,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-14 WEB-18-FIX-4 done - Matched the live Lovable/Base44 editor density with 23-28px icon controls, a 28px page selector, and a balanced 44/56 split; preview acceptance passed 1/1, builder shell passed 24/24, lint/typecheck passed, and signed-in browser interactions produced no console errors. A real prompt reached Temporal but Modal rejected provisioning with RESOURCE_EXHAUSTED because the provider workspace exceeded its spend limit, so a new live preview remains externally blocked until that limit is raised.
 - 2026-08-14 WEB-18-FIX-3 done — Repaired the real prompt-to-workspace pipeline, authenticated preview transport, persistent sandbox/Git lifecycle, and compact immersive builder; verified a real Anthropic run plus preview share/redeem chain, live Stytch-to-Google redirect on port 3000, web 132/132, preview proxy 110/110, sandbox 194 passed with 18 provider-gated skips, and the complete cold repository gate including private Forgejo clone.
 - 2026-08-13 WEB-4-FIX-1 done — Preserved the two one-second durable import polls while widening only the cold-run navigation observer; focused repeats passed 5/5, web lint/typecheck passed, and full repository verification including GATE-5 passed before the exact-head push gate.
 - 2026-08-13 WEB-18-FIX-2 done - Added exact-`APP_BASE_URL`, credentialed CORS with the full public API method set so the real shell can call the control plane from the browser; the focused test passed 2/2, control-api lint/typecheck passed, PostgreSQL plus the live Stytch adapter passed 5/5, and localhost:3000 reached the real Stytch OAuth host; interactive Google completion remains unverified because both controlled browsers block `test.stytch.com` with `ERR_BLOCKED_BY_CLIENT` before Google renders.

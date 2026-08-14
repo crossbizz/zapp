@@ -161,23 +161,49 @@ function PreviewStyles(): ReactElement {
         container-type: inline-size;
       }
       .zapp-preview-toolbar {
-        display: grid;
-        min-height: 2rem;
-        grid-template-columns: auto minmax(6rem, 1fr) auto auto auto;
+        position: relative;
+        display: flex;
+        min-height: 2.5rem;
         align-items: center;
-        gap: 0.4rem;
-        padding: 0.2rem 0.65rem;
+        justify-content: center;
+        gap: 0.25rem;
+        padding: 0.25rem 0.5rem;
         border-bottom: 1px solid var(--zapp-border);
         background: var(--zapp-surface-raised);
       }
       .zapp-preview-path {
+        display: flex;
+        min-width: 6rem;
+        max-width: 16rem;
+        min-height: 1.75rem;
+        flex: 1;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
         overflow: hidden;
-        padding: 0.35rem 0.65rem;
+        padding: 0.2rem 0.6rem;
         border: 1px solid var(--zapp-border);
         border-radius: var(--zapp-radius-pill);
-        background: var(--zapp-surface-raised);
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-subtle);
+        font-size: var(--zapp-text-12);
+        font-weight: 600;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .zapp-preview-path span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .zapp-preview-path svg {
+        width: 0.75rem;
+        height: 0.75rem;
+        flex: 0 0 auto;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.5;
       }
       .zapp-preview-devices,
       .zapp-preview-toolbar-actions,
@@ -187,16 +213,17 @@ function PreviewStyles(): ReactElement {
         gap: 0.375rem;
       }
       .zapp-preview-toolbar-actions .zapp-button {
-        min-height: 2rem;
-        padding: 0.35rem 0.65rem;
+        min-height: 1.75rem;
+        padding: 0.25rem 0.6rem;
         font-size: var(--zapp-text-12);
         white-space: nowrap;
       }
-      .zapp-preview-toolbar-actions .zapp-icon-button {
-        width: 2rem;
-        height: 2rem;
+      .zapp-preview-toolbar .zapp-icon-button {
+        width: 1.75rem;
+        height: 1.75rem;
+        flex: 0 0 auto;
       }
-      .zapp-preview-toolbar-actions .zapp-icon-button svg {
+      .zapp-preview-toolbar .zapp-icon-button svg {
         width: 0.9rem;
         height: 0.9rem;
         fill: none;
@@ -205,26 +232,61 @@ function PreviewStyles(): ReactElement {
         stroke-linejoin: round;
         stroke-width: 1.8;
       }
-      .zapp-preview-select-mode .zapp-button {
-        min-height: 2rem;
-        padding: 0.35rem 0.65rem;
-        font-size: var(--zapp-text-12);
-        white-space: nowrap;
+      .zapp-preview-select-mode .zapp-icon-button[aria-pressed='true'] {
+        border-color: color-mix(in srgb, var(--zapp-accent) 45%, var(--zapp-border));
+        color: var(--zapp-accent);
+        background: var(--zapp-support-verified-bg);
       }
-      .zapp-preview-devices button {
-        min-height: 2rem;
-        padding: 0.3rem 0.55rem;
+      .zapp-preview-devices {
+        flex: 0 0 auto;
+        gap: 0;
+        padding: 0.1rem;
         border: 1px solid var(--zapp-border);
         border-radius: var(--zapp-radius-pill);
-        background: var(--zapp-surface-raised);
+        background: var(--zapp-surface-subtle);
+      }
+      .zapp-preview-devices button {
+        display: inline-grid;
+        width: 1.55rem;
+        height: 1.45rem;
+        min-height: 0;
+        place-items: center;
+        padding: 0;
+        border: 0;
+        border-radius: var(--zapp-radius-pill);
+        color: var(--zapp-text-muted);
+        background: transparent;
+        cursor: pointer;
+      }
+      .zapp-preview-devices button svg {
+        width: 0.82rem;
+        height: 0.82rem;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 1.7;
       }
       .zapp-preview-devices button[aria-pressed='true'] {
-        border-color: var(--zapp-accent);
-        color: var(--zapp-accent);
-        font-weight: 650;
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-raised);
+        box-shadow: 0 1px 2px rgb(24 24 27 / 0.12);
+      }
+      .zapp-preview-devices button:focus-visible {
+        outline: 2px solid var(--zapp-focus);
+        outline-offset: 1px;
       }
       .zapp-preview-share-result {
-        grid-column: 1 / -1;
+        position: absolute;
+        z-index: 4;
+        top: calc(100% + 0.35rem);
+        right: 0.5rem;
+        width: min(24rem, calc(100% - 1rem));
+        border: 1px solid var(--zapp-border);
+        border-radius: var(--zapp-radius-panel);
+        padding: 0.65rem;
+        background: var(--zapp-surface-raised);
+        box-shadow: var(--zapp-shadow-card);
       }
       .zapp-preview-share-result label {
         display: grid;
@@ -313,45 +375,12 @@ function PreviewStyles(): ReactElement {
         text-align: left;
         vertical-align: top;
       }
-      @container (max-width: 44rem) {
-        .zapp-preview-toolbar {
-          grid-template-columns: auto minmax(8rem, 1fr) auto auto;
-        }
-        .zapp-preview-devices {
-          grid-column: 1 / -1;
-          grid-row: 2;
-          justify-content: center;
-        }
-        .zapp-preview-toolbar-actions {
-          grid-column: 4;
-          grid-row: 1;
-        }
-      }
       @media (max-width: 900px) {
         .zapp-preview-toolbar {
-          grid-template-columns: minmax(0, 1fr);
-        }
-        .zapp-preview-share-result {
-          grid-column: auto;
-        }
-        .zapp-preview-path,
-        .zapp-preview-devices,
-        .zapp-preview-toolbar-actions {
-          grid-column: 1;
-          grid-row: auto;
-          min-width: 0;
-        }
-        .zapp-preview-devices {
           justify-content: flex-start;
-          overflow-x: auto;
         }
-        .zapp-preview-toolbar-actions {
-          display: grid;
-          grid-template-columns: minmax(0, 1fr);
-          align-items: stretch;
-        }
-        .zapp-preview-toolbar-actions .zapp-button {
-          width: 100%;
+        .zapp-preview-path {
+          min-width: 4rem;
         }
       }
     `}</style>

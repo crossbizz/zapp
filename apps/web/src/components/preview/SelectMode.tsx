@@ -1,6 +1,6 @@
 'use client';
 
-import { Button } from '@zapp/ui';
+import { IconButton } from '@zapp/ui';
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 const maximumComponentHintChars = 256;
@@ -134,9 +134,10 @@ export function SelectMode({
 
   return (
     <div className="zapp-preview-select-mode">
-      <Button
+      <IconButton
         aria-pressed={enabled}
         disabled={disabled || origin === undefined}
+        label="Select element"
         onClick={() => {
           const nextEnabled = !enabled;
           if (!postSelectionMode(nextEnabled)) {
@@ -147,10 +148,12 @@ export function SelectMode({
           setEnabled(nextEnabled);
           setStatus(nextEnabled ? 'Selection mode is on. Choose an element in the preview.' : 'Selection mode is off.');
         }}
-        variant={enabled ? 'primary' : 'secondary'}
+        title="Select element"
       >
-        Select element
-      </Button>
+        <svg aria-hidden="true" viewBox="0 0 24 24">
+          <path d="m5 3 14 8-6 2-2 6L5 3Z" />
+        </svg>
+      </IconButton>
       <p aria-live="polite" className="zapp-sr-only">
         {status}
       </p>

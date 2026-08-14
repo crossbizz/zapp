@@ -4,6 +4,7 @@ const apiBaseUrl = 'http://127.0.0.1:4100';
 const appBaseUrl = 'http://127.0.0.1:3100';
 const projectId = 'project-apollo';
 const conversationWidthStorageKey = `zapp:builder:conversation-width:${projectId}`;
+const defaultConversationWidth = 44;
 
 const projectRead = {
   branches: [
@@ -149,7 +150,10 @@ test('loads a compact immersive builder with truthful header actions and surface
   }
   expect(topBarBounds.height).toBeLessThanOrEqual(56);
   expect(conversationBounds.width).toBeGreaterThanOrEqual(400);
-  expect(conversationBounds.width).toBeLessThanOrEqual(520);
+  const conversationShare =
+    conversationBounds.width / (conversationBounds.width + workspaceBounds.width);
+  expect(conversationShare).toBeGreaterThanOrEqual(0.4);
+  expect(conversationShare).toBeLessThanOrEqual(0.5);
   expect(workspaceBounds.width).toBeGreaterThan(conversationBounds.width);
   expect(composerBounds.y + composerBounds.height).toBeLessThanOrEqual(950);
   await expect(page.getByRole('group', { name: 'Builder mode' })).toBeVisible();
@@ -274,7 +278,7 @@ test('resizes panes by pointer and keyboard and restores the project width on re
   await openBuilder(page);
 
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
-  await expect(separator).toHaveAttribute('aria-valuenow', '30');
+  await expect(separator).toHaveAttribute('aria-valuenow', String(defaultConversationWidth));
   const bounds = await separator.boundingBox();
   if (bounds === null) throw new Error('The pane separator was not rendered.');
   await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
@@ -283,7 +287,7 @@ test('resizes panes by pointer and keyboard and restores the project width on re
   await page.mouse.up();
 
   const pointerWidth = Number(await separator.getAttribute('aria-valuenow'));
-  expect(pointerWidth).toBeGreaterThan(30);
+  expect(pointerWidth).toBeGreaterThan(defaultConversationWidth);
   await separator.focus();
   await page.keyboard.press('ArrowLeft');
   const keyboardWidth = Number(await separator.getAttribute('aria-valuenow'));
@@ -324,7 +328,9 @@ test('persists a multi-step pointer resize exactly once when the drag completes'
   }
   await page.mouse.up();
 
-  expect(Number(await separator.getAttribute('aria-valuenow'))).toBeGreaterThan(30);
+  expect(Number(await separator.getAttribute('aria-valuenow'))).toBeGreaterThan(
+    defaultConversationWidth,
+  );
   expect(
     await page.evaluate(() => {
       const state = window as typeof window & { conversationWidthWrites?: number };
@@ -392,7 +398,7 @@ test('ignores non-initiating pointers during resize and persists once for the in
   );
 
   await dispatchWindowPointer('pointermove', 22, bounds.x + 200);
-  await expect(separator).toHaveAttribute('aria-valuenow', '30');
+  await expect(separator).toHaveAttribute('aria-valuenow', String(defaultConversationWidth));
   await dispatchWindowPointer('pointerup', 22, bounds.x + 200);
   expect(
     await page.evaluate(() => {
@@ -402,7 +408,9 @@ test('ignores non-initiating pointers during resize and persists once for the in
   ).toBe(0);
 
   await dispatchWindowPointer('pointermove', 11, bounds.x + 120);
-  expect(Number(await separator.getAttribute('aria-valuenow'))).toBeGreaterThan(30);
+  expect(Number(await separator.getAttribute('aria-valuenow'))).toBeGreaterThan(
+    defaultConversationWidth,
+  );
   await dispatchWindowPointer('pointerup', 11, bounds.x + 120);
   expect(
     await page.evaluate(() => {
@@ -410,7 +418,7 @@ test('ignores non-initiating pointers during resize and persists once for the in
       return state.conversationWidthWrites;
     }),
   ).toBe(1);
-  expect(await storedConversationWidth(page)).toBeGreaterThan(30);
+  expect(await storedConversationWidth(page)).toBeGreaterThan(defaultConversationWidth);
 });
 
 test('keeps resize and Mission Control operational when preference writes fail', async ({
@@ -437,7 +445,7 @@ test('keeps resize and Mission Control operational when preference writes fail',
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(separator).toHaveAttribute('aria-valuenow', '32');
+  await expect(separator).toHaveAttribute('aria-valuenow', '46');
   await expect(page.getByRole('status')).toHaveText('Preferences could not be saved.');
   await expect(page.getByRole('heading', { name: 'Project Apollo' })).toBeVisible();
 
@@ -465,7 +473,7 @@ test('keeps the warning until every failed preference key saves successfully', a
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(separator).toHaveAttribute('aria-valuenow', '32');
+  await expect(separator).toHaveAttribute('aria-valuenow', '46');
   await expect(page.getByRole('status')).toHaveText('Preferences could not be saved.');
 
   await page.getByRole('button', { name: 'Mission Control' }).click();
@@ -525,20 +533,20 @@ test('preserves a deliberate desktop split across mobile and back', async ({ pag
   const separator = page.getByRole('separator', { name: 'Resize conversation pane' });
   await separator.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(separator).toHaveAttribute('aria-valuenow', '32');
-  expect(await storedConversationWidth(page)).toBe(32);
+  await expect(separator).toHaveAttribute('aria-valuenow', '46');
+  expect(await storedConversationWidth(page)).toBe(46);
 
   await page.setViewportSize({ height: 900, width: 900 });
   await expect(page.getByRole('navigation', { name: 'Builder pane' })).toBeVisible();
   await expect(separator).toBeHidden();
   await settleResponsiveLayout(page);
-  expect(await storedConversationWidth(page)).toBe(32);
+  expect(await storedConversationWidth(page)).toBe(46);
 
   await page.setViewportSize({ height: 900, width: 1440 });
   await expect(separator).toBeVisible();
   await settleResponsiveLayout(page);
-  await expect(separator).toHaveAttribute('aria-valuenow', '32');
-  expect(await storedConversationWidth(page)).toBe(32);
+  await expect(separator).toHaveAttribute('aria-valuenow', '46');
+  expect(await storedConversationWidth(page)).toBe(46);
 });
 
 test('temporarily clamps a low preference for inline Mission Control without persisting it', async ({

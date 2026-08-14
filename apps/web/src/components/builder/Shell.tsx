@@ -49,9 +49,9 @@ import {
   type ManageSection,
 } from './builder-navigation';
 
-const defaultConversationWidth = 30;
-const minimumConversationWidth = 26;
-const maximumConversationWidth = 42;
+const defaultConversationWidth = 44;
+const minimumConversationWidth = 30;
+const maximumConversationWidth = 54;
 const minimumConversationPixels = 400;
 
 interface ShellProps {
@@ -124,11 +124,11 @@ function BuilderStyles(): ReactElement {
         position: relative;
         z-index: 2;
         display: grid;
-        min-height: 3.25rem;
+        min-height: 2.75rem;
         grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
         align-items: center;
         gap: 0.75rem;
-        padding: 0.4rem 0.65rem;
+        padding: 0.25rem 0.5rem;
         border-bottom: 1px solid var(--zapp-border);
         background: var(--zapp-surface-raised);
       }
@@ -162,8 +162,8 @@ function BuilderStyles(): ReactElement {
 
       .zapp-builder-home-link {
         display: inline-grid;
-        width: 2rem;
-        height: 2rem;
+        width: 1.75rem;
+        height: 1.75rem;
         flex: 0 0 auto;
         place-items: center;
         border-radius: 0.55rem;
@@ -175,15 +175,11 @@ function BuilderStyles(): ReactElement {
       }
 
       .zapp-builder-header-divider {
-        width: 1px;
-        height: 1.5rem;
-        background: var(--zapp-border);
+        display: none;
       }
 
       .zapp-builder-projects-link {
-        color: var(--zapp-text-secondary);
-        font-size: var(--zapp-text-12);
-        text-decoration: none;
+        display: none;
       }
 
       .zapp-builder-mode-switcher {
@@ -192,16 +188,20 @@ function BuilderStyles(): ReactElement {
         gap: 0.125rem;
         padding: 0.125rem;
         border: 1px solid var(--zapp-border);
-        border-radius: 0.55rem;
-        background: var(--zapp-surface-subtle);
+        border-radius: var(--zapp-radius-pill);
+        background: var(--zapp-surface-raised);
       }
 
       .zapp-builder-mode-switcher button {
-        min-width: 4.75rem;
-        min-height: 2rem;
+        display: inline-grid;
+        width: 1.75rem;
+        min-width: 1.75rem;
+        height: 1.75rem;
+        min-height: 1.75rem;
+        place-items: center;
         border: 0;
         border-radius: 0.45rem;
-        padding: 0.25rem 0.65rem;
+        padding: 0;
         color: var(--zapp-text-secondary);
         background: transparent;
         font: inherit;
@@ -211,9 +211,9 @@ function BuilderStyles(): ReactElement {
       }
 
       .zapp-builder-mode-switcher button[aria-pressed='true'] {
-        color: var(--zapp-text-primary);
-        background: var(--zapp-surface-raised);
-        box-shadow: 0 1px 2px rgb(24 24 27 / 0.1);
+        color: var(--zapp-accent);
+        background: var(--zapp-support-verified-bg);
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--zapp-accent) 20%, transparent);
       }
 
       .zapp-builder-save-state {
@@ -230,11 +230,11 @@ function BuilderStyles(): ReactElement {
       .zapp-builder-action-link,
       .zapp-builder-settings-link {
         display: inline-flex;
-        min-height: 2rem;
+        min-height: 1.75rem;
         align-items: center;
         justify-content: center;
         gap: 0.375rem;
-        padding: 0.3rem 0.55rem;
+        padding: 0.2rem 0.5rem;
         border: 1px solid var(--zapp-border);
         border-radius: var(--zapp-radius-pill);
         color: var(--zapp-text-primary);
@@ -245,7 +245,35 @@ function BuilderStyles(): ReactElement {
       }
 
       .zapp-builder-settings-link {
-        width: 2rem;
+        width: 1.75rem;
+        padding: 0;
+      }
+
+      .zapp-builder-project-actions > button,
+      .zapp-builder-project-actions > .zapp-button {
+        min-height: 1.75rem;
+        border: 1px solid var(--zapp-border);
+        border-radius: var(--zapp-radius-pill);
+        padding: 0.2rem 0.55rem;
+        color: var(--zapp-text-primary);
+        background: var(--zapp-surface-raised);
+        font: inherit;
+        font-size: var(--zapp-text-12);
+        font-weight: 650;
+      }
+
+      .zapp-builder-project-actions > button:not(:disabled):hover,
+      .zapp-builder-project-actions > .zapp-button:not(:disabled):hover {
+        background: var(--zapp-surface-subtle);
+      }
+
+      .zapp-builder-project-actions > button:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+
+      .zapp-builder-mission-trigger {
+        width: 1.75rem;
         padding: 0;
       }
 
@@ -312,7 +340,7 @@ function BuilderStyles(): ReactElement {
 
       .zapp-builder-workspace {
         display: grid;
-        height: calc(100dvh - 3.25rem);
+        height: calc(100dvh - 2.75rem);
         min-height: 0;
         grid-template-columns: minmax(0, 1fr);
         transition: grid-template-columns 160ms ease;
@@ -327,10 +355,7 @@ function BuilderStyles(): ReactElement {
         min-width: 0;
         height: 100%;
         min-height: 0;
-        grid-template-columns: minmax(
-            400px,
-            clamp(400px, var(--conversation-width), 520px)
-          ) 0.375rem minmax(0, 1fr);
+        grid-template-columns: minmax(400px, var(--conversation-width)) 0.25rem minmax(0, 1fr);
       }
 
       .zapp-builder-pane {
@@ -425,7 +450,7 @@ function BuilderStyles(): ReactElement {
         }
 
         .zapp-builder-top-bar {
-          min-height: 3.75rem;
+          min-height: 3.25rem;
           grid-template-columns: minmax(0, 1fr) auto;
         }
 
@@ -478,8 +503,9 @@ function BuilderStyles(): ReactElement {
           display: none;
         }
 
-        .zapp-builder-mode-switcher button {
-          min-width: 4rem;
+        .zapp-builder-sync-pill,
+        .zapp-builder-action-link > span:not(.zapp-builder-sync-pill) {
+          display: none;
         }
       }
     `}</style>
@@ -1017,6 +1043,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const missionTrigger = (
     <Button
       aria-expanded={missionControlOpen}
+      className="zapp-builder-mission-trigger"
       onClick={
         inlineMissionControl
           ? () => {
@@ -1025,9 +1052,19 @@ export function Shell({ projectId }: ShellProps): ReactElement {
           : undefined
       }
       ref={missionControlTriggerRef}
+      title="Mission Control"
       variant="secondary"
     >
-      Mission Control
+      <svg aria-hidden="true" className="zapp-builder-action-icon" viewBox="0 0 24 24">
+        <path
+          d="M4 18V9M10 18V5M16 18v-6M22 18V3"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeWidth="1.7"
+        />
+      </svg>
+      <span className="zapp-sr-only">Mission Control</span>
     </Button>
   );
   const missionControl = inlineMissionControl ? (

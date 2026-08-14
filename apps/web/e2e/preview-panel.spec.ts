@@ -144,7 +144,13 @@ test('keeps preview controls compact and gives the remaining workspace to the st
     throw new Error('The compact preview geometry was not rendered.');
   }
 
-  expect(toolbarBounds.height).toBeLessThanOrEqual(48);
+  expect(toolbarBounds.height).toBeLessThanOrEqual(40);
+  for (const name of ['Desktop view', 'Tablet view', 'Mobile view']) {
+    const deviceControl = page.getByRole('button', { name });
+    await expect(deviceControl).toBeVisible();
+    await expect(deviceControl).toHaveText('');
+    await expect(deviceControl).toHaveAttribute('title', name);
+  }
   expect(selectBounds.y).toBeGreaterThanOrEqual(toolbarBounds.y);
   expect(selectBounds.y + selectBounds.height).toBeLessThanOrEqual(
     toolbarBounds.y + toolbarBounds.height,
