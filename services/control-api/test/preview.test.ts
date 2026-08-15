@@ -453,7 +453,7 @@ describe('WS-12 public preview shares', () => {
       socket.close();
     });
 
-    const messages: string[] = [];
+    const messages: Array<string | Uint8Array> = [];
     const proxy = createSandboxPreviewProxy({
       baseUrl: `http://127.0.0.1:${String(address.port)}`,
       serviceTokens: { secret: 's'.repeat(32) },
@@ -473,7 +473,7 @@ describe('WS-12 public preview shares', () => {
           },
           {
             send(data) {
-              messages.push(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'));
+              messages.push(data);
             },
             close() {},
             onMessage() {},

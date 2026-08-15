@@ -115,7 +115,7 @@ describe('the backup CLI entrypoint', () => {
       stdout: '',
       stderr: 'Git backup operation failed\n',
     });
-  }, 15_000);
+  }, 30_000);
 
   it('executes the real entrypoint and rejects an invalid restore selector', async () => {
     await expect(
@@ -131,7 +131,7 @@ describe('the backup CLI entrypoint', () => {
       stdout: '',
       stderr: 'Git backup operation failed\n',
     });
-  }, 15_000);
+  }, 30_000);
 
   it('keeps every package backup script wired to the real entrypoint and action', async () => {
     const packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as {

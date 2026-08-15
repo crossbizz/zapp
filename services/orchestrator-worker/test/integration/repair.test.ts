@@ -595,7 +595,9 @@ describe('VF-13 classified repair loop', () => {
     expect(harness.escalations).toHaveLength(1);
   });
 
-  it('atomically creates a keyed repair task and emits one replay-safe failure event', async () => {
+  it.skipIf(!process.env['DATABASE_URL'])(
+    'atomically creates a keyed repair task and emits one replay-safe failure event',
+    async () => {
     const database = createDb(await vf13TestDatabaseUrl());
     const fixture = {
       userId: newId('user'),
@@ -710,5 +712,7 @@ describe('VF-13 classified repair loop', () => {
       await database.sql`delete from users where id = ${fixture.userId}`;
       await database.close();
     }
-  }, 60_000);
+    },
+    60_000,
+  );
 });

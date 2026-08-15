@@ -279,10 +279,16 @@ function cookieValue(request: FastifyRequest): string | undefined {
   return parseCookies(request.headers.cookie).get(SESSION_COOKIE);
 }
 
-function socketData(data: RawData): string | Uint8Array {
-  if (typeof data === 'string') return data;
-  if (Array.isArray(data)) return Buffer.concat(data);
-  return data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+function socketData(data: RawData, isBinary: boolean): string | Uint8Array {
+  const bytes =
+    typeof data === 'string'
+      ? Buffer.from(data)
+      : Array.isArray(data)
+        ? Buffer.concat(data)
+        : data instanceof ArrayBuffer
+          ? Buffer.from(new Uint8Array(data))
+          : Buffer.from(data);
+  return isBinary ? bytes : bytes.toString('utf8');
 }
 
 function proxySocket(socket: WebSocket): PreviewProxySocket {
@@ -294,8 +300,8 @@ function proxySocket(socket: WebSocket): PreviewProxySocket {
       socket.close();
     },
     onMessage(handler) {
-      socket.on('message', (data) => {
-        handler(socketData(data));
+      socket.on('message', (data, isBinary) => {
+        handler(socketData(data, isBinary));
       });
     },
     onClose(handler) {
@@ -1220,8 +1226,8 @@ export function createSandboxPreviewProxy(options: SandboxPreviewProxyOptions): 
         upstream.once('open', () => {
           opened = true;
         });
-        upstream.on('message', (data) => {
-          downstream.send(socketData(data));
+        upstream.on('message', (data, isBinary) => {
+          downstream.send(socketData(data, isBinary));
         });
         upstream.once('error', (error) => {
           if (!opened) reject(error);

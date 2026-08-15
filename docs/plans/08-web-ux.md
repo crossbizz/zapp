@@ -368,6 +368,17 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Persist the generated commit on the branch, default branchless follow-up runs to the active main branch, and emit a useful assistant explanation before failed or budget-exhausted terminal status.
 - [x] Keep the code surface backed by the recovered workspace and exclude VCS, dependency, and generated Next output from the polling watcher.
 - [x] Verify focused web/API/worker TDD suites, the complete browser suite, a live branch-backed Docker preview share/exchange/redeem chain, affected lint/typecheck, and the cold repository gate.
+
+#### WEB-18-FIX-10 - durable local preview recovery and text-safe HMR
+
+**Root cause:** Local Docker workspaces mounted only `/cache`, so terminating a provider container destroyed the branch checkout and every uncommitted generated file under `/workspace`. Run finalization also skipped `git push` when the model had already committed its work, leaving the database ahead of Forgejo. Finally, the control-plane WebSocket bridge discarded `ws`'s `isBinary` flag and forwarded Vite HMR text frames as binary Blobs, causing repeated JSON parse errors and visible preview reconnects.
+**Files:** Modify `services/sandbox-service/src/provider/{docker,git-bootstrap}.ts`, `services/sandbox-service/test/{docker.test.ts,integration/git-clone.test.ts}`, `services/orchestrator-worker/src/runtime/run-worker.ts`, `services/orchestrator-worker/test/{run-runtime.test.ts,integration/ar9-postgres-worker.test.ts,integration/repair.test.ts,integration/verifier.test.ts}`, `services/control-api/src/routes/preview.ts`, `services/control-api/test/preview.test.ts`, `services/git-service/test/backup-cli.test.ts`, this plan, and `tasks/todo.md`. No UI redesign, desktop files, Modal behavior, or public API contract changes are in scope.
+
+- [x] Mount each local project's durable volume at `/workspace`, reattach an existing matching branch checkout without resetting it, and retain local source across container replacement.
+- [x] Push the resolved run head even when the worktree is already clean so a model-created commit reaches Forgejo before the database branch head advances.
+- [x] Preserve text versus binary WebSocket frame semantics across both control-plane bridge directions so Vite receives JSON text rather than a Blob.
+- [x] Prove a real TypeScript agent run, source-file API, embedded preview, container terminate/recreate, automatic Vite restart, affected suites, lint/typecheck, and the cold repository gate.
+- [x] Commit: `fix(preview): preserve local workspaces across sleep`
 - [x] Commit: `fix(web): recover durable previews and agent failures`
 
 ---
@@ -383,6 +394,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-10 done — Preserved local branch workspaces on the per-project Docker volume, pushed clean model-created heads, retained Vite HMR text frames, and proved a real TypeScript build plus stop/recreate recovery with the same Forgejo SHA, 12 source files, 9/9 generated tests, a restored file API, and a zero-page-error embedded preview; affected suites, lint/typecheck, all 135 browser tests, missing-credential skips, isolation/GATE-5, and the 94/94-task cold repository gate passed.
 - 2026-08-15 WEB-18-FIX-9 done — Recovered expired workspaces from their durable branch, automatically restarted sleeping previews without duplicate calls, persisted generated branch heads, made terminal agent failures explanatory, and stopped Next from watching its own output; focused API/worker suites and all 135 browser tests passed, with a live Docker preview returning the generated app through share, exchange, redemption, and proxy delivery.
 - 2026-08-15 WEB-18-FIX-8 done — Preserved Vite's HMR WebSocket subprotocol through the control-to-sandbox bridge; the real socket regression passed, a live Docker workspace negotiated and held `vite-hmr`, all 134 browser tests passed, and the repository gate ran against the restored local stack.
 - 2026-08-14 WEB-18-FIX-7 done — Restored canonical lazy workspace trees and CHIPS-compatible embedded preview sessions; focused API/browser coverage and all 134 web tests passed, while live Chromium rendered the generated app and opened the real `src/main.ts` from its active workspace.

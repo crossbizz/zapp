@@ -299,6 +299,73 @@ describe('WS-5 scoped-token Git bootstrap', () => {
     ]);
   }, 30_000);
 
+  it('reattaches a durable branch checkout without overwriting uncommitted work', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-ws5-reattach-'));
+    roots.push(root);
+    const { bare, workspace } = await createRepositoryFixture(root);
+    const commandsSeen: string[][] = [];
+    const tokens: GitTokenClient = {
+      mint: () =>
+        Promise.resolve({
+          token: 'reattach-token-sentinel',
+          username: 'zt-reattach',
+          cloneUrl: CLEAN_CLONE_URL,
+          expiresAt: '2026-08-09T00:05:00.000Z',
+        }),
+    };
+    const commands: WorkspaceGitCommandPort = {
+      async exec(input) {
+        commandsSeen.push([...input.args]);
+        const args = input.args.map((argument) => {
+          if (!argument.startsWith('url.https://')) return argument;
+          const separator = argument.indexOf('.insteadOf=');
+          const cleanUrl = argument.slice(separator + '.insteadOf='.length);
+          return `url.file://${bare}.insteadOf=${cleanUrl}`;
+        });
+        try {
+          const result = await git(workspace, ...args);
+          return {
+            exitCode: 0,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            durationMs: 1,
+            truncated: false,
+          };
+        } catch (error) {
+          const failure = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+          return {
+            exitCode: typeof failure.code === 'number' ? failure.code : 1,
+            stdout: typeof failure.stdout === 'string' ? failure.stdout : '',
+            stderr: typeof failure.stderr === 'string' ? failure.stderr : 'git failed',
+            durationMs: 1,
+            truncated: false,
+          };
+        }
+      },
+    };
+    const service = createWorkspaceGitService({ tokens, commands });
+    const input = {
+      ...IDS,
+      branchName: BRANCH_NAME,
+      operationKey: OPERATION_KEY,
+    } as const;
+
+    await service.bootstrap(input);
+    await writeFile(join(workspace, 'uncommitted.ts'), 'export const durable = true;\n');
+    commandsSeen.length = 0;
+
+    await service.bootstrap({
+      ...input,
+      operationKey: `op_${'b'.repeat(64)}`,
+    });
+
+    expect(commandsSeen.some((args) => args.includes('clone'))).toBe(false);
+    expect(await readFile(join(workspace, 'uncommitted.ts'), 'utf8')).toBe(
+      'export const durable = true;\n',
+    );
+    expect((await git(workspace, 'branch', '--show-current')).stdout.trim()).toBe(BRANCH_NAME);
+  }, 30_000);
+
   it('boots the default branch of a brand-new empty project repository', async () => {
     const root = await mkdtemp(join(tmpdir(), 'zapp-ws5-empty-'));
     roots.push(root);
@@ -395,14 +462,25 @@ describe('WS-5 scoped-token Git bootstrap', () => {
           expect(grants.some(({ token }) => token === decodeURIComponent(url.password))).toBe(true);
           return `file://${bare}`;
         });
-        const result = await git(workspace, ...args);
-        return {
-          exitCode: 0,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          durationMs: 1,
-          truncated: false,
-        };
+        try {
+          const result = await git(workspace, ...args);
+          return {
+            exitCode: 0,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            durationMs: 1,
+            truncated: false,
+          };
+        } catch (error) {
+          const failure = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+          return {
+            exitCode: typeof failure.code === 'number' ? failure.code : 1,
+            stdout: typeof failure.stdout === 'string' ? failure.stdout : '',
+            stderr: typeof failure.stderr === 'string' ? failure.stderr : 'git failed',
+            durationMs: 1,
+            truncated: false,
+          };
+        }
       },
     };
     let row: WorkspaceLifecycleRow = {

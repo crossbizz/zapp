@@ -278,49 +278,76 @@ export function createWorkspaceGitService(
       const grant = await mint(input, 'read', options.tokens);
       const cleanCloneUrl = validateCloneUrl(input, grant.cloneUrl);
       const credentialUrl = authenticatedCloneUrl(cleanCloneUrl, grant.token);
-
-      await requireSuccess(options.commands, input, 'clone', [
-        '-c',
-        'credential.helper=',
-        '-c',
-        `url.${credentialUrl}.insteadOf=${cleanCloneUrl}`,
-        'clone',
-        '--no-checkout',
-        '--no-tags',
-        cleanCloneUrl,
-        '.',
+      const existingRepository = await execute(options.commands, input, 'find-checkout', [
+        'rev-parse',
+        '--git-dir',
       ]);
-      const remoteBranch = `refs/remotes/origin/${input.branchName}`;
-      const branch = await execute(options.commands, input, 'find-branch', [
-        'show-ref',
-        '--verify',
-        '--quiet',
-        remoteBranch,
-      ]);
-      if (branch.exitCode === 0) {
-        await requireSuccess(options.commands, input, 'checkout-branch', [
-          'checkout',
-          '--force',
-          '-B',
-          input.branchName,
-          '--track',
+      if (existingRepository.exitCode === 0) {
+        const branch = await execute(options.commands, input, 'find-current-branch', [
+          'symbolic-ref',
+          '--quiet',
+          '--short',
+          'HEAD',
+        ]);
+        if (branch.exitCode !== 0 || branch.stdout.trim() !== input.branchName) {
+          throw new WorkspaceGitBootstrapError(
+            'find-current-branch',
+            branch.exitCode,
+            'git_command_failed',
+          );
+        }
+        const origin = await execute(options.commands, input, 'find-origin', [
+          'remote',
+          'get-url',
+          'origin',
+        ]);
+        if (origin.exitCode !== 0 || origin.stdout.trim() !== cleanCloneUrl) {
+          throw new WorkspaceGitBootstrapError('find-origin', origin.exitCode, 'git_command_failed');
+        }
+      } else {
+        await requireSuccess(options.commands, input, 'clone', [
+          '-c',
+          'credential.helper=',
+          '-c',
+          `url.${credentialUrl}.insteadOf=${cleanCloneUrl}`,
+          'clone',
+          '--no-checkout',
+          '--no-tags',
+          cleanCloneUrl,
+          '.',
+        ]);
+        const remoteBranch = `refs/remotes/origin/${input.branchName}`;
+        const branch = await execute(options.commands, input, 'find-branch', [
+          'show-ref',
+          '--verify',
+          '--quiet',
           remoteBranch,
         ]);
-      } else if (branch.exitCode === 1) {
-        const repository = await execute(options.commands, input, 'find-any-ref', [
-          'show-ref',
-          '--quiet',
-        ]);
-        if (repository.exitCode !== 1) {
+        if (branch.exitCode === 0) {
+          await requireSuccess(options.commands, input, 'checkout-branch', [
+            'checkout',
+            '--force',
+            '-B',
+            input.branchName,
+            '--track',
+            remoteBranch,
+          ]);
+        } else if (branch.exitCode === 1) {
+          const repository = await execute(options.commands, input, 'find-any-ref', [
+            'show-ref',
+            '--quiet',
+          ]);
+          if (repository.exitCode !== 1) {
+            throw new Error('Workspace Git bootstrap failed');
+          }
+          await requireSuccess(options.commands, input, 'checkout-unborn-branch', [
+            'symbolic-ref',
+            'HEAD',
+            `refs/heads/${input.branchName}`,
+          ]);
+        } else {
           throw new Error('Workspace Git bootstrap failed');
         }
-        await requireSuccess(options.commands, input, 'checkout-unborn-branch', [
-          'symbolic-ref',
-          'HEAD',
-          `refs/heads/${input.branchName}`,
-        ]);
-      } else {
-        throw new Error('Workspace Git bootstrap failed');
       }
       await requireSuccess(options.commands, input, 'scrub-origin', [
         'remote',

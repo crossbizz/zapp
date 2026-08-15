@@ -262,6 +262,7 @@ describe('the local M1 routing profile', () => {
   it('completes a no-op builder run by retaining the existing workspace commit', async () => {
     const commitSha = 'a'.repeat(40);
     const branchHead = branchHeadDatabase();
+    let pushed = 0;
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -273,6 +274,9 @@ describe('the local M1 routing profile', () => {
         };
         let result: Record<string, unknown> | undefined;
         if (request.url?.endsWith('/git') === true && body.operation === 'diff') {
+          result = { exitCode: 0, stdout: '', stderr: '' };
+        } else if (request.url?.endsWith('/git') === true && body.operation === 'push') {
+          pushed += 1;
           result = { exitCode: 0, stdout: '', stderr: '' };
         } else if (
           request.url?.endsWith('/exec') === true &&
@@ -328,6 +332,7 @@ describe('the local M1 routing profile', () => {
           idempotencyKey: 'no-op-builder-run',
         }),
       ).resolves.toEqual({ commitSha, diffstat: [] });
+      expect(pushed).toBe(1);
       expect(branchHead.persisted).toEqual([{ headCommitSha: commitSha }]);
     } finally {
       await new Promise<void>((resolve, reject) => {

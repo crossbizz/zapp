@@ -381,10 +381,8 @@ export async function composeProductionActivities(options: {
         .string()
         .regex(/^[0-9a-f]{40,64}$/u)
         .parse(head.stdout.trim());
-      if (paths.length > 0) {
-        const pushed = await runtime.git({ operation: 'push' });
-        if (pushed.exitCode !== 0) throw new Error('Unable to push the workspace commit');
-      }
+      const pushed = await runtime.git({ operation: 'push' });
+      if (pushed.exitCode !== 0) throw new Error('Unable to push the workspace commit');
       const [workspace] = await database
         .select({ branchId: workspaces.branchId })
         .from(workspaces)

@@ -134,6 +134,8 @@ describe('local Docker workspace adapter', () => {
         '127.0.0.1::8877',
         '--publish',
         '127.0.0.1::8080',
+        '--volume',
+        `${input.volume.name}:/workspace`,
         IMAGE,
       ]),
     );

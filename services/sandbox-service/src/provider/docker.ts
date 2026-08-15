@@ -488,6 +488,8 @@ export function createDockerWorkspaceSdk(options: DockerWorkspaceSdkOptions): Mo
             `${String(input.resources.memLimitMiB)}m`,
             '--volume',
             `${input.volume.name}:/cache`,
+            '--volume',
+            `${input.volume.name}:/workspace`,
             '--publish',
             '127.0.0.1::8877',
             '--publish',
