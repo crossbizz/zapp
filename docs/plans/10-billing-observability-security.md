@@ -271,6 +271,7 @@ Master plan §Global Constraints, plus:
 
 ## Execution log
 
+- 2026-08-15 OPS-13-FIX-2 done — Added the Docker-backed sandbox service to the child-process policy's runtime-package allowlist after exact-head Security exposed the missing structural owner; a policy-scoped regression and the pinned Semgrep scan passed without broadening control API or validation exemptions.
 - 2026-08-13 OPS-13-FIX-1 done — Narrowly allowlisted the production Git sync/export command runtime and immutable exit-evidence validator while retaining the repository-wide child-process boundary; pinned Semgrep and the permanent security regression passed, with no provider calls.
 - 2026-08-13 OPS-12-FIX-1 done — Moved `providerEnforced: true` evidence behind the successful Modal policy update and terminated on later audit failure, redacted every model-bound prompt/context/redirect/message at the session boundary, and strengthened the credential-gated containment proof to verify no detached descendant marker plus a kernel cgroup `oom_kill` delta; real Modal was skipped visibly because credentials were absent.
 - 2026-08-13 OPS-12-FIX-2 done — At the Task 45 two-round review cap, legacy completion replay became a separate recovery contract: version 1 records preserve their original accounting fingerprint while provider-bound bytes are redacted, and Model Gateway limits, strips, and accounts for the recovery marker only on authenticated orchestrator-worker calls.

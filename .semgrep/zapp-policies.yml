@@ -44,6 +44,7 @@ rules:
         - '/packages/workspace-runtime/**'
         - '/sandbox/workspace-agent/**'
         - '/services/git-service/**'
+        - '/services/sandbox-service/**'
         # Exact non-package command owners. Keep these file-scoped so the
         # surrounding control API and validation trees remain protected.
         - '/services/control-api/src/integrations/github/git-runtime.ts'
