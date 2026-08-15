@@ -20,6 +20,7 @@ import {
   appendIdempotentSandboxAudit,
   createPostgresNetworkPolicyRecorder,
 } from './network/postgres.js';
+import { createDockerSandboxProvider } from './provider/docker.js';
 import { createModalSandboxProvider } from './provider/modal.js';
 import type { WorkspaceAgentProvider } from './routes/workspaces.js';
 import {
@@ -68,7 +69,15 @@ const SHUTDOWN_STEP_TIMEOUT_MS = 10_000;
 
 type WorkspaceState = ReturnType<typeof createPostgresWorkspaceStateStore>;
 type ControlApiClients = ReturnType<typeof createSandboxControlApiClients>;
-type ProviderOptions = Parameters<typeof createModalSandboxProvider>[0];
+type ModalProviderOptions = Parameters<typeof createModalSandboxProvider>[0];
+type ProviderOptions =
+  | ({ readonly provider: 'modal' } & ModalProviderOptions)
+  | {
+      readonly provider: 'docker';
+      readonly environment: ModalProviderOptions['environment'];
+      readonly imageLock: unknown;
+      readonly agentToken: string;
+    };
 type ComposeOptions = Parameters<typeof composeSandboxApp>[0];
 type SandboxPricing = z.infer<typeof RuntimePricingSchema>;
 
@@ -190,7 +199,16 @@ const productionFactories: SandboxRuntimeFactories = {
     return JSON.parse(source) as unknown;
   },
   openDatabase: createDb,
-  createProvider: createModalSandboxProvider,
+  createProvider(input) {
+    if (input.provider === 'docker') {
+      const { provider, ...options } = input;
+      void provider;
+      return createDockerSandboxProvider(options);
+    }
+    const { provider, ...options } = input;
+    void provider;
+    return createModalSandboxProvider(options);
+  },
   createState: createPostgresWorkspaceStateStore,
   createNetworkPolicies: createPostgresNetworkPolicyRecorder,
   createControlApi: createSandboxControlApiClients,
@@ -273,10 +291,13 @@ export async function composeSandboxRuntime(
     // without storing or exposing the service secret itself.
     const agentToken = workspaceAgentToken(env.serviceTokens.secret);
     const provider = factories.createProvider({
+      provider: env.provider,
       environment: env.modal.environment,
       imageLock,
-      credentials: env.modal.credentials,
       agentToken,
+      ...(env.provider === 'modal'
+        ? { credentials: env.modal.credentials as NonNullable<typeof env.modal.credentials> }
+        : {}),
     });
     const serviceTokens = factories.createServiceTokens(env.serviceTokens);
     const controlApi = factories.createControlApi({
@@ -302,6 +323,9 @@ export async function composeSandboxRuntime(
       governor: {
         ownerId: env.ownerId,
         globalLimit: env.globalLimit,
+        ...(env.localOrganizationLimit === undefined
+          ? {}
+          : { localOrganizationLimit: env.localOrganizationLimit }),
         now: () => new Date(),
         actions: governorActions,
         audit: {
@@ -344,7 +368,9 @@ export async function composeSandboxRuntime(
         dependencyDomains: [new URL(env.gitCloneBaseUrl).hostname],
         telemetryRelay,
         storageMetering: { database },
-        usageMetering: { pricing, database, ledger: controlApi.usage },
+        ...(env.provider === 'modal'
+          ? { usageMetering: { pricing, database, ledger: controlApi.usage } }
+          : {}),
       },
     });
     const backgroundWork = factories.createBackgroundWork({ rows, provider });

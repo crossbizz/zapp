@@ -94,7 +94,7 @@ const PublicWorkspaceSchema = z
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
     branchId: idSchema('br').nullable(),
-    provider: z.literal('modal'),
+    provider: z.enum(['modal', 'docker']),
     status: z.enum(['requested', 'provisioning', 'started', 'ready', 'active', 'checkpointing', 'idle', 'terminated']),
     resourceProfile: z.enum(['small', 'standard', 'large']),
     snapshotRef: z.string().nullable(),

@@ -33,6 +33,10 @@ function localDatabaseUrl() {
 
 const LOCK = {
   version: 1,
+  publicMirrors: {
+    'forge-node-base':
+      'ghcr.io/crossbizz/zapp-forge-node-base:test@sha256:' + 'f'.repeat(64),
+  },
   environments: {
     dev: {
       modalEnvironment: 'zapp-dev',
@@ -85,6 +89,7 @@ test('loads the explicit M1 environment, immutable images, ports, and --no-open'
 
   assert.equal(config.openBrowser, false);
   assert.equal(config.env.RUN_WORKFLOW_PROFILE, 'm1');
+  assert.equal(config.env.SANDBOX_PROVIDER, 'docker');
   assert.equal(config.env.APP_BASE_URL, 'http://127.0.0.1:3000');
   assert.equal(config.env.API_BASE_URL, 'http://127.0.0.1:4000');
   assert.equal(config.env.NEXT_PUBLIC_CONTROL_API_URL, 'http://127.0.0.1:4000');
@@ -93,6 +98,7 @@ test('loads the explicit M1 environment, immutable images, ports, and --no-open'
   assert.equal(config.env.SANDBOX_SERVICE_URL, 'http://127.0.0.1:4400');
   assert.equal(config.env.GIT_SERVICE_URL, 'http://127.0.0.1:4500');
   assert.equal(config.env.SANDBOX_GLOBAL_LIMIT, '100');
+  assert.equal(config.env.SANDBOX_LOCAL_ORGANIZATION_LIMIT, '10');
   assert.equal(config.env.SANDBOX_OWNER_ID, 'sandbox-local');
   assert.equal(config.env.SERVICE_TOKEN_ISSUER, 'zapp-control-plane');
   assert.equal(config.env.ARTIFACT_REGION, 'us-east-1');
@@ -100,6 +106,28 @@ test('loads the explicit M1 environment, immutable images, ports, and --no-open'
   assert.deepEqual(config.ports, [3000, 4000, 4100, 4400, 4500]);
   assert.equal(config.imageLock.modalEnvironment, 'zapp-dev');
   assert.equal(config.imageLock.images.length, 2);
+  assert.equal(config.imageLock.dockerImageRef, LOCK.publicMirrors['forge-node-base']);
+});
+
+test('defaults local development to Docker without reading Modal credentials', async () => {
+  const { MODAL_TOKEN_ID: _tokenId, MODAL_TOKEN_SECRET: _tokenSecret, ...env } = COMPLETE_ENV;
+  const config = await configFixture(env);
+
+  assert.equal(config.env.SANDBOX_PROVIDER, 'docker');
+  assert.equal(config.redactions.includes('modal-id-configured'), false);
+});
+
+test('keeps Modal credentials mandatory when local development explicitly selects Modal', async () => {
+  const { MODAL_TOKEN_SECRET: _secret, ...env } = COMPLETE_ENV;
+
+  await assert.rejects(
+    configFixture({ ...env, SANDBOX_PROVIDER: 'modal' }),
+    (error) => {
+      assert.ok(error instanceof LocalPreflightError);
+      assert.deepEqual(error.variables, ['MODAL_TOKEN_SECRET']);
+      return true;
+    },
+  );
 });
 
 test('pins the Docker Postgres endpoint instead of inheriting a remote database', async () => {
@@ -127,7 +155,7 @@ test('derives stable, separate local keys for an older environment file', async 
   assert.notEqual(first.env.RUN_INTENT_HMAC_SECRET, first.env.PREVIEW_SHARE_SIGNING_KEY);
 });
 
-test('classifies missing and placeholder provider credentials without printing values', async () => {
+test('classifies missing and placeholder active-provider credentials without printing values', async () => {
   const env = {
     ...COMPLETE_ENV,
     STYTCH_SECRET: 'replace-me-private-value',
@@ -137,7 +165,7 @@ test('classifies missing and placeholder provider credentials without printing v
 
   await assert.rejects(configFixture(env), (error) => {
     assert.ok(error instanceof LocalPreflightError);
-    assert.deepEqual(error.variables, ['ANTHROPIC_API_KEY', 'MODAL_TOKEN_ID', 'STYTCH_SECRET']);
+    assert.deepEqual(error.variables, ['ANTHROPIC_API_KEY', 'STYTCH_SECRET']);
     assert.doesNotMatch(error.message, /private-value/);
     return true;
   });
@@ -435,8 +463,8 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
       events.push(`ready:${url}`);
       return Promise.resolve();
     },
-    verifyImages: () => {
-      events.push('images');
+    prepareImages: (prepared) => {
+      events.push(`images:${prepared.env.SANDBOX_PROVIDER}`);
       return Promise.resolve();
     },
     openBrowser: (url) => {
@@ -474,6 +502,7 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
     ],
   );
   assert.equal(events.includes('open:http://127.0.0.1:3000'), true);
+  assert.equal(events.includes('images:docker'), true);
   assert.equal(events.includes('ready:forgejo-tunnel'), true);
   assert.equal(
     started.find((spec) => spec.name === 'git-service').env.FORGEJO_ADMIN_TOKEN,

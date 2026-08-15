@@ -259,6 +259,48 @@ describe('WS-12 authenticated preview transport', () => {
     });
   });
 
+  it('allows an HTTP tunnel only on loopback for local Docker previews', async () => {
+    const request = vi.fn(() =>
+      Promise.resolve({
+        statusCode: 200,
+        headers: { 'content-type': 'text/plain' },
+        body: (async function* () {
+          await Promise.resolve();
+          yield Buffer.from('local-preview');
+        })(),
+        cancel: () => Promise.resolve(),
+      }),
+    );
+    const localTransport = createPreviewTransport({
+      resolve: () => Promise.resolve({ origin: new URL('http://127.0.0.1:32777'), request }),
+    });
+
+    const localResponse = await localTransport.request({
+      providerWorkspaceId: 'sb-local',
+      method: 'GET',
+      path: '/',
+      publicOrigin: new URL('http://127.0.0.1:3000'),
+      headers: {},
+    });
+    const chunks: Buffer[] = [];
+    for await (const chunk of localResponse.body) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks).toString('utf8')).toBe('local-preview');
+
+    const remoteTransport = createPreviewTransport({
+      resolve: () =>
+        Promise.resolve({ origin: new URL('http://preview.example.com'), request }),
+    });
+    await expect(
+      remoteTransport.request({
+        providerWorkspaceId: 'sb-remote',
+        method: 'GET',
+        path: '/',
+        publicOrigin: new URL('https://share.preview.zapp.test'),
+        headers: {},
+      }),
+    ).rejects.toThrow('Preview tunnel must use encrypted transport outside loopback development');
+  });
+
   it('rejects protocol-relative paths before resolving a tunnel', async () => {
     const resolve = vi.fn();
     const transport = createPreviewTransport({ resolve });

@@ -302,7 +302,7 @@ export async function composeProductionActivities(options: {
             organizationId: input.organizationId,
             projectId: input.projectId,
             branchId: input.branchId,
-            provider: 'modal',
+            provider: env.sandboxProvider,
             providerWorkspaceId: null,
             status: 'requested',
             resourceProfile: 'standard',

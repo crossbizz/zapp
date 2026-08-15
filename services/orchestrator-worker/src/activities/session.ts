@@ -170,6 +170,11 @@ export function createSessionActivities(
       });
       if (activityContext.cancellationSignal.aborted) forwardActivityCancellation();
       const heartbeatCheckpoint = (value: SessionCheckpoint): Promise<void> => {
+        // Native activity heartbeats are what keep the Temporal activity alive and
+        // deliver cancellation to Context.cancellationSignal. The async-completion
+        // client below provides the awaited durability acknowledgement; it does not
+        // replace the worker's heartbeat channel.
+        activityContext.heartbeat(value);
         const operation = checkpointHeartbeatTail.then(async () => {
           if (checkpointHeartbeatTerminal !== undefined) return checkpointHeartbeatTerminal;
           try {

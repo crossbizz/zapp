@@ -341,6 +341,32 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
     });
   });
 
+  it('persists Docker as the configured local workspace provider', async () => {
+    const created = await create({
+      name: 'Docker Workspace',
+      slug: `docker-${newId('proj').slice(-6).toLowerCase()}`,
+    });
+    const workspaceId = newId('ws');
+    const tenantDb = createTenantDbFactory(database.db, {
+      workspaceProvider: 'docker',
+    })(organizationId);
+
+    const workspace = await tenantDb.workspaces.create({
+      id: workspaceId,
+      projectId: created.project.id,
+      branchId: created.branches[0]?.id ?? '',
+      resourceProfile: 'small',
+      now: new Date(),
+      audit: () => Promise.resolve(),
+    });
+
+    expect(workspace.provider).toBe('docker');
+    const [stored] = await database.sql<{ provider: string }[]>`
+      select provider from workspaces where id = ${workspaceId}
+    `;
+    expect(stored?.provider).toBe('docker');
+  });
+
   it('leaves provisioned_at null for a git service that only names the repository', async () => {
     // The record-only stand-in's signature (CP-6): the row exists, the
     // repository on disk does not, and this column is the only thing that says
@@ -549,6 +575,8 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
     const foreignId = newId('art');
     const body = Buffer.from('thumbnail-png');
     const contentHash = createHash('sha256').update(body).digest('hex');
+    const summaryRunId = newId('run');
+    const summaryEventId = newId('evt');
 
     await database.sql`
       insert into artifacts (
@@ -567,6 +595,24 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
           ${`${neighbourOrganizationId}/${foreign.project.id}/preview.png`}, ${contentHash}, '{}'::jsonb,
           '2026-08-13T18:04:00.000Z')
     `;
+    await database.sql`
+      insert into agent_runs (
+        id, organization_id, project_id, mode, app_type, request_fingerprint,
+        status, started_by, budget_json, plan_max_credits
+      ) values (
+        ${summaryRunId}, ${organizationId}, ${first.project.id}, 'build', 'web',
+        ${'b'.repeat(64)}, 'completed', ${owner.userId}, '{}'::jsonb, 1
+      )
+    `;
+    await database.sql`
+      insert into agent_events (
+        id, organization_id, project_id, run_id, sequence, type,
+        payload_json, visibility, occurred_at
+      ) values (
+        ${summaryEventId}, ${organizationId}, ${first.project.id}, ${summaryRunId}, 1,
+        'run.completed', '{}'::jsonb, 'user', '2026-08-13T18:05:00.000Z'
+      )
+    `;
     artifactObjects.set(`${organizationId}/${first.project.id}/latest.png`, {
       body,
       contentType: 'image/png',
@@ -581,11 +627,19 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
     expect(summaries.statusCode, summaries.body).toBe(200);
     expect(
       summaries.json<{
-        summaries: { projectId: string; previewThumbnail: { artifactId: string } | null }[];
+        summaries: {
+          projectId: string;
+          lastActivityAt: string | null;
+          previewThumbnail: { artifactId: string } | null;
+        }[];
       }>().summaries,
     ).toMatchObject([
       { projectId: second.project.id, previewThumbnail: { artifactId: secondId } },
-      { projectId: first.project.id, previewThumbnail: { artifactId: latestId } },
+      {
+        projectId: first.project.id,
+        lastActivityAt: '2026-08-13T18:05:00.000Z',
+        previewThumbnail: { artifactId: latestId },
+      },
     ]);
 
     const localBytes = await app.inject({

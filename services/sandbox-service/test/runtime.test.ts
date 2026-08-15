@@ -30,6 +30,7 @@ function environment(): SandboxServiceEnv {
     gitCloneBaseUrl: 'https://git-edge.example.test/root',
     serviceTokens: { secret: 's'.repeat(64) },
     serviceTokenIssuer: SERVICE_TOKEN_ISSUER,
+    provider: 'modal',
     modal: {
       environment: 'dev',
       credentials: { tokenId: 'ak-test-runtime', tokenSecret: 'as-test-runtime' },
@@ -149,6 +150,7 @@ describe('sandbox runtime composition', () => {
     expect(health.statusCode).toBe(200);
     expect(health.json()).toEqual({ status: 'ok', service: 'sandbox-service' });
     expect(test.received.provider).toMatchObject({
+      provider: 'modal',
       environment: 'dev',
       credentials: environment().modal.credentials,
     });
@@ -185,6 +187,25 @@ describe('sandbox runtime composition', () => {
       'http.close',
       'database.close',
     ]);
+  });
+
+  it('selects Docker without forwarding absent Modal credentials', async () => {
+    const test = harness();
+    await composeSandboxRuntime(
+      {
+        ...environment(),
+        provider: 'docker',
+        modal: { environment: 'dev' },
+      },
+      test.factories,
+    );
+
+    expect(test.received.provider).toMatchObject({
+      provider: 'docker',
+      environment: 'dev',
+    });
+    expect(test.received.provider).not.toHaveProperty('credentials');
+    expect(test.received.compose).not.toHaveProperty('app.usageMetering');
   });
 
   it('fails closed when the requested Modal environment is absent from the immutable lock', async () => {

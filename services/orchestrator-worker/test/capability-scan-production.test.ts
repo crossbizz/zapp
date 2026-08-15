@@ -45,13 +45,14 @@ describe('VF-3 production capability scan adapters', () => {
           throw new Error('workspace create request body was not JSON text');
         }
         const body = JSON.parse(init.body) as {
-          workspace: { id: string };
+          workspace: { id: string; provider: string };
           purpose: string;
           networkProfile: string;
           branchName: string;
         };
         workspaceId = body.workspace.id;
         expect(body).toMatchObject({
+          workspace: { provider: 'docker' },
           purpose: 'scan',
           networkProfile: 'restricted_verification',
           branchName: input.branchName,
@@ -92,6 +93,7 @@ describe('VF-3 production capability scan adapters', () => {
     const activities = createProductionCapabilityScanActivities({
       sandbox: {
         baseUrl: 'https://sandbox.internal',
+        provider: 'docker',
         serviceTokens: TOKEN_CONFIG,
         fetch: fetchImpl,
         now: () => NOW,
@@ -173,6 +175,7 @@ describe('VF-3 production capability scan adapters', () => {
     const activities = createProductionCapabilityScanActivities({
       sandbox: {
         baseUrl: 'https://sandbox.internal',
+        provider: 'docker',
         serviceTokens: TOKEN_CONFIG,
         fetch: fetchImpl,
         now: () => NOW,

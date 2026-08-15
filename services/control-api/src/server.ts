@@ -271,6 +271,7 @@ const app = composeApp({
   templates,
   nodeEnv: env.NODE_ENV,
   runWorkflowProfile: env.RUN_WORKFLOW_PROFILE,
+  sandboxProvider: env.SANDBOX_PROVIDER,
   orchestrator: runOrchestrator,
   ...(flexpriceConfig === undefined ? {} : { flexprice: flexpriceConfig }),
   ...(stripeBillingConfig === undefined ? {} : { billing: stripeBillingConfig }),

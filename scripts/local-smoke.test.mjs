@@ -18,6 +18,13 @@ test('wires every local process and readiness edge with seam providers and clean
       events.push(`line:${name}`);
       return Promise.resolve();
     },
+    waitForLineMatch(name) {
+      events.push(`line-match:${name}`);
+      return Promise.resolve([
+        'https://local-m1.trycloudflare.com',
+        'local-m1.trycloudflare.com',
+      ]);
+    },
     stopAll() {
       events.push(`stop:${services.toReversed().join(',')}`);
       return Promise.resolve();
@@ -30,12 +37,17 @@ test('wires every local process and readiness edge with seam providers and clean
       env: {
         NODE_ENV: 'development',
         RUN_WORKFLOW_PROFILE: 'm1',
+        SANDBOX_PROVIDER: 'docker',
         NEXT_PUBLIC_CONTROL_API_URL: 'http://127.0.0.1:4000',
       },
       redactions: [],
       openBrowser: false,
       ports: [31_001, 31_002, 31_003, 31_004, 31_005],
-      imageLock: { modalEnvironment: 'zapp-dev', images: [] },
+      imageLock: {
+        modalEnvironment: 'zapp-dev',
+        images: [],
+        dockerImageRef: `ghcr.io/example.test/zapp:test@sha256:${'a'.repeat(64)}`,
+      },
     },
     supervisor,
     exec: async (command, args) => {
@@ -50,8 +62,8 @@ test('wires every local process and readiness edge with seam providers and clean
       events.push(`http:${url}`);
       if (url.endsWith('/login')) queueMicrotask(() => signals.emit('SIGINT'));
     },
-    verifyImages: async () => {
-      events.push('image-lock:verified-by-seam');
+    prepareImages: async (prepared) => {
+      events.push(`image-lock:${prepared.env.SANDBOX_PROVIDER}`);
     },
     loadForgejoEnv: async () => ({
       FORGEJO_URL: 'http://127.0.0.1:3300',
@@ -66,6 +78,7 @@ test('wires every local process and readiness edge with seam providers and clean
   assert.equal(result, 0);
   assert.equal(externalProviderCalls, 0);
   assert.deepEqual(services, [
+    'forgejo-tunnel',
     'git-service',
     'model-gateway',
     'sandbox-service',
@@ -76,9 +89,10 @@ test('wires every local process and readiness edge with seam providers and clean
   ]);
   assert.equal(events.includes('line:agent-runs-worker'), true);
   assert.equal(events.includes('line:verification-worker'), true);
+  assert.equal(events.includes('image-lock:docker'), true);
   assert.equal(events.filter((event) => event.startsWith('http:')).length, 5);
   assert.equal(
     events.at(-1),
-    'stop:web,control-api,verification-worker,agent-runs-worker,sandbox-service,model-gateway,git-service',
+    'stop:web,control-api,verification-worker,agent-runs-worker,sandbox-service,model-gateway,git-service,forgejo-tunnel',
   );
 });

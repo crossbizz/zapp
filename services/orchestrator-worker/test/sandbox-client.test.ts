@@ -26,7 +26,7 @@ const workspace = {
   organizationId,
   projectId,
   branchId: newId('br'),
-  provider: 'modal',
+  provider: 'docker',
   status: 'ready',
   resourceProfile: 'standard',
   snapshotRef: null,

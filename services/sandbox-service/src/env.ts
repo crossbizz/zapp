@@ -18,7 +18,11 @@ const HttpUrlSchema = z
   .refine((value) => /^https?:\/\//u.test(value), 'Expected an HTTP or HTTPS URL')
   .transform((value) => value.replace(/\/+$/u, ''));
 
-const RawSandboxServiceEnvSchema = z.object({
+export const SandboxProviderSchema = z.enum(['modal', 'docker']);
+export type SandboxProvider = z.infer<typeof SandboxProviderSchema>;
+
+const RawSandboxServiceEnvSchema = z
+  .object({
   NODE_ENV: z.enum(['development', 'test', 'production']),
   SANDBOX_HOST: z.string().trim().min(1),
   SANDBOX_PORT: z.coerce.number().int().min(1).max(65_535),
@@ -34,14 +38,36 @@ const RawSandboxServiceEnvSchema = z.object({
     .union([placeholderSafeSecret(32), z.literal('')])
     .optional(),
   SERVICE_TOKEN_ISSUER: z.literal(SERVICE_TOKEN_ISSUER),
-  MODAL_TOKEN_ID: placeholderSafeSecret(),
-  MODAL_TOKEN_SECRET: placeholderSafeSecret(),
+  SANDBOX_PROVIDER: SandboxProviderSchema,
+  MODAL_TOKEN_ID: placeholderSafeSecret().optional(),
+  MODAL_TOKEN_SECRET: placeholderSafeSecret().optional(),
   MODAL_ENVIRONMENT: z.enum(['dev', 'staging', 'prod']),
   SANDBOX_GLOBAL_LIMIT: z.coerce.number().int().positive(),
+  SANDBOX_LOCAL_ORGANIZATION_LIMIT: z.coerce.number().int().positive(),
   SANDBOX_OWNER_ID: z.string().trim().min(1).max(200),
   GRAFANA_OTLP_ENDPOINT: z.string().url().optional(),
   GRAFANA_OTLP_TOKEN: z.string().trim().min(1).optional(),
-});
+  })
+  .superRefine((env, context) => {
+    if (env.NODE_ENV === 'production' && env.SANDBOX_PROVIDER !== 'modal') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SANDBOX_PROVIDER'],
+        message: 'Production requires the Modal sandbox provider',
+      });
+    }
+    if (env.SANDBOX_PROVIDER === 'modal') {
+      for (const name of ['MODAL_TOKEN_ID', 'MODAL_TOKEN_SECRET'] as const) {
+        if (env[name] === undefined) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [name],
+            message: `${name} is required for the Modal sandbox provider`,
+          });
+        }
+      }
+    }
+  });
 
 export interface SandboxServiceEnv {
   readonly nodeEnv: 'development' | 'test' | 'production';
@@ -53,11 +79,13 @@ export interface SandboxServiceEnv {
   readonly gitCloneBaseUrl: string;
   readonly serviceTokens: ServiceTokenConfig;
   readonly serviceTokenIssuer: typeof SERVICE_TOKEN_ISSUER;
+  readonly provider: SandboxProvider;
   readonly modal: {
     readonly environment: 'dev' | 'staging' | 'prod';
-    readonly credentials: { readonly tokenId: string; readonly tokenSecret: string };
+    readonly credentials?: { readonly tokenId: string; readonly tokenSecret: string };
   };
   readonly globalLimit: number;
+  readonly localOrganizationLimit?: number;
   readonly ownerId: string;
   readonly telemetryEnv: Readonly<Record<string, string | undefined>>;
 }
@@ -84,14 +112,22 @@ export const SandboxServiceEnvSchema: z.ZodType<
           : { previousSecret }),
       },
       serviceTokenIssuer: env.SERVICE_TOKEN_ISSUER,
+      provider: env.SANDBOX_PROVIDER,
       modal: {
         environment: env.MODAL_ENVIRONMENT,
-        credentials: {
-          tokenId: env.MODAL_TOKEN_ID,
-          tokenSecret: env.MODAL_TOKEN_SECRET,
-        },
+        ...(env.MODAL_TOKEN_ID === undefined || env.MODAL_TOKEN_SECRET === undefined
+          ? {}
+          : {
+              credentials: {
+                tokenId: env.MODAL_TOKEN_ID,
+                tokenSecret: env.MODAL_TOKEN_SECRET,
+              },
+            }),
       },
       globalLimit: env.SANDBOX_GLOBAL_LIMIT,
+      ...(env.NODE_ENV === 'development' && env.SANDBOX_PROVIDER === 'docker'
+        ? { localOrganizationLimit: env.SANDBOX_LOCAL_ORGANIZATION_LIMIT }
+        : {}),
       ownerId: env.SANDBOX_OWNER_ID,
       telemetryEnv: {
         GRAFANA_OTLP_ENDPOINT: env.GRAFANA_OTLP_ENDPOINT,

@@ -376,8 +376,30 @@ North star (PRD §37.1): **verified production releases per active org per month
 - [ ] **Step 6:** Run every focused command in the binding expansion, package lint/typecheck/build, credential-free repository verification, one capped review/fix round, and the single real Stytch/Anthropic/Modal prompt→preview→edit→restore gate.
 - [ ] **Step 7:** Commit the slices prescribed by the expansion, then close the tracker and execution log only with green live evidence; final commit `feat(local): ship runnable M1 prompt-to-preview`.
 
+#### M1-GATE-17-FIX-1 — Isolated Docker sandboxes for runnable local development
+
+**Approved deviation:** `docs/adr/0033-local-docker-sandbox-provider.md`
+
+**Design:** `docs/superpowers/specs/2026-08-14-local-docker-sandbox-design.md`
+
+**Binding execution plan:** `docs/superpowers/plans/2026-08-14-local-docker-sandbox.md`
+
+**Files:** The exact Create/Modify lists in Tasks 1–4 of the binding execution plan.
+
+**Interfaces:** `SandboxProviderSchema`, `SandboxServiceEnv.provider`,
+`ServiceEnv.SANDBOX_PROVIDER`, `createDockerSandboxProvider`,
+`DockerCommandPort`, and `loadLocalConfig().sandboxProvider`, exactly as defined
+by the binding execution plan.
+
+- [x] **Step 1:** Validate `modal|docker` at sandbox-service and control-api boundaries, fail closed on Docker in production, and persist the actual provider on workspace rows.
+- [x] **Step 2:** Implement the per-project-branch Docker provider with dedicated network, loopback-only agent/preview ports, strict labels, project cache, snapshot acceleration, and idempotent cleanup.
+- [x] **Step 3:** Make `pnpm local` default to Docker, consume the digest-pinned public Forge image, and retain explicit Modal mode without changing production routing.
+- [x] **Step 4:** Run focused RED/GREEN evidence, touched-package lint/typecheck/build, the real signed-in local prompt-to-preview/edit/Git browser journey on port 3000, and `pnpm verify:cold`.
+- [x] **Step 5:** Check only the fix task after all evidence is green and commit `feat(local): add isolated Docker sandboxes`; `M1-GATE-17` remains unchecked until its required real Modal evidence exists.
+
 - 2026-08-12 M1-GATE-16 BLOCKED: the local supervisor/live harness and all non-provider gates, including `pnpm verify`, are green; the single real Stytch/Anthropic/Modal browser acceptance was not run because `STYTCH_PROJECT_ID`, `STYTCH_PUBLIC_TOKEN`, `STYTCH_SECRET`, `ANTHROPIC_API_KEY`, `MODAL_TOKEN_ID`, and `MODAL_TOKEN_SECRET` are not configured, so the task and tracker remain unchecked.
 - 2026-08-12 M1-GATE-16 progress — Provider configuration is now present and `pnpm local --no-open` reached truthful ready with login/control HTTP 200 plus clean application-only SIGINT shutdown; the interactive Stytch prompt-to-preview live gate remains unrun, so the task and tracker remain unchecked.
+- 2026-08-14 M1-GATE-17-FIX-1 done — Added production-locked Modal/development Docker routing with per-branch isolation, loopback preview transport, IPv4-compatible Vite boot, native Temporal heartbeats, truthful connectivity evidence, and a signed-in prompt→preview→follow-up→Forgejo proof; the dashboard date projection was corrected after live acceptance, the credentialed cold gate passed, and M1-GATE-17 remains open for its required Modal evidence.
 - 2026-08-03: Plan set authored from PRD v1.1. Not yet executed.
 - 2026-08-07 M1-GATE-7 BLOCKED: serialization and its focused regression are green, but the complete local gate exposes a separate stale git-service unit assertion that still requires the disabled GitHub Actions live-backup job; M1-GATE-8 must move that proof to the local gate before this task can be signed off.
 - 2026-08-07 M1-GATE-8 BLOCKED: the structural local-gate repair, focused workflow test, git-service static checks, one adversarial fix round, and an earlier complete local gate are green; the final uncontaminated tracked-hook gate ran the live backup proof (1/1) and git-service integration (16/16) without skips, then exposed an unrelated deterministic control-api SSE failure where `uses matching media parameters before q as Accept specificity` received HTTP 500 instead of 200 (1 failed, 234 passed), so the task and tracker remain unchecked. Paper trail: `turbo.json` was added to Files during the review fix to prove every backup input crosses Turbo strict env mode; its existing declarations were sufficient, and the already-landed machine lock was retained while fixing inherited `CI=false`/`0` and pinning MinIO.

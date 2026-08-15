@@ -1,7 +1,11 @@
 import { newId } from '@zapp/contracts';
 import { expect, it, vi } from 'vitest';
 
-import { composeSandboxApp } from '../src/compose.js';
+import {
+  composeSandboxApp,
+  composeSandboxGovernor,
+  loadSandboxPlanLimits,
+} from '../src/compose.js';
 
 const testCapacity = {
   claim: () => Promise.resolve({ status: 'queued' as const, queuePosition: 2 }),
@@ -12,6 +16,44 @@ const testCapacity = {
   releaseExpired: () => Promise.resolve(),
   listOrganization: () => Promise.resolve([]),
 };
+
+it('uses the explicit local organization limit without changing production plan data', async () => {
+  const organizationId = newId('org');
+  const projectId = newId('proj');
+  const claim = vi.fn(() =>
+    Promise.resolve({
+      status: 'admitted' as const,
+      deadlineAt: new Date('2026-08-11T01:00:00.000Z'),
+    }),
+  );
+  const governor = composeSandboxGovernor({
+    ownerId: 'sandbox-local-test',
+    globalLimit: 100,
+    localOrganizationLimit: 10,
+    now: () => new Date('2026-08-11T00:00:00.000Z'),
+    capacity: { ...testCapacity, claim },
+    plans: await loadSandboxPlanLimits(),
+    organizations: { findById: () => Promise.resolve({ plan: 'trial' }) },
+    actions: {
+      checkpointAndTerminate: () => Promise.resolve(),
+      terminate: () => Promise.resolve(),
+    },
+    audit: { recordTerminateAll: () => Promise.resolve() },
+    scheduler: { setInterval: () => ({}), clearInterval: () => undefined },
+  });
+
+  await governor.admit({
+    workspaceId: newId('ws'),
+    organizationId,
+    projectId,
+    runId: newId('run'),
+    taskId: newId('task'),
+    purpose: 'builder',
+    operationKey: `op_${'c'.repeat(64)}`,
+  });
+
+  expect(claim).toHaveBeenCalledWith(expect.objectContaining({ organizationLimit: 10 }));
+});
 
 it('rejects a real workspace create through production composition before provider creation', async () => {
   const organizationId = newId('org');

@@ -806,7 +806,11 @@ export function vaultRef(secretId: string): string {
   return `pg:secret_ciphertexts/${secretId}`;
 }
 
-export function createTenantDbFactory(db: Database): TenantDbFactory {
+export function createTenantDbFactory(
+  db: Database,
+  options: { readonly workspaceProvider?: 'modal' | 'docker' } = {},
+): TenantDbFactory {
+  const workspaceProvider = options.workspaceProvider ?? 'modal';
   return (organizationId: string): TenantDatabase => {
     // `forOrg` validates the id rather than trusting it, which is what turns a
     // bad id into a loud failure here instead of a silently empty query later.
@@ -1167,23 +1171,31 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
           if (rows.some((row) => !row.found)) return undefined;
           return rows.map((row) => ProjectDashboardSummarySourceSchema.parse({
             projectId: row.projectId,
-            lastActivityAt: row.lastActivityAt,
+            lastActivityAt:
+              row.lastActivityAt === null ? null : new Date(row.lastActivityAt),
             preview:
               row.previewOccurredAt === null || row.previewType === null
                 ? null
                 : {
                     type: row.previewType,
-                    occurredAt: row.previewOccurredAt,
+                    occurredAt: new Date(row.previewOccurredAt),
                     payload: row.previewPayload,
                   },
             release:
               row.releaseId === null || row.releaseStatus === null || row.releaseCreatedAt === null
                 ? null
-                : { id: row.releaseId, status: row.releaseStatus, createdAt: row.releaseCreatedAt },
+                : {
+                    id: row.releaseId,
+                    status: row.releaseStatus,
+                    createdAt: new Date(row.releaseCreatedAt),
+                  },
             deployment:
               row.deploymentStatus === null || row.deploymentOccurredAt === null
                 ? null
-                : { status: row.deploymentStatus, occurredAt: row.deploymentOccurredAt },
+                : {
+                    status: row.deploymentStatus,
+                    occurredAt: new Date(row.deploymentOccurredAt),
+                  },
             previewThumbnail:
               row.thumbnailArtifactId === null ||
               row.thumbnailContentHash === null ||
@@ -2300,7 +2312,7 @@ export function createTenantDbFactory(db: Database): TenantDbFactory {
               organizationId: orgId,
               projectId: input.projectId,
               branchId: input.branchId,
-              provider: 'modal',
+              provider: workspaceProvider,
               providerWorkspaceId: null,
               status: 'requested' as const,
               resourceProfile: input.resourceProfile,

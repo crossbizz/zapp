@@ -2,14 +2,13 @@ import { readFileSync } from 'node:fs';
 import { createHmac } from 'node:crypto';
 import { resolve } from 'node:path';
 
-const REQUIRED_PROVIDER_VARIABLES = [
+const REQUIRED_LOCAL_VARIABLES = [
   'STYTCH_PROJECT_ID',
   'STYTCH_SECRET',
   'STYTCH_PUBLIC_TOKEN',
   'ANTHROPIC_API_KEY',
-  'MODAL_TOKEN_ID',
-  'MODAL_TOKEN_SECRET',
 ];
+const MODAL_VARIABLES = ['MODAL_TOKEN_ID', 'MODAL_TOKEN_SECRET'];
 
 function localDatabaseUrl() {
   const url = new URL('postgres://127.0.0.1:5432/zapp');
@@ -124,7 +123,17 @@ function validateImageLock(value) {
       publishedName: image.publishedName,
     };
   });
-  return { modalEnvironment: dev.modalEnvironment, images };
+  const dockerImageRef = value?.publicMirrors?.['forge-node-base'];
+  if (
+    typeof dockerImageRef !== 'string' ||
+    !/^ghcr\.io\/crossbizz\/zapp-forge-node-base:[^@]+@sha256:[a-f0-9]{64}$/u.test(
+      dockerImageRef,
+    ) ||
+    dockerImageRef.toLowerCase().includes('latest')
+  ) {
+    throw new LocalPreflightError('The local Docker image lock must be immutable');
+  }
+  return { modalEnvironment: dev.modalEnvironment, images, dockerImageRef };
 }
 
 export function loadLocalConfig({
@@ -167,6 +176,7 @@ export function loadLocalConfig({
     SANDBOX_SERVICE_URL: 'http://127.0.0.1:4400',
     GIT_SERVICE_URL: 'http://127.0.0.1:4500',
     SANDBOX_GLOBAL_LIMIT: '100',
+    SANDBOX_LOCAL_ORGANIZATION_LIMIT: '10',
     SANDBOX_OWNER_ID: 'sandbox-local',
     SERVICE_TOKEN_ISSUER: 'zapp-control-plane',
     ARTIFACT_ENDPOINT: 'http://127.0.0.1:9000',
@@ -179,7 +189,18 @@ export function loadLocalConfig({
   };
   combined.RUN_INTENT_HMAC_SECRET = localKey(combined, 'RUN_INTENT_HMAC_SECRET');
   combined.PREVIEW_SHARE_SIGNING_KEY = localKey(combined, 'PREVIEW_SHARE_SIGNING_KEY');
-  const missing = REQUIRED_PROVIDER_VARIABLES.filter((name) => missingCredential(combined[name]));
+  const sandboxProvider = combined.SANDBOX_PROVIDER?.trim() || 'docker';
+  if (!['docker', 'modal'].includes(sandboxProvider)) {
+    throw new LocalPreflightError('SANDBOX_PROVIDER must be docker or modal', [
+      'SANDBOX_PROVIDER',
+    ]);
+  }
+  combined.SANDBOX_PROVIDER = sandboxProvider;
+  const required = [
+    ...REQUIRED_LOCAL_VARIABLES,
+    ...(sandboxProvider === 'modal' ? MODAL_VARIABLES : []),
+  ];
+  const missing = required.filter((name) => missingCredential(combined[name]));
   if (missing.length > 0) {
     throw new LocalPreflightError(
       `Local M1 provider configuration is missing: ${missing.sort().join(', ')}`,
@@ -187,9 +208,11 @@ export function loadLocalConfig({
     );
   }
   const imageLock = validateImageLock(readJson(imageLockPath, 'Modal image lock'));
-  const redactions = REQUIRED_PROVIDER_VARIABLES.map((name) => combined[name]).filter(
+  const redactions = [...REQUIRED_LOCAL_VARIABLES, ...MODAL_VARIABLES]
+    .map((name) => combined[name])
+    .filter(
     (value) => typeof value === 'string' && value !== '',
-  );
+    );
   for (const name of [
     'SESSION_JWT_SECRET',
     'SERVICE_TOKEN_SECRET',

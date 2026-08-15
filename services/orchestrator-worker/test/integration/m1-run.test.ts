@@ -296,6 +296,50 @@ describe('AR-8 M1 durable Temporal run', () => {
     fixtureDirectory = undefined;
   });
 
+  it('uses the activity heartbeat channel for every durable session checkpoint', async () => {
+    const client = {
+      withAbortSignal: <T>(_signal: AbortSignal, operation: () => T): T => operation(),
+      activity: {
+        heartbeat: () => Promise.resolve(),
+        reportCancellation: () => Promise.resolve(),
+      },
+    } as unknown as Client;
+    const activityEnvironment = new MockActivityEnvironment(undefined, { client });
+    const nativeHeartbeats: unknown[] = [];
+    activityEnvironment.on('heartbeat', (details: unknown) => {
+      nativeHeartbeats.push(details);
+    });
+    const activities = createSessionActivities(
+      {
+        run: () =>
+          Promise.resolve({ status: 'completed', commits: [], artifacts: [], summary: 'ready' }),
+      },
+      { heartbeatIntervalMs: 10_000 },
+    );
+
+    const activityInputValue: RunBuilderSessionInput = {
+      runId: newId('run'),
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      workspaceId: 'workspace-heartbeat',
+      mode: 'build',
+      model: null,
+      prompt: 'Keep the durable activity alive.',
+      allowedTools: [],
+      modeInstructions: 'Complete the verified Build task.',
+      budget: null,
+      idempotencyKey: 'native-heartbeat-regression',
+    };
+
+    await activityEnvironment.run(
+      (input: RunBuilderSessionInput) => activities.runBuilderSession(input),
+      activityInputValue,
+    );
+
+    expect(nativeHeartbeats).toHaveLength(1);
+    expect(nativeHeartbeats[0]).toMatchObject({ taskId: 'm1-builder', transcript: null });
+  });
+
   it('latches cancellation before releasing an already-queued durable heartbeat', async () => {
     const cancellationTokens: Uint8Array[] = [];
     let heartbeatCalls = 0;

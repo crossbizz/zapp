@@ -42,7 +42,7 @@ pnpm install
 ## Run the M1 prompt-to-preview platform
 
 The M1 local command starts the Docker dependencies, applies migrations, builds
-the required packages, verifies the locked Modal development images, and then
+the required packages, prepares the locked sandbox image, and then
 supervises every application process needed by the browser flow. It opens the
 web UI after all readiness checks pass:
 
@@ -72,15 +72,30 @@ STYTCH_PROJECT_ID
 STYTCH_SECRET
 STYTCH_PUBLIC_TOKEN
 ANTHROPIC_API_KEY
+```
+
+Configure the Stytch test project to allow
+`http://127.0.0.1:4000/v1/auth/callback`.
+
+Local startup defaults to `SANDBOX_PROVIDER=docker`. The sandbox service creates
+one isolated workspace container and one private Docker network per active
+project branch, with only loopback-bound agent and preview ports. Project cache
+data is reused through a project-scoped volume; writable source trees are never
+shared across organizations or projects. Docker provides structural process,
+filesystem, and full-connectivity isolation locally. It does not claim Modal's
+per-domain egress enforcement, and the audit evidence records that distinction.
+
+To exercise the production provider locally, set `SANDBOX_PROVIDER=modal` and
+also configure:
+
+```text
 MODAL_TOKEN_ID
 MODAL_TOKEN_SECRET
 ```
 
-Configure the Stytch test project to allow
-`http://127.0.0.1:4000/v1/auth/callback`. The Modal credentials must access the
-`zapp-dev` environment and the immutable image names recorded in
-`infra/modal/images.lock.json`; local startup verifies those records and never
-rebuilds or republishes them.
+Those credentials must access the `zapp-dev` environment and the immutable
+image names recorded in `infra/modal/images.lock.json`. Startup verifies the
+selected provider's locked image and never rebuilds or republishes it.
 
 Press Ctrl-C once to stop the seven supervised application processes in reverse
 dependency order. Postgres, Redis, Forgejo, Temporal, MinIO, and LocalStack stay

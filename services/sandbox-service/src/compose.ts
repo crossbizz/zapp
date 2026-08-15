@@ -29,6 +29,7 @@ type DeployableSandboxAppOptions = WithoutGovernor<BuildAppOptions> & {
 export function composeSandboxGovernor(
   options: Omit<RunawayComputeGovernorDependencies, 'limits'> & {
     readonly plans: PlanLimitsConfig;
+    readonly localOrganizationLimit?: number;
     readonly organizations: {
       findById(organizationId: string): Promise<{ readonly plan: string } | undefined>;
     };
@@ -36,10 +37,16 @@ export function composeSandboxGovernor(
 ): RunawayComputeGovernor {
   return createRunawayComputeGovernor({
     ...options,
-    limits: createSandboxPlanLimitsAdapter({
-      plans: options.plans,
-      organizations: options.organizations,
-    }),
+    limits:
+      options.localOrganizationLimit === undefined
+        ? createSandboxPlanLimitsAdapter({
+            plans: options.plans,
+            organizations: options.organizations,
+          })
+        : {
+            getOrganizationLimits: () =>
+              Promise.resolve({ concurrentSandboxes: options.localOrganizationLimit }),
+          },
   });
 }
 
@@ -66,7 +73,9 @@ export function createDatabaseSandboxOrganizationSource(database: Database) {
 export async function composeSandboxApp(options: {
   readonly app: DeployableSandboxAppOptions;
   readonly database: Database;
-  readonly governor: Omit<RunawayComputeGovernorDependencies, 'limits' | 'capacity'>;
+  readonly governor: Omit<RunawayComputeGovernorDependencies, 'limits' | 'capacity'> & {
+    readonly localOrganizationLimit?: number;
+  };
   readonly plansUrl?: URL;
   readonly testOnlyCapacity?: GovernorCapacityPort;
 }) {
@@ -81,6 +90,9 @@ export async function composeSandboxApp(options: {
       capacity:
         options.testOnlyCapacity ?? createSandboxCapacityRepository(options.database),
       plans,
+      ...(options.governor.localOrganizationLimit === undefined
+        ? {}
+        : { localOrganizationLimit: options.governor.localOrganizationLimit }),
       organizations: createDatabaseSandboxOrganizationSource(options.database),
     }),
   });

@@ -21,10 +21,12 @@ function validEnvironment(): Record<string, string> {
     GIT_CLONE_BASE_URL: 'https://git-edge.example.test/root/',
     SERVICE_TOKEN_SECRET: 's'.repeat(64),
     SERVICE_TOKEN_ISSUER,
+    SANDBOX_PROVIDER: 'modal',
     MODAL_TOKEN_ID: 'ak-test-runtime',
     MODAL_TOKEN_SECRET: 'as-test-runtime',
     MODAL_ENVIRONMENT: 'dev',
     SANDBOX_GLOBAL_LIMIT: '12',
+    SANDBOX_LOCAL_ORGANIZATION_LIMIT: '10',
     SANDBOX_OWNER_ID: 'sandbox-local-1',
   };
 }
@@ -39,6 +41,7 @@ describe('sandbox-service environment', () => {
       controlApiInternalUrl: 'http://127.0.0.1:4000',
       gitServiceUrl: 'http://127.0.0.1:4500',
       gitCloneBaseUrl: 'https://git-edge.example.test/root',
+      provider: 'modal',
       modal: {
         environment: 'dev',
         credentials: { tokenId: 'ak-test-runtime', tokenSecret: 'as-test-runtime' },
@@ -46,6 +49,35 @@ describe('sandbox-service environment', () => {
       globalLimit: 12,
       ownerId: 'sandbox-local-1',
     });
+  });
+
+  it('accepts Docker in development without reading Modal credentials', () => {
+    const source = validEnvironment();
+    delete source['MODAL_TOKEN_ID'];
+    delete source['MODAL_TOKEN_SECRET'];
+
+    expect(
+      loadSandboxServiceEnv({
+        ...source,
+        NODE_ENV: 'development',
+        SANDBOX_PROVIDER: 'docker',
+      }),
+    ).toMatchObject({
+      nodeEnv: 'development',
+      provider: 'docker',
+      localOrganizationLimit: 10,
+      modal: { environment: 'dev' },
+    });
+  });
+
+  it('rejects Docker before a production process can listen', () => {
+    expect(() =>
+      loadSandboxServiceEnv({
+        ...validEnvironment(),
+        NODE_ENV: 'production',
+        SANDBOX_PROVIDER: 'docker',
+      }),
+    ).toThrow('Invalid environment: SANDBOX_PROVIDER');
   });
 
   it.each([
@@ -58,10 +90,12 @@ describe('sandbox-service environment', () => {
     'GIT_CLONE_BASE_URL',
     'SERVICE_TOKEN_SECRET',
     'SERVICE_TOKEN_ISSUER',
+    'SANDBOX_PROVIDER',
     'MODAL_TOKEN_ID',
     'MODAL_TOKEN_SECRET',
     'MODAL_ENVIRONMENT',
     'SANDBOX_GLOBAL_LIMIT',
+    'SANDBOX_LOCAL_ORGANIZATION_LIMIT',
     'SANDBOX_OWNER_ID',
   ])('names a missing %s without exposing another value', (name) => {
     const source = Object.fromEntries(
@@ -83,6 +117,14 @@ describe('sandbox-service environment', () => {
       ).toThrow(`Invalid environment: ${name}`);
     },
   );
+
+  it('requires Modal credentials only when the Modal provider is selected', () => {
+    const source = validEnvironment();
+    delete source['MODAL_TOKEN_SECRET'];
+    expect(() => loadSandboxServiceEnv(source)).toThrow(
+      'Invalid environment: MODAL_TOKEN_SECRET',
+    );
+  });
 
   it('requires the code-owned service-token issuer', () => {
     expect(() =>

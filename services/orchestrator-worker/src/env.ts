@@ -10,6 +10,7 @@ const RawRunWorkerEnvSchema = z
     CONTROL_API_INTERNAL_URL: z.string().url(),
     MODEL_GATEWAY_URL: z.string().url(),
     SANDBOX_SERVICE_URL: z.string().url(),
+    SANDBOX_PROVIDER: z.enum(['modal', 'docker']),
     GIT_SERVICE_URL: z.string().url(),
     SERVICE_TOKEN_SECRET: z.string().min(32),
     SERVICE_TOKEN_SECRET_PREVIOUS: z.union([z.string().min(32), z.literal('')]).optional(),
@@ -24,6 +25,13 @@ const RawRunWorkerEnvSchema = z
         message: 'RUN_WORKFLOW_PROFILE=m1 is allowed only with NODE_ENV=development',
       });
     }
+    if (env.SANDBOX_PROVIDER === 'docker' && env.NODE_ENV === 'production') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SANDBOX_PROVIDER'],
+        message: 'SANDBOX_PROVIDER=docker is allowed only outside production',
+      });
+    }
   });
 
 export interface RunWorkerEnv {
@@ -34,6 +42,7 @@ export interface RunWorkerEnv {
   readonly controlApiInternalUrl: string;
   readonly modelGatewayUrl: string;
   readonly sandboxServiceUrl: string;
+  readonly sandboxProvider: 'modal' | 'docker';
   readonly gitServiceUrl: string;
   readonly serviceTokens: ServiceTokenConfig;
   readonly workflowProfile: 'default' | 'm1';
@@ -49,6 +58,7 @@ export const RunWorkerEnvSchema: z.ZodType<RunWorkerEnv, z.ZodTypeDef, unknown> 
       controlApiInternalUrl: env.CONTROL_API_INTERNAL_URL.replace(/\/+$/u, ''),
       modelGatewayUrl: env.MODEL_GATEWAY_URL.replace(/\/+$/u, ''),
       sandboxServiceUrl: env.SANDBOX_SERVICE_URL.replace(/\/+$/u, ''),
+      sandboxProvider: env.SANDBOX_PROVIDER,
       gitServiceUrl: env.GIT_SERVICE_URL.replace(/\/+$/u, ''),
       serviceTokens: {
         secret: env.SERVICE_TOKEN_SECRET,

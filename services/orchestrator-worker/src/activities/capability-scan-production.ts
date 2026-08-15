@@ -47,6 +47,7 @@ function responseOrThrow(response: Response, operation: string): Response {
 
 export function createSandboxCapabilityScanWorkspacePort(options: {
   readonly baseUrl: string;
+  readonly provider: 'modal' | 'docker';
   readonly serviceTokens: ServiceTokenConfig;
   readonly fetch?: Fetch;
   readonly now?: () => Date;
@@ -94,7 +95,7 @@ export function createSandboxCapabilityScanWorkspacePort(options: {
               organizationId: input.organizationId,
               projectId: input.projectId,
               branchId: input.branchId,
-              provider: 'modal',
+              provider: options.provider,
               providerWorkspaceId: null,
               status: 'requested',
               resourceProfile: 'small',

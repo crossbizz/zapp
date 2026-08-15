@@ -35,6 +35,7 @@ const EnvSchema = z
     PORT: z.coerce.number().int().min(1).max(65535).default(4000),
     LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
     RUN_WORKFLOW_PROFILE: z.enum(['default', 'm1']).default('default'),
+    SANDBOX_PROVIDER: z.enum(['modal', 'docker']).default('modal'),
   })
   .superRefine((env, context) => {
     if (env.RUN_WORKFLOW_PROFILE === 'm1' && env.NODE_ENV !== 'development') {
@@ -42,6 +43,13 @@ const EnvSchema = z
         code: z.ZodIssueCode.custom,
         path: ['RUN_WORKFLOW_PROFILE'],
         message: 'RUN_WORKFLOW_PROFILE=m1 is allowed only with NODE_ENV=development',
+      });
+    }
+    if (env.SANDBOX_PROVIDER === 'docker' && env.NODE_ENV === 'production') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SANDBOX_PROVIDER'],
+        message: 'Production requires the Modal sandbox provider',
       });
     }
   });

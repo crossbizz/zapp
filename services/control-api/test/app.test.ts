@@ -238,7 +238,17 @@ describe('environment', () => {
       PORT: 4000,
       LOG_LEVEL: 'info',
       RUN_WORKFLOW_PROFILE: 'default',
+      SANDBOX_PROVIDER: 'modal',
     });
+  });
+
+  it('allows Docker only for development and test control planes', () => {
+    expect(
+      loadEnv({ NODE_ENV: 'development', SANDBOX_PROVIDER: 'docker' }).SANDBOX_PROVIDER,
+    ).toBe('docker');
+    expect(() =>
+      loadEnv({ NODE_ENV: 'production', SANDBOX_PROVIDER: 'docker' }),
+    ).toThrowError(new Error('Invalid environment: SANDBOX_PROVIDER'));
   });
 
   it('coerces PORT and rejects a value outside the port range by name only', () => {

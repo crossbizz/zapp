@@ -1638,6 +1638,8 @@ function workspaceBootCommand(
 export class ModalSandboxProvider {
   readonly lockedImageTag: string;
   readonly attachmentEnvironment: ModalEnvironment;
+  readonly networkPolicyEnforcement: 'domain_allowlist' | 'connectivity_only' =
+    'domain_allowlist';
   private readonly environment: WorkspaceEnvironmentName;
   private readonly modalEnvironment: ModalEnvironment;
   private readonly images: NonNullable<

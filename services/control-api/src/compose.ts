@@ -177,6 +177,7 @@ export interface ServiceRuntime {
   readonly orchestrator?: OrchestratorPort;
   readonly nodeEnv?: 'development' | 'test' | 'production';
   readonly runWorkflowProfile?: 'default' | 'm1';
+  readonly sandboxProvider?: 'modal' | 'docker';
   readonly artifactStorage: ArtifactStorageEnv;
   readonly github?: GitHubAppEnv;
   /** OPS-6 server-side analytics and organization flag evaluation. */
@@ -273,7 +274,9 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
    */
   const denylist = createRedisTokenDenylist(redis);
   const usageLedger = createUsageLedgerRepository({ database });
-  const tenantDb = createTenantDbFactory(database);
+  const tenantDb = createTenantDbFactory(database, {
+    workspaceProvider: runtime.sandboxProvider ?? 'modal',
+  });
   const organizations = createDbOrganizationStore(database);
   const usageOpsAlerts: UsageOpsAlertPort = runtime.usageOpsAlerts ?? {
     emit: (alert) => {

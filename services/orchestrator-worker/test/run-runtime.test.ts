@@ -38,6 +38,7 @@ const VALID_ENV = {
   CONTROL_API_INTERNAL_URL: 'http://127.0.0.1:4000',
   MODEL_GATEWAY_URL: 'http://127.0.0.1:4100',
   SANDBOX_SERVICE_URL: 'http://127.0.0.1:4400',
+  SANDBOX_PROVIDER: 'docker',
   GIT_SERVICE_URL: 'http://127.0.0.1:4500',
   SERVICE_TOKEN_SECRET: 's'.repeat(64),
   SERVICE_TOKEN_ISSUER: 'zapp-control-plane',
@@ -393,6 +394,11 @@ describe('the local M1 routing profile', () => {
       `${VALID_ENV.SANDBOX_SERVICE_URL}/internal/workspaces`,
     );
     expect(fetchImpl.mock.calls[2]?.[1]).toMatchObject({ method: 'POST' });
+    const replacementInit = fetchImpl.mock.calls[2]?.[1] as RequestInit | undefined;
+    const replacementRequest = JSON.parse(requestBodyText(replacementInit?.body)) as {
+      workspace: { provider: string };
+    };
+    expect(replacementRequest.workspace.provider).toBe('docker');
   });
 
   it('propagates only classified sandbox bootstrap diagnostics', async () => {
@@ -423,6 +429,7 @@ describe('the local M1 routing profile', () => {
   it('requires every worker boundary and accepts only explicit development m1', () => {
     expect(loadRunWorkerEnv(VALID_ENV)).toMatchObject({
       nodeEnv: 'development',
+      sandboxProvider: 'docker',
       workflowProfile: 'm1',
       temporalNamespace: 'default',
     });
@@ -434,6 +441,9 @@ describe('the local M1 routing profile', () => {
     );
     expect(() => loadRunWorkerEnv({ ...VALID_ENV, RUN_WORKFLOW_PROFILE: undefined })).toThrow(
       /RUN_WORKFLOW_PROFILE/,
+    );
+    expect(() => loadRunWorkerEnv({ ...VALID_ENV, SANDBOX_PROVIDER: undefined })).toThrow(
+      /SANDBOX_PROVIDER/,
     );
   });
 

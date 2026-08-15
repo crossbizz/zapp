@@ -842,6 +842,7 @@ describe('attach reattach recovery and ownership', () => {
       now: () => NOW,
       sleep: () => Promise.resolve(),
     });
+    expect(firstProvider.networkPolicyEnforcement).toBe('domain_allowlist');
     const created = await firstProvider.createWorkspace(createInput());
 
     const restartedProvider = createModalSandboxProvider({
@@ -2804,6 +2805,7 @@ describe('create status terminate and idempotency', () => {
       now: () => NOW,
       sleep: () => Promise.resolve(),
     });
+    expect(provider.networkPolicyEnforcement).toBe('domain_allowlist');
     const rows = new MemoryWorkspaceRows();
     const record = vi.fn(() => Promise.resolve());
     const app = buildTestApp({

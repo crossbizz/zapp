@@ -12,6 +12,10 @@
       "types": "./dist/provider/modal.d.ts",
       "default": "./dist/provider/modal.js"
     },
+    "./provider/docker": {
+      "types": "./dist/provider/docker.d.ts",
+      "default": "./dist/provider/docker.js"
+    },
     "./provider-types": {
       "types": "./dist/provider/types.d.ts",
       "default": "./dist/provider/types.js"

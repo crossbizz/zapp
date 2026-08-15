@@ -63,6 +63,12 @@ function isLoopbackHostname(hostname: string): boolean {
   );
 }
 
+function assertAllowedPreviewTunnelOrigin(origin: URL): void {
+  if (origin.protocol === 'https:') return;
+  if (origin.protocol === 'http:' && isLoopbackHostname(origin.hostname)) return;
+  throw new Error('Preview tunnel must use encrypted transport outside loopback development');
+}
+
 export function isAllowedPreviewPublicOrigin(origin: URL): boolean {
   return (
     origin.protocol === 'https:' ||
@@ -220,9 +226,7 @@ export function createPreviewTransport(resolver: PreviewTunnelResolver): Preview
       const targetPath = PreviewPathSchema.safeParse(untrustedInput.path);
       if (!targetPath.success) throw new Error('Preview path must be origin-relative');
       const connection = await resolver.resolve(providerWorkspaceId);
-      if (connection.origin.protocol !== 'https:') {
-        throw new Error('Preview tunnel must use encrypted transport');
-      }
+      assertAllowedPreviewTunnelOrigin(connection.origin);
       const target = targetFor(targetPath.data, connection.origin);
       const response = await connection.request({
         method: z.string().trim().min(1).parse(untrustedInput.method).toUpperCase(),
@@ -267,9 +271,7 @@ export function createPreviewTransport(resolver: PreviewTunnelResolver): Preview
         untrustedInput.providerWorkspaceId,
       );
       const connection = await resolver.resolve(providerWorkspaceId);
-      if (connection.origin.protocol !== 'https:') {
-        throw new Error('Preview tunnel must use encrypted transport');
-      }
+      assertAllowedPreviewTunnelOrigin(connection.origin);
       const target = targetFor(untrustedInput.path, connection.origin);
       if (connection.openWebSocket === undefined) {
         throw new Error('Preview tunnel does not support WebSocket transport');
@@ -338,7 +340,7 @@ export function createFetchPreviewTransport(
         },
         async openWebSocket(input) {
           const target = new URL(input.path, origin);
-          target.protocol = 'wss:';
+          target.protocol = origin.protocol === 'https:' ? 'wss:' : 'ws:';
           const { 'sec-websocket-protocol': rawProtocols, ...headers } = input.headers;
           const protocols = rawProtocols
             ?.split(',')

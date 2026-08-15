@@ -80,6 +80,18 @@ async function defaultVerifyImages(config) {
   }
 }
 
+async function defaultPrepareImages(config, { run }) {
+  if (config.env.SANDBOX_PROVIDER === 'modal') {
+    await defaultVerifyImages(config);
+    return;
+  }
+  try {
+    await run('docker', ['image', 'inspect', config.imageLock.dockerImageRef]);
+  } catch {
+    await run('docker', ['pull', config.imageLock.dockerImageRef]);
+  }
+}
+
 async function defaultOpenBrowser(url) {
   const command = process.platform === 'darwin' ? 'open' : 'xdg-open';
   const child = spawn(command, [url], { detached: true, stdio: 'ignore' });
@@ -123,7 +135,8 @@ export async function runLocal(options = {}) {
   const exec = options.exec ?? defaultExec;
   const checkPort = options.checkPort ?? defaultCheckPort;
   const waitForHttp = options.waitForHttp ?? defaultWaitForHttp;
-  const verifyImages = options.verifyImages ?? defaultVerifyImages;
+  const prepareImages =
+    options.prepareImages ?? options.verifyImages ?? defaultPrepareImages;
   const openBrowser = options.openBrowser ?? defaultOpenBrowser;
   const loadForgejoEnv = options.loadForgejoEnv ?? (() => loadLocalForgejoEnv({ cwd: config.cwd }));
   const signals = options.signals ?? process;
@@ -205,7 +218,7 @@ export async function runLocal(options = {}) {
     );
     await runPnpm(['db:migrate']);
     await runPnpm(['turbo', 'run', 'build', '--filter=!@zapp/desktop']);
-    await controlled(verifyImages(config));
+    await controlled(prepareImages(config, { run }));
 
     await startHttp(
       pnpmService('git-service', ['--filter', '@zapp/git-service', 'dev'], config, {

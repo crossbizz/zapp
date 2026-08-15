@@ -11,9 +11,11 @@ import { createProductionCapabilityScanWorker } from '../worker.js';
 
 const CapabilityScanWorkerEnvSchema = z
   .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']),
     DATABASE_URL: z.string().url(),
     TEMPORAL_ADDRESS: z.string().trim().min(1),
     SANDBOX_SERVICE_URL: z.string().url(),
+    SANDBOX_PROVIDER: z.enum(['modal', 'docker']),
     SERVICE_TOKEN_SECRET: z.string().min(32),
     SERVICE_TOKEN_SECRET_PREVIOUS: z.union([z.string().min(32), z.literal('')]).optional(),
     ARTIFACT_ENDPOINT: z.string().url(),
@@ -26,10 +28,20 @@ const CapabilityScanWorkerEnvSchema = z
       .regex(/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/u),
     ARTIFACT_REGION: z.string().trim().min(1).default('auto'),
   })
+  .superRefine((env, context) => {
+    if (env.SANDBOX_PROVIDER === 'docker' && env.NODE_ENV === 'production') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SANDBOX_PROVIDER'],
+        message: 'SANDBOX_PROVIDER=docker is allowed only outside production',
+      });
+    }
+  })
   .transform((env) => ({
     databaseUrl: env.DATABASE_URL,
     temporalAddress: env.TEMPORAL_ADDRESS,
     sandboxServiceUrl: env.SANDBOX_SERVICE_URL.replace(/\/+$/u, ''),
+    sandboxProvider: env.SANDBOX_PROVIDER,
     serviceTokens: {
       secret: env.SERVICE_TOKEN_SECRET,
       ...(env.SERVICE_TOKEN_SECRET_PREVIOUS === undefined || env.SERVICE_TOKEN_SECRET_PREVIOUS === ''
@@ -79,6 +91,7 @@ export async function runCapabilityScanWorker(
       activities: createProductionCapabilityScanActivities({
         sandbox: {
           baseUrl: config.sandboxServiceUrl,
+          provider: config.sandboxProvider,
           serviceTokens: config.serviceTokens,
         },
         artifacts: {

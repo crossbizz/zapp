@@ -62,7 +62,7 @@ export const WorkspaceLifecycleRowSchema = z
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
     branchId: idSchema('br').nullable(),
-    provider: z.literal('modal'),
+    provider: z.enum(['modal', 'docker']),
     providerWorkspaceId: z.string().min(1).nullable(),
     status: WorkspaceStatusSchema,
     resourceProfile: ResourceProfileSchema,
@@ -161,6 +161,7 @@ export interface PreviewMonitorCoordinator {
 export interface WorkspaceLifecycleProvider {
   readonly lockedImageTag: string;
   readonly attachmentEnvironment: ModalWorkspaceAttachment['requiredTags']['environment'];
+  readonly networkPolicyEnforcement?: 'domain_allowlist' | 'connectivity_only';
   imageTagForPurpose(purpose: WorkspacePurpose): string;
   createWorkspace(
     input: CreateWorkspaceInput,
@@ -1246,7 +1247,7 @@ export function registerWorkspaceRoutes(
                 projectId: scope.projectId,
                 workspaceId: body.workspace.id,
                 policy: resolveNetworkPolicy(body.networkProfile, networkDomains),
-                providerEnforced: true,
+                providerEnforced: deps.provider.networkPolicyEnforcement === 'domain_allowlist',
                 recordedAt: deps.now(),
               }),
             );
