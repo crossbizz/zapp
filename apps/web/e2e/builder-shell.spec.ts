@@ -162,10 +162,11 @@ test('loads a compact immersive builder with truthful header actions and surface
   await expect(page.getByText('Last saved version', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Preview', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Preview' })).toBeVisible();
-  await expect(page.getByRole('link', { name: /GitHub Unavailable/u })).toHaveAttribute(
+  await expect(page.getByRole('link', { name: 'Source repository' })).toHaveAttribute(
     'href',
     `/projects/${projectId}/settings/integrations`,
   );
+  await expect(page.getByText('Unavailable', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Deploy' })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Mission Control' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Project settings' })).toHaveAttribute(
@@ -182,7 +183,7 @@ test('loads a compact immersive builder with truthful header actions and surface
   );
   await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true');
   for (const tab of ['Files', 'Code', 'More']) {
-    await expect(page.getByRole('tab', { name: tab })).toBeVisible();
+    await expect(page.getByRole('tab', { exact: true, name: tab })).toBeVisible();
   }
   await page.getByRole('tab', { name: 'Preview' }).focus();
   await page.keyboard.press('ArrowRight');
@@ -199,8 +200,17 @@ test('loads a compact immersive builder with truthful header actions and surface
   await expect(page.getByRole('tab', { name: 'Preview' })).toBeFocused();
   await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'More' }).click();
-  for (const tab of ['Logs', 'Tests', 'Releases', 'Health']) {
-    await expect(page.getByRole('tab', { name: tab })).toBeVisible();
+  for (const tab of [
+    'Analytics',
+    'Cloud',
+    'AI',
+    'Agent integrations',
+    'Payments',
+    'Connectors',
+    'Security',
+    'SEO & AI search',
+  ]) {
+    await expect(page.getByRole('tab', { exact: true, name: tab })).toBeVisible();
   }
   await page.getByRole('tab', { name: 'Preview' }).click();
 
@@ -814,14 +824,15 @@ test('defaults to Conversation and switches to Workspace below 1024px', async ({
   );
 });
 
-test('shows truthful unavailable sync state when the repository record is absent', async ({
+test('omits repository actions when the repository record is absent', async ({
   page,
 }) => {
   await mockProjectRead(page, { ...projectRead, repository: null });
   await signIn(page);
   await page.goto(`/projects/${projectId}`);
 
-  await expect(page.getByRole('link', { name: /GitHub Unavailable/u })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Source repository' })).toHaveCount(0);
+  await expect(page.getByText('Unavailable', { exact: true })).toHaveCount(0);
 });
 
 test('warns about an invalid organization override while using the safe membership', async ({

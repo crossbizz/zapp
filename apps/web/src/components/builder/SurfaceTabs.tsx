@@ -1,17 +1,14 @@
 'use client';
 
-import type { BuilderPreviewEvent } from '@zapp/api-client';
+import type { BuilderPreviewEvent, RunEvent } from '@zapp/api-client';
 import { useEffect, useRef, type KeyboardEvent, type ReactElement } from 'react';
 
 import type { BuilderRun } from '../../lib/api';
 import { CodeView } from '../code/CodeView';
-import { LogView } from '../logs/LogView';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
-import { ProductionHealthView } from '../releases/ProductionHealthView';
-import { ReleasesView } from '../releases/ReleasesView';
-import { TestRuns } from '../tests/TestRuns';
 import type { PreviewSection } from './builder-navigation';
+import { MoreView } from './MoreView';
 import styles from './builder.module.css';
 
 export type SurfaceTab = PreviewSection;
@@ -29,6 +26,7 @@ export interface SurfaceTabsProps {
   readonly organizationId: string;
   readonly projectId: string;
   readonly runId?: string;
+  readonly runEvents: readonly RunEvent[];
   readonly runStatus?: BuilderRun['status'];
   readonly value: SurfaceTab;
 }
@@ -38,13 +36,7 @@ const primaryTabs = [
   ['files', 'Files'],
   ['code', 'Code'],
 ] as const satisfies readonly (readonly [SurfaceTab, string])[];
-const moreTabs = [
-  ['logs', 'Logs'],
-  ['tests', 'Tests'],
-  ['releases', 'Releases'],
-  ['health', 'Health'],
-] as const satisfies readonly (readonly [SurfaceTab, string])[];
-const moreValues = new Set<SurfaceTab>(moreTabs.map(([tab]) => tab));
+const moreValues = new Set<SurfaceTab>(['logs', 'tests', 'releases', 'health']);
 
 function SurfaceIcon({ tab }: { readonly tab: 'code' | 'files' | 'more' | 'preview' }): ReactElement {
   switch (tab) {
@@ -87,6 +79,7 @@ export function SurfaceTabs({
   organizationId,
   projectId,
   runId,
+  runEvents,
   runStatus,
   value,
 }: SurfaceTabsProps): ReactElement {
@@ -127,13 +120,13 @@ export function SurfaceTabs({
     case 'preview':
       content = (
         <PreviewFrame
+          events={runEvents}
           {...(fallbackCommitSha === undefined ? {} : { fallbackCommitSha })}
           onAttachToChat={onAttachPreviewCapture}
           onAttachSelectionToChat={onAttachPreviewSelection}
           onRunCreated={onRunCreated}
           organizationId={organizationId}
           projectId={projectId}
-          {...(runId === undefined ? {} : { runId })}
           {...(runStatus === undefined ? {} : { runStatus })}
         />
       );
@@ -145,23 +138,10 @@ export function SurfaceTabs({
       content = <CodeView organizationId={organizationId} projectId={projectId} view="changes" />;
       break;
     case 'logs':
-      content = <LogView organizationId={organizationId} projectId={projectId} />;
-      break;
     case 'tests':
-      content = (
-        <TestRuns
-          onRunCreated={onRunCreated}
-          organizationId={organizationId}
-          projectId={projectId}
-          {...(runId === undefined ? {} : { runId })}
-        />
-      );
-      break;
     case 'releases':
-      content = <ReleasesView projectId={projectId} />;
-      break;
     case 'health':
-      content = <ProductionHealthView projectId={projectId} />;
+      content = <MoreView activeSurface={value} events={runEvents} onRunCreated={onRunCreated} onSurfaceChange={onValueChange} organizationId={organizationId} projectId={projectId} {...(runId === undefined ? {} : { runId })} {...(runStatus === undefined ? {} : { runStatus })} />;
       break;
   }
 
@@ -198,7 +178,7 @@ export function SurfaceTabs({
           className={styles.surfaceTab}
           data-compact-tab="icon"
           onClick={() => {
-            onValueChange(moreActive ? value : 'logs');
+            onValueChange(moreActive ? value : 'health');
           }}
           onKeyDown={moveTabFocus}
           role="tab"
@@ -211,30 +191,9 @@ export function SurfaceTabs({
           </span>
         </button>
       </div>
-      {moreActive ? (
-        <div aria-label="More project views" className={styles.moreTabs} role="tablist">
-          {moreTabs.map(([tab, label]) => (
-            <button
-              aria-controls="project-surface-panel"
-              aria-selected={value === tab}
-              className={styles.moreTab}
-              key={tab}
-              onClick={() => {
-                onValueChange(tab);
-              }}
-              onKeyDown={moveTabFocus}
-              role="tab"
-              tabIndex={value === tab ? 0 : -1}
-              type="button"
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      ) : null}
       <div
         aria-label={`${value.slice(0, 1).toUpperCase()}${value.slice(1)} view`}
-        className={styles.surfacePanel}
+        className={`${styles.surfacePanel ?? ''} ${moreActive ? (styles.moreSurfacePanel ?? '') : ''}`}
         id="project-surface-panel"
         role="tabpanel"
       >

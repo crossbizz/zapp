@@ -58,7 +58,7 @@ pnpm local --no-open
 
 The application URLs are:
 
-- web UI: http://127.0.0.1:3000
+- web UI: http://localhost:3000
 - control API: http://127.0.0.1:4000
 - model gateway: http://127.0.0.1:4100
 - sandbox service: http://127.0.0.1:4400

@@ -215,7 +215,12 @@ describe('GET /v1/runs/:runId/mission-control', () => {
       storageRef: `${seeded.organizationId}/${seeded.projectId}/checkout.png`,
       contentHash: 'b'.repeat(64),
     });
-    addEvent(seeded, 'preview.ready', { status: 'ready' });
+    addEvent(seeded, 'preview.ready', {
+      action: 'restart',
+      port: 3000,
+      supervisorId: 'supervisor-preview',
+      workspaceId: 'ws_01K27Q9C2W85CMN1V9S6Q3D4FZ',
+    });
     addEvent(seeded, 'usage.recorded', { creditsCharged: '99.0000' });
     addEvent(seeded, 'approval.requested', {
       approvalId: pendingApproval,

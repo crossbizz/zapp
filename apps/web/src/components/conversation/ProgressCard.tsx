@@ -38,6 +38,7 @@ export function ProgressCard({
     };
   }, [startedAt, state]);
   const elapsed = elapsedSeconds(startedAt, completedAt, now);
+  const stateLabel = state === 'complete' ? 'Complete' : state === 'running' ? 'In progress' : 'Pending';
   return (
     <article
       aria-label={`${name} progress`}
@@ -45,21 +46,10 @@ export function ProgressCard({
       data-state={state}
       role="status"
     >
-      <div>
-        <strong>{name}</strong>
-        <span>
-          {state === 'complete' ? 'Complete' : state === 'running' ? 'In progress' : 'Pending'}
-        </span>
-      </div>
-      <div
-        aria-label={`${state === 'complete' ? '3' : state === 'running' ? '2' : '1'} of 3 steps`}
-        className="zapp-conversation-progress-dots"
-      >
-        <span>●</span>
-        <span>{state === 'pending' ? '○' : '●'}</span>
-        <span>{state === 'complete' ? '●' : '○'}</span>
-      </div>
-      <small>{String(elapsed)}s elapsed</small>
+      <span aria-hidden="true" className="zapp-conversation-progress-indicator" />
+      <strong>{name}</strong>
+      <span>{stateLabel}</span>
+      {state === 'running' ? <small>{String(elapsed)}s elapsed</small> : null}
     </article>
   );
 }

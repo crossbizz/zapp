@@ -1,4 +1,10 @@
-import { idSchema } from '@zapp/contracts';
+import {
+  idSchema,
+  PreviewOperationFailurePayloadSchema,
+  PreviewReadyPayloadSchema,
+  PreviewStartingPayloadSchema,
+  PreviewTerminalFailurePayloadSchema,
+} from '@zapp/contracts';
 import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
@@ -243,7 +249,6 @@ const TestRunPayloadSchema = z.object({
   commitSha: z.string().regex(/^[0-9a-f]{40}$/u),
   summary: z.unknown().optional(),
 });
-const PreviewPayloadSchema = z.object({ status: z.enum(['starting', 'ready', 'failed']) });
 const ArtifactPayloadSchema = z.object({
   artifactId: idSchema('art'),
   type: z.string().min(1),
@@ -559,10 +564,22 @@ function projectEvent(projection: Projection, event: MissionEvent): void {
     return;
   }
   if (event.type.startsWith('preview.')) {
-    const payload = PreviewPayloadSchema.safeParse(event.payloadJson);
-    if (payload.success) {
+    const validPayload =
+      event.type === 'preview.starting'
+        ? PreviewStartingPayloadSchema.safeParse(event.payloadJson).success
+        : event.type === 'preview.ready'
+          ? PreviewReadyPayloadSchema.safeParse(event.payloadJson).success
+          : event.type === 'preview.failed'
+            ? z
+                .union([
+                  PreviewOperationFailurePayloadSchema,
+                  PreviewTerminalFailurePayloadSchema,
+                ])
+                .safeParse(event.payloadJson).success
+            : false;
+    if (validPayload) {
       projection.preview = {
-        status: payload.data.status,
+        status: event.type.slice('preview.'.length) as 'failed' | 'ready' | 'starting',
         occurredAt: event.occurredAt.toISOString(),
       };
     }

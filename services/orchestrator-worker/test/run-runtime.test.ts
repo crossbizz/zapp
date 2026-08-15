@@ -316,6 +316,108 @@ describe('the local M1 routing profile', () => {
     }
   });
 
+  it('commits only project source files when a generated app has local build artifacts', async () => {
+    const commitSha = 'b'.repeat(40);
+    const gitRequests: Array<{ readonly operation?: string; readonly paths?: readonly string[] }> = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          readonly operation?: string;
+          readonly command?: string;
+          readonly args?: readonly string[];
+          readonly paths?: readonly string[];
+        };
+        let result: Record<string, unknown> | undefined;
+        if (request.url?.endsWith('/git') === true && body.operation === 'diff') {
+          result = {
+            exitCode: 0,
+            stdout: 'src/main.ts\ndist/assets/app.js\ntsconfig.tsbuildinfo\n',
+            stderr: '',
+          };
+        } else if (
+          request.url?.endsWith('/exec') === true &&
+          body.command === 'git' &&
+          JSON.stringify(body.args) ===
+            JSON.stringify(['ls-files', '--others', '--exclude-standard'])
+        ) {
+          result = {
+            exitCode: 0,
+            stdout:
+              'package.json\nnode_modules/vite/package.json\n.next/cache/trace\ncoverage/index.html\n',
+            stderr: '',
+            durationMs: 1,
+            truncated: false,
+          };
+        } else if (request.url?.endsWith('/git') === true && body.operation === 'add_commit') {
+          gitRequests.push(body);
+          result = { exitCode: 0, stdout: '', stderr: '' };
+        } else if (request.url?.endsWith('/git') === true && body.operation === 'push') {
+          result = { exitCode: 0, stdout: '', stderr: '' };
+        } else if (
+          request.url?.endsWith('/exec') === true &&
+          body.command === 'git' &&
+          JSON.stringify(body.args) === JSON.stringify(['rev-parse', 'HEAD'])
+        ) {
+          result = {
+            exitCode: 0,
+            stdout: `${commitSha}\n`,
+            stderr: '',
+            durationMs: 1,
+            truncated: false,
+          };
+        }
+        response.statusCode = result === undefined ? 500 : 200;
+        response.setHeader('content-type', 'application/json');
+        response.end(JSON.stringify(result ?? { code: 'unexpected_generated_artifact_request' }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Test server did not bind');
+    const activities = await composeProductionActivities({
+      env: loadRunWorkerEnv({
+        ...VALID_ENV,
+        SANDBOX_SERVICE_URL: `http://127.0.0.1:${String(address.port)}`,
+      }),
+      database: {} as never,
+    });
+
+    try {
+      await expect(
+        activities.commitAndPush({
+          runId: RUN_INPUT.runId,
+          organizationId: RUN_INPUT.organizationId,
+          projectId: RUN_INPUT.projectId,
+          workspaceId: `ws_${'5'.repeat(26)}`,
+          message: 'Commit generated app source',
+          idempotencyKey: 'generated-app-source-only',
+        }),
+      ).resolves.toEqual({
+        commitSha,
+        diffstat: [
+          { path: 'src/main.ts', additions: 0, deletions: 0 },
+          { path: 'package.json', additions: 0, deletions: 0 },
+        ],
+      });
+      expect(gitRequests).toEqual([
+        {
+          message: 'Commit generated app source',
+          operation: 'add_commit',
+          paths: ['src/main.ts', 'package.json'],
+        },
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        });
+      });
+    }
+  });
+
   it('retires an unhealthy reusable workspace before provisioning its replacement', async () => {
     const staleWorkspaceId = `ws_${'1'.repeat(26)}`;
     const replacementWorkspaceId = `ws_${'3'.repeat(26)}`;

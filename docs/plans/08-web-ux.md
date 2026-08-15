@@ -309,6 +309,22 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Verify the focused preview acceptance, full builder shell suite, web lint/typecheck, and a signed-in browser interaction audit with no console errors.
 - [x] Commit: `style(web): refine builder editor chrome`
 
+#### WEB-18-FIX-5 - reliable local preview and reference workspace surfaces
+
+**Reference audit:** Live signed-in Lovable editor, the supplied Preview/Files/Code/More screenshots, and a real local Docker prompt-to-preview run.
+**Files:** Modify `apps/web/src/components/{builder,code,conversation,preview}/*`, focused web tests and package test script plus its exact config-package wiring assertion, `services/orchestrator-worker/src/runtime/run-worker.ts` and its runtime test, `services/control-api/src/routes/mission-control.ts` and its route test, `scripts/local/{config,supervisor}.mjs`, `scripts/local.test.mjs`, and `docs/dev-setup.md`. No desktop files are in scope.
+
+**Interfaces consumed:** Existing run/conversation/preview/file/code/log/test/settings APIs, structured run SSE, sandbox workspace tools, Git service commit tool, and authenticated preview share/exchange/redeem proxy.
+
+**Interfaces produced:** No new route. Mission Control now projects the existing public preview lifecycle contract; follow-up runs inherit the durable branch; local UI origin is canonically `http://localhost:3000`.
+
+- [x] Filter generated/dependency/VCS paths before commit and in the code explorer so a successful generated build cannot overflow the event API or expose implementation noise.
+- [x] Share one run-event stream across conversation and preview, start preview capture only after the authenticated share exists, and preserve the latest branch when starting a follow-up run.
+- [x] Match the compact reference hierarchy for Preview, searchable Files/Code, and More navigation while keeping unavailable source-control/release capabilities truthful.
+- [x] Project real `preview.starting|ready|failed` payloads in Mission Control and make the localhost preview origin complete share → exchange → redemption → proxied app delivery.
+- [x] Verify focused TDD suites, full web acceptance, affected package lint/typecheck/tests, one real generated commit and preview, and the cold repository gate.
+- [x] Commit: `fix(web): restore reliable local preview workspace`
+
 ---
 
 ## Testing strategy
@@ -322,6 +338,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-14 WEB-18-FIX-5 done — Restored source-only generated commits, single-stream run events, durable branch reuse, real preview lifecycle projection, canonical localhost redemption, and compact Lovable-style Preview/Files/Code/More; real Anthropic Docker run completed with 5/5 generated tests, source-only commit, preview ready, and share/exchange/redeem/document/source checks 201/200/200/200/200; web 134/134, runtime 15/15, Mission Control 5/5, local 14/14, config 84/84, orchestrator integration 45/45, lint/typecheck and cold repository gate passed.
 - 2026-08-14 WEB-18-FIX-4 done - Matched the live Lovable/Base44 editor density with 23-28px icon controls, a 28px page selector, and a balanced 44/56 split; preview acceptance passed 1/1, builder shell passed 24/24, lint/typecheck passed, and signed-in browser interactions produced no console errors. A real prompt reached Temporal but Modal rejected provisioning with RESOURCE_EXHAUSTED because the provider workspace exceeded its spend limit, so a new live preview remains externally blocked until that limit is raised.
 - 2026-08-14 WEB-18-FIX-3 done — Repaired the real prompt-to-workspace pipeline, authenticated preview transport, persistent sandbox/Git lifecycle, and compact immersive builder; verified a real Anthropic run plus preview share/redeem chain, live Stytch-to-Google redirect on port 3000, web 132/132, preview proxy 110/110, sandbox 194 passed with 18 provider-gated skips, and the complete cold repository gate including private Forgejo clone.
 - 2026-08-13 WEB-4-FIX-1 done — Preserved the two one-second durable import polls while widening only the cold-run navigation observer; focused repeats passed 5/5, web lint/typecheck passed, and full repository verification including GATE-5 passed before the exact-head push gate.

@@ -27,7 +27,7 @@ const projectRead = {
 
 const activeRun = {
   appType: 'web' as const,
-  branchId: null,
+  branchId: null as string | null,
   completedAt: null as string | null,
   id: runId,
   mode: 'build' as const,
@@ -612,7 +612,7 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
   await page.getByRole('button', { name: 'Compare', exact: true }).click();
   await expect(page.getByText('src/page.tsx +2 −1')).toBeVisible();
   await page.getByRole('tab', { name: 'More' }).click();
-  await page.getByRole('tab', { name: 'Tests' }).click();
+  await page.getByRole('tab', { name: 'Security' }).click();
   await expect(page.getByText('checkout submits — failed')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create Fix run' })).toBeVisible();
   await page.getByRole('button', { name: 'View evidence' }).click();
@@ -1123,8 +1123,10 @@ test('uploads a replacement image after a failed send even when its metadata is 
 test('starts a new run with the project-persisted mode and model when the latest run is inactive', async ({
   page,
 }) => {
+  const previousBranchId = 'br_01K27Q9C2W85CMN1V9S6Q3D4FX';
   const completedRun = {
     ...activeRun,
+    branchId: previousBranchId,
     completedAt: '2026-08-10T12:10:00.000Z',
     status: 'completed' as const,
   };
@@ -1143,6 +1145,14 @@ test('starts a new run with the project-persisted mode and model when the latest
   });
   await openBuilder(page, [completedRun]);
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        body: JSON.stringify({ items: [completedRun], nextCursor: null }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+      return;
+    }
     createdRunBody = route.request().postDataJSON();
     await route.fulfill({
       body: JSON.stringify({
@@ -1165,6 +1175,7 @@ test('starts a new run with the project-persisted mode and model when the latest
     .poll(() => createdRunBody)
     .toMatchObject({
       appType: 'web',
+      branchId: previousBranchId,
       mode: 'ask',
       model: 'anthropic/claude-sonnet-5',
       prompt: 'Fix the checkout validation race.',

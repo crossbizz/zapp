@@ -1,6 +1,6 @@
 'use client';
 
-import { createZappClient, ZappApiError } from '@zapp/api-client';
+import { createZappClient, ZappApiError, type RunEvent } from '@zapp/api-client';
 import { Button, Drawer, EmptyState, ErrorState } from '@zapp/ui';
 import {
   useCallback,
@@ -732,6 +732,10 @@ function MissionControlPanel({
 export function Shell({ projectId }: ShellProps): ReactElement {
   const session = useAppSession();
   const [activeRun, setActiveRun] = useState<BuilderRun>();
+  const [runEventSnapshot, setRunEventSnapshot] = useState<{
+    readonly events: readonly RunEvent[];
+    readonly runId: string | undefined;
+  }>({ events: [], runId: undefined });
   const [desktopSplit, setDesktopSplit] = useState(false);
   const [effectiveConversationWidth, setEffectiveConversationWidth] =
     useState(defaultConversationWidth);
@@ -758,6 +762,12 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const restoreMissionControlFocusRef = useRef(false);
   const splitRef = useRef<HTMLDivElement>(null);
   const readySession = session.snapshot.status === 'ready' ? session.snapshot : undefined;
+  const captureRunEvents = useCallback(
+    (runId: string | undefined, events: readonly RunEvent[]): void => {
+      setRunEventSnapshot({ events, runId });
+    },
+    [],
+  );
   const organizationId = readySession?.membership.organization.id;
   const allowedModels = readySession?.membership.allowedModels ?? [];
 
@@ -1135,8 +1145,8 @@ export function Shell({ projectId }: ShellProps): ReactElement {
             onModeChange={selectMode}
             projectId={projectId}
             projectName={project.project.name}
+            repositoryAvailable={project.repository !== null}
             supportLevel={project.project.supportLevel}
-            syncState="unavailable"
           />
           {readySession.invalidOrganization ? (
             <p className="zapp-builder-notice" role="status">
@@ -1172,6 +1182,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                   incomingImages={previewAttachments}
                   {...(firstPrompt === undefined ? {} : { initialPrompt: firstPrompt })}
                   onOpenCommit={openCommit}
+                  onEventsChange={captureRunEvents}
                   onRunChange={setActiveRun}
                   organizationId={organizationId}
                   projectId={projectId}
@@ -1255,6 +1266,9 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                   }}
                   organizationId={organizationId}
                   projectId={projectId}
+                  runEvents={
+                    runEventSnapshot.runId === activeRun?.id ? runEventSnapshot.events : []
+                  }
                   {...(activeRun === undefined ? {} : { runId: activeRun.id })}
                   {...(activeRun === undefined ? {} : { runStatus: activeRun.status })}
                   value={navigation.preview}

@@ -90,7 +90,7 @@ test('loads the explicit M1 environment, immutable images, ports, and --no-open'
   assert.equal(config.openBrowser, false);
   assert.equal(config.env.RUN_WORKFLOW_PROFILE, 'm1');
   assert.equal(config.env.SANDBOX_PROVIDER, 'docker');
-  assert.equal(config.env.APP_BASE_URL, 'http://127.0.0.1:3000');
+  assert.equal(config.env.APP_BASE_URL, 'http://localhost:3000');
   assert.equal(config.env.API_BASE_URL, 'http://127.0.0.1:4000');
   assert.equal(config.env.NEXT_PUBLIC_CONTROL_API_URL, 'http://127.0.0.1:4000');
   assert.equal(config.env.CONTROL_API_INTERNAL_URL, 'http://127.0.0.1:4000');
@@ -501,7 +501,7 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
       'start:web',
     ],
   );
-  assert.equal(events.includes('open:http://127.0.0.1:3000'), true);
+  assert.equal(events.includes('open:http://localhost:3000'), true);
   assert.equal(events.includes('images:docker'), true);
   assert.equal(events.includes('ready:forgejo-tunnel'), true);
   assert.equal(

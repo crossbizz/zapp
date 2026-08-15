@@ -2,15 +2,6 @@ import { SupportLevelBadge } from '@zapp/ui';
 import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
 
-export type RepositorySyncState = 'synced' | 'ahead' | 'diverged' | 'unavailable';
-
-const syncLabels: Readonly<Record<RepositorySyncState, string>> = {
-  ahead: 'Ahead',
-  diverged: 'Diverged',
-  synced: 'Synced',
-  unavailable: 'Unavailable',
-};
-
 interface TopBarProps {
   readonly deploy: ReactNode;
   readonly missionControl: ReactNode;
@@ -18,17 +9,17 @@ interface TopBarProps {
   readonly onModeChange: (mode: 'manage' | 'preview') => void;
   readonly projectId: string;
   readonly projectName: string;
+  readonly repositoryAvailable: boolean;
   readonly supportLevel: 'compatible' | 'verified' | 'managed';
-  readonly syncState: RepositorySyncState;
 }
 
-function GitHubIcon(): ReactElement {
+function RepositoryIcon(): ReactElement {
   return (
     <svg aria-hidden="true" className="zapp-builder-action-icon" viewBox="0 0 24 24">
-      <path
-        d="M12 2.8a9.4 9.4 0 0 0-3 18.3c.5.1.7-.2.7-.5v-1.8c-2.8.6-3.4-1.2-3.4-1.2-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 0 1.6 1.1 1.6 1.1.9 1.6 2.4 1.1 3 .8.1-.7.4-1.2.7-1.4-2.3-.3-4.7-1.1-4.7-5a3.9 3.9 0 0 1 1-2.7 3.6 3.6 0 0 1 .1-2.7s.8-.3 2.8 1a9.5 9.5 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.3.2 2.3.1 2.7a3.9 3.9 0 0 1 1 2.7c0 3.9-2.4 4.7-4.7 5 .4.3.7 1 .7 1.9v2.7c0 .3.2.6.7.5A9.4 9.4 0 0 0 12 2.8Z"
-        fill="currentColor"
-      />
+      <circle cx="6" cy="5" fill="currentColor" r="2" />
+      <circle cx="6" cy="19" fill="currentColor" r="2" />
+      <circle cx="18" cy="9" fill="currentColor" r="2" />
+      <path d="M6 7v10M8 17c5 0 2-8 8-8" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
     </svg>
   );
 }
@@ -82,8 +73,8 @@ export function TopBar({
   onModeChange,
   projectId,
   projectName,
+  repositoryAvailable,
   supportLevel,
-  syncState,
 }: TopBarProps): ReactElement {
   return (
     <div aria-label="Project editor" className="zapp-builder-top-bar" role="region">
@@ -122,16 +113,14 @@ export function TopBar({
         ))}
       </div>
       <nav aria-label="Project actions" className="zapp-builder-project-actions">
-        <a
+        {repositoryAvailable ? <a
+          aria-label="Source repository"
           className="zapp-builder-action-link"
           href={`/projects/${projectId}/settings/integrations`}
+          title="Source repository"
         >
-          <GitHubIcon />
-          <span>GitHub</span>
-          <span className="zapp-builder-sync-pill" data-sync-state={syncState}>
-            {syncLabels[syncState]}
-          </span>
-        </a>
+          <RepositoryIcon />
+        </a> : null}
         {deploy}
         {missionControl}
         <a

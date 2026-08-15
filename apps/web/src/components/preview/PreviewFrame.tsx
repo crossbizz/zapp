@@ -13,7 +13,6 @@ import {
   type ReactElement,
 } from 'react';
 
-import { useRunEvents } from '../../hooks/useRunEvents';
 import { createControlPlaneClient, type BuilderRun } from '../../lib/api';
 import { ConsoleDrawer } from './ConsoleDrawer';
 import { PreviewToolbar, type PreviewDevice } from './PreviewToolbar';
@@ -37,6 +36,7 @@ type LogResponse = Awaited<
 >;
 
 interface PreviewFrameProps {
+  readonly events: readonly RunEvent[];
   readonly fallbackCommitSha?: string;
   readonly onAttachToChat: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
   readonly onAttachSelectionToChat: (
@@ -46,7 +46,6 @@ interface PreviewFrameProps {
   readonly onRunCreated: (run: BuilderRun) => void;
   readonly organizationId: string;
   readonly projectId: string;
-  readonly runId?: string;
   readonly runStatus?: BuilderRun['status'];
 }
 
@@ -388,13 +387,13 @@ function PreviewStyles(): ReactElement {
 }
 
 export function PreviewFrame({
+  events,
   fallbackCommitSha,
   onAttachToChat,
   onAttachSelectionToChat,
   onRunCreated,
   organizationId,
   projectId,
-  runId,
   runStatus,
 }: PreviewFrameProps): ReactElement {
   const [attaching, setAttaching] = useState(false);
@@ -434,7 +433,6 @@ export function PreviewFrame({
   const wakeKeyRef = useRef<string | undefined>(undefined);
   const wakePendingRef = useRef(false);
   const workspaceGenerationRef = useRef(0);
-  const { events } = useRunEvents(runId, organizationId);
   const lifecycle = useMemo(() => previewLifecycle(events), [events]);
   const workspaceId = eventWorkspaceId(lifecycle.event);
   const previewUsable = lifecycle.event?.type === 'preview.ready' || logs?.state === 'ready';
@@ -611,7 +609,7 @@ export function PreviewFrame({
   }, [organizationId, previewUsable, shareRenewalGeneration, workspaceId]);
 
   useEffect(() => {
-    if (workspaceId === undefined || !previewUsable) return;
+    if (workspaceId === undefined || !previewUsable || previewUrl === undefined) return;
     let current = true;
     setCaptureFailed(false);
     const subscription = createControlPlaneClient(organizationId).subscribePreviewEvents(
@@ -635,7 +633,7 @@ export function PreviewFrame({
       current = false;
       subscription.close();
     };
-  }, [connectionGeneration, organizationId, previewUsable, workspaceId]);
+  }, [connectionGeneration, organizationId, previewUrl, previewUsable, workspaceId]);
 
   const previewState: PreviewState = (() => {
     if (

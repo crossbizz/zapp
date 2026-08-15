@@ -30,6 +30,7 @@ interface ThreadProps {
   readonly incomingImages?: readonly ConversationImageInput[];
   readonly initialPrompt?: string;
   readonly onOpenCommit: (commitSha: string) => void;
+  readonly onEventsChange: (runId: string | undefined, events: readonly RunEvent[]) => void;
   readonly onRunChange: (run: BuilderRun | undefined) => void;
   readonly organizationId: string;
   readonly projectId: string;
@@ -347,22 +348,44 @@ function ThreadStyles(): ReactElement {
         cursor: pointer;
       }
       .zapp-conversation-progress {
-        display: grid;
+        display: flex;
+        min-height: 2.5rem;
+        align-items: center;
         gap: 0.5rem;
         border: 1px solid var(--zapp-border);
-        border-radius: var(--zapp-radius-panel);
-        padding: 0.75rem;
+        border-radius: 0.55rem;
+        padding: 0.4rem 0.65rem;
         background: var(--zapp-surface-subtle);
+        font-size: var(--zapp-text-12);
       }
-      .zapp-conversation-progress > div:first-child {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
+      .zapp-conversation-progress > strong {
+        min-width: 0;
+        flex: 1 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
-      .zapp-conversation-progress-dots {
-        display: flex;
-        gap: 0.375rem;
-        color: var(--zapp-accent);
+      .zapp-conversation-progress > span:not(.zapp-conversation-progress-indicator),
+      .zapp-conversation-progress > small {
+        flex: 0 0 auto;
+        color: var(--zapp-text-muted);
+      }
+      .zapp-conversation-progress-indicator {
+        width: 0.5rem;
+        height: 0.5rem;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: var(--zapp-text-muted);
+      }
+      .zapp-conversation-progress[data-state='running'] .zapp-conversation-progress-indicator {
+        background: var(--zapp-accent);
+        box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--zapp-accent) 12%, transparent);
+      }
+      .zapp-conversation-progress[data-state='complete'] .zapp-conversation-progress-indicator {
+        background: var(--zapp-status-success);
+      }
+      .zapp-conversation-progress[data-state='failed'] .zapp-conversation-progress-indicator {
+        background: var(--zapp-status-danger);
       }
       .zapp-conversation-commit {
         align-self: flex-start;
@@ -502,6 +525,7 @@ export function Thread({
   incomingImages = [],
   initialPrompt,
   onOpenCommit,
+  onEventsChange,
   onRunChange,
   organizationId,
   projectId,
@@ -527,6 +551,10 @@ export function Thread({
       message.runId === currentRun?.id &&
       userMessageCount(events, message.content) < message.expectedOrdinal,
   );
+
+  useEffect(() => {
+    onEventsChange(currentRun?.id, events);
+  }, [currentRun?.id, events, onEventsChange]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -644,11 +672,12 @@ export function Thread({
     attachments: readonly Attachment[],
   ): Promise<BuilderRun> => {
     const client = createControlPlaneClient(organizationId);
+    const branchId = submission.branchId ?? currentRun?.branchId ?? branches[0]?.id;
     const created = await client.createRun(
       projectId,
       {
         appType: 'web',
-        ...(submission.branchId === undefined ? {} : { branchId: submission.branchId }),
+        ...(branchId === undefined ? {} : { branchId }),
         ...(submission.budget === undefined ? {} : { budget: submission.budget }),
         mode: submission.mode === 'auto' ? recommendedMode(submission.content) : submission.mode,
         ...(submission.model === undefined ? {} : { model: submission.model }),
@@ -827,10 +856,9 @@ export function Thread({
                   key={item.key}
                   role="status"
                 >
-                  <div>
-                    <strong>{item.name}</strong>
-                    <span>Failed</span>
-                  </div>
+                  <span aria-hidden="true" className="zapp-conversation-progress-indicator" />
+                  <strong>{item.name}</strong>
+                  <span>Failed</span>
                 </article>
               );
             }

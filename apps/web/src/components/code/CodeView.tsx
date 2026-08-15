@@ -5,6 +5,8 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { createControlPlaneClient, type WorkspaceFileData, type WorkspaceFilesData } from '../../lib/api';
 import { FileTree } from './FileTree';
 import { DiffView } from './DiffView';
+import styles from './code.module.css';
+import { isVisibleWorkspacePath } from './workspace-paths';
 
 function decodeBase64(value: string): string {
   return new TextDecoder().decode(Uint8Array.from(atob(value), (character) => character.charCodeAt(0)));
@@ -34,7 +36,7 @@ export function CodeView({ organizationId, projectId, view }: { readonly organiz
       const membership = me.memberships.find((item) => item.organization.id === organizationId);
       setCanEdit(membership?.role === 'owner' || membership?.role === 'builder');
       const listed = await client.listWorkspaceFiles(workspace.id, '.', controller.signal);
-      setEntries(listed.entries); setStatus('');
+      setEntries(listed.entries.filter((entry) => isVisibleWorkspacePath(entry.path))); setStatus('');
     }).catch(() => { if (!controller.signal.aborted) setStatus('Files could not be loaded.'); });
     return () => { controller.abort(); };
   }, [organizationId, projectId, view]);
@@ -43,14 +45,28 @@ export function CodeView({ organizationId, projectId, view }: { readonly organiz
     try { const loaded = await client.readWorkspaceFile(workspaceId, path); setFile(loaded); setContent(decodeBase64(loaded.dataBase64)); setEditing(false); setStatus(''); }
     catch { setStatus('The file could not be opened.'); }
   };
+  const openDirectory = async (path: string): Promise<void> => {
+    if (workspaceId === undefined) return;
+    try {
+      const listed = await client.listWorkspaceFiles(workspaceId, path);
+      setEntries((current) => {
+        const merged = new Map(current.map((entry) => [entry.path, entry]));
+        for (const entry of listed.entries) {
+          if (isVisibleWorkspacePath(entry.path)) merged.set(entry.path, entry);
+        }
+        return [...merged.values()];
+      });
+      setStatus('');
+    } catch { setStatus('The folder could not be opened.'); }
+  };
   const save = async (): Promise<void> => {
     if (workspaceId === undefined || file === undefined) return;
     try { const saved = await client.editWorkspaceFile(workspaceId, { path: file.path, dataBase64: encodeBase64(content), expectedCompareToken: file.compareToken }); setFile({ ...file, dataBase64: encodeBase64(content), compareToken: saved.compareToken, byteSize: new TextEncoder().encode(content).byteLength }); setEditing(false); setStatus(`Saved in ${saved.commitRef}`); }
     catch { setStatus('The file changed or could not be saved. Reload and retry.'); }
   };
-  return <section aria-label={view === 'changes' ? 'Code changes' : 'Files workspace'}><FileTree entries={entries} onOpen={(path) => { void open(path); }} />
-    {file === undefined ? null : <article><h3>{file.path}</h3>{editing ? <textarea aria-label="File editor" onChange={(event) => { setContent(event.target.value); }} value={content} /> : <pre>{content}</pre>}{canEdit ? <button onClick={() => { if (editing) void save(); else setEditing(true); }} type="button">{editing ? 'Save edit' : 'Edit file'}</button> : null}</article>}
-    <p aria-live="polite">{status}</p>
-    {view === 'changes' ? <DiffView organizationId={organizationId} projectId={projectId} /> : null}
+  return <section aria-label={view === 'changes' ? 'Code changes' : 'Files workspace'} className={styles.workspace}><FileTree entries={entries} onOpen={(path) => { void open(path); }} onOpenDirectory={(path) => { void openDirectory(path); }} />
+    <div className={styles.editor}>{file === undefined ? <div className={styles.empty}>Select a file to view its contents.</div> : <article><header className={styles.fileHeader}><h3>{file.path}</h3>{canEdit ? <button onClick={() => { if (editing) void save(); else setEditing(true); }} type="button">{editing ? 'Save edit' : 'Edit file'}</button> : null}</header>{editing ? <textarea aria-label="File editor" className={styles.textarea} onChange={(event) => { setContent(event.target.value); }} value={content} /> : <pre className={styles.code}>{content}</pre>}</article>}
+    {view === 'changes' ? <DiffView organizationId={organizationId} projectId={projectId} /> : null}</div>
+    <p aria-live="polite" className={styles.status}>{status}</p>
   </section>;
 }

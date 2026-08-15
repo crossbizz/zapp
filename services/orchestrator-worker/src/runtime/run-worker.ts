@@ -162,6 +162,24 @@ async function serviceHeaders(
   });
 }
 
+const GENERATED_WORKSPACE_DIRECTORIES = new Set([
+  '.cache',
+  '.next',
+  '.turbo',
+  '.vite',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+]);
+
+function isProjectSourcePath(path: string): boolean {
+  const segments = path.split('/');
+  if (segments.some((segment) => GENERATED_WORKSPACE_DIRECTORIES.has(segment))) return false;
+  return !path.endsWith('.tsbuildinfo');
+}
+
 export async function composeProductionActivities(options: {
   readonly env: RunWorkerEnv;
   readonly database: Database;
@@ -349,11 +367,12 @@ export async function composeProductionActivities(options: {
         .flatMap((output) => output.split('\n'))
         .map((path) => path.trim())
         .filter((path) => path.length > 0)
+        .filter(isProjectSourcePath)
         .filter((path, index, all) => all.indexOf(path) === index);
       if (paths.length > 0) {
         const committed = await runtime.git({
           operation: 'add_commit',
-          paths: ['.'],
+          paths,
           message: input.message,
         });
         if (committed.exitCode !== 0) throw new Error('Unable to commit the workspace changes');

@@ -220,6 +220,93 @@ test('keeps an existing healthy preview open when a repeated start reports failu
   await expect(page.getByText('Preview failed')).toHaveCount(0);
 });
 
+test('creates the authenticated share before opening the long-lived capture stream', async ({
+  page,
+}) => {
+  let shareCreated = false;
+  let captureOpenedBeforeShare = false;
+  await installBuilder(page, () => runFrame(1, 'preview.ready', { action: 'start', workspaceId }));
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        entries: [],
+        failureId: null,
+        nextCursor: 0,
+        state: 'ready',
+        truncated: false,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/shares`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    shareCreated = true;
+    await route.fulfill({
+      body: JSON.stringify({
+        share: {
+          expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString(),
+          id: '01j00000000000000000000000',
+          policy: 'org',
+          url: shareUrl,
+        },
+      }),
+      headers: corsHeaders(),
+      status: 201,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/events`, async (route) => {
+    captureOpenedBeforeShare ||= !shareCreated;
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await page.route(
+    `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`,
+    async (route) => {
+      await route.fulfill({
+        body: '<!doctype html><title>Fixture preview</title><h1>Preview application</h1>',
+        contentType: 'text/html',
+        status: 200,
+      });
+    },
+  );
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect(page.getByTitle('Application preview')).toBeVisible();
+  expect(captureOpenedBeforeShare).toBe(false);
+});
+
+test('uses one run event stream for the conversation and preview surfaces', async ({ page }) => {
+  let runStreamRequests = 0;
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}`, async (route) => {
+    await route.fulfill({ body: JSON.stringify(projectRead), headers: corsHeaders(), status: 200 });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ items: [activeRun], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    runStreamRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.fulfill({
+      body: runFrame(1, 'preview.ready', { action: 'start', workspaceId }),
+      headers: corsHeaders('text/event-stream'),
+      status: 200,
+    });
+  });
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect.poll(() => runStreamRequests).toBeGreaterThan(0);
+  await page.waitForTimeout(500);
+  expect(runStreamRequests).toBe(1);
+});
+
 test('renders preview lifecycle states from structured events and public workspace APIs', async ({
   page,
 }) => {
