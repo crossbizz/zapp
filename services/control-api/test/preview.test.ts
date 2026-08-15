@@ -1,6 +1,9 @@
+import type { AddressInfo } from 'node:net';
+
 import { newId } from '@zapp/contracts';
 import type { PreviewShareRow, Project, Workspace } from '@zapp/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { WebSocketServer } from 'ws';
 
 import type { AuthIdentity } from '../src/auth/port.js';
 import {
@@ -429,5 +432,65 @@ describe('WS-12 public preview shares', () => {
       'x-zapp-preview-public-origin': 'https://share.preview.zapp.test',
     });
     expect(headers['x-zapp-service-token']).not.toBe('must-not-pass');
+  });
+
+  it('negotiates the Vite HMR subprotocol through the sandbox WebSocket bridge', async () => {
+    const negotiatedProtocols: string[][] = [];
+    const server = new WebSocketServer({
+      host: '127.0.0.1',
+      port: 0,
+      handleProtocols(protocols) {
+        negotiatedProtocols.push([...protocols]);
+        return protocols.has('vite-hmr') ? 'vite-hmr' : false;
+      },
+    });
+    await new Promise<void>((resolve) => {
+      server.once('listening', resolve);
+    });
+    const address = server.address() as AddressInfo;
+    server.once('connection', (socket) => {
+      socket.send('hmr-ready');
+      socket.close();
+    });
+
+    const messages: string[] = [];
+    const proxy = createSandboxPreviewProxy({
+      baseUrl: `http://127.0.0.1:${String(address.port)}`,
+      serviceTokens: { secret: 's'.repeat(32) },
+    });
+
+    try {
+      await expect(
+        proxy.openWebSocket(
+          {
+            organizationId: 'org_00000000000000000000000000',
+            projectId: 'proj_00000000000000000000000000',
+            workspaceId: 'ws_00000000000000000000000000',
+            path: '/',
+            publicOrigin: new URL('https://share.preview.zapp.test'),
+            headers: { 'sec-websocket-protocol': 'vite-hmr' },
+            signal: new AbortController().signal,
+          },
+          {
+            send(data) {
+              messages.push(typeof data === 'string' ? data : Buffer.from(data).toString('utf8'));
+            },
+            close() {},
+            onMessage() {},
+            onClose() {},
+            onError() {},
+          },
+        ),
+      ).resolves.toBeUndefined();
+      expect(negotiatedProtocols).toEqual([['vite-hmr']]);
+      expect(messages).toEqual(['hmr-ready']);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        });
+      });
+    }
   });
 });

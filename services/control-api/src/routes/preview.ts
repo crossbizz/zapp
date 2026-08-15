@@ -1183,15 +1183,24 @@ export function createSandboxPreviewProxy(options: SandboxPreviewProxyOptions): 
       );
       const applicationHeaders = { ...sanitized };
       delete applicationHeaders.cookie;
+      const { 'sec-websocket-protocol': rawProtocols, ...forwardedHeaders } = applicationHeaders;
+      const protocols =
+        rawProtocols
+          ?.split(',')
+          .map((value) => value.trim())
+          .filter((value) => value !== '') ?? [];
       const headers: Record<string, string> = {
-        ...applicationHeaders,
+        ...forwardedHeaders,
         'x-zapp-service-token': token,
         'x-zapp-organization-id': input.organizationId,
         'x-zapp-project-id': input.projectId,
         'x-zapp-preview-public-origin': input.publicOrigin.origin,
         ...(cookie === undefined ? {} : { 'x-zapp-preview-app-cookie': cookie }),
       };
-      const upstream = new WebSocket(target, { headers });
+      const upstream =
+        protocols.length === 0
+          ? new WebSocket(target, { headers })
+          : new WebSocket(target, protocols, { headers });
       await new Promise<void>((resolve, reject) => {
         let opened = false;
         const abort = (): void => {

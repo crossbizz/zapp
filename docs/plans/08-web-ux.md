@@ -348,6 +348,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Run focused browser/API tests, affected lint/typecheck, a live local project check on port 3000, and the repository push gate.
 - [x] Commit: `fix(web): restore project files and embedded preview`
 
+#### WEB-18-FIX-8 - stable Vite HMR preview transport
+
+**Root cause:** The control-plane preview bridge copied `Sec-WebSocket-Protocol: vite-hmr` into the upstream request headers but did not pass it through the `ws` client's protocol argument. Vite selected `vite-hmr`, the client rejected the handshake as unsolicited, and the embedded preview retried continuously, producing visible flicker.
+**Files:** Modify `services/control-api/src/routes/preview.ts`, `services/control-api/test/preview.test.ts`, this plan, and `tasks/todo.md`. No UI redesign, desktop files, or public API contract changes are in scope.
+
+- [x] Reproduce the real Vite-style WebSocket subprotocol handshake against a local socket server and retain the failing bridge error.
+- [x] Negotiate sanitized incoming WebSocket subprotocols through the upstream `ws` client without duplicating the raw protocol header.
+- [x] Run focused control-plane tests, affected lint/typecheck, verify the running local stack no longer emits the handshake error, and run the repository push gate.
+- [x] Commit: `fix(preview): preserve Vite HMR WebSocket protocol`
+
 ---
 
 ## Testing strategy
@@ -361,6 +371,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-8 done — Preserved Vite's HMR WebSocket subprotocol through the control-to-sandbox bridge; the real socket regression passed, a live Docker workspace negotiated and held `vite-hmr`, all 134 browser tests passed, and the repository gate ran against the restored local stack.
 - 2026-08-14 WEB-18-FIX-7 done — Restored canonical lazy workspace trees and CHIPS-compatible embedded preview sessions; focused API/browser coverage and all 134 web tests passed, while live Chromium rendered the generated app and opened the real `src/main.ts` from its active workspace.
 - 2026-08-14 WEB-18-FIX-5 done — Restored source-only generated commits, single-stream run events, durable branch reuse, real preview lifecycle projection, canonical localhost redemption, and compact Lovable-style Preview/Files/Code/More; real Anthropic Docker run completed with 5/5 generated tests, source-only commit, preview ready, and share/exchange/redeem/document/source checks 201/200/200/200/200; web 134/134, runtime 15/15, Mission Control 5/5, local 14/14, config 84/84, orchestrator integration 45/45, lint/typecheck and cold repository gate passed.
 - 2026-08-14 WEB-18-FIX-4 done - Matched the live Lovable/Base44 editor density with 23-28px icon controls, a 28px page selector, and a balanced 44/56 split; preview acceptance passed 1/1, builder shell passed 24/24, lint/typecheck passed, and signed-in browser interactions produced no console errors. A real prompt reached Temporal but Modal rejected provisioning with RESOURCE_EXHAUSTED because the provider workspace exceeded its spend limit, so a new live preview remains externally blocked until that limit is raised.
