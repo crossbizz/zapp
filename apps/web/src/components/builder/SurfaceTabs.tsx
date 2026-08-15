@@ -14,6 +14,7 @@ import styles from './builder.module.css';
 export type SurfaceTab = PreviewSection;
 
 export interface SurfaceTabsProps {
+  readonly branchId: string;
   readonly fallbackCommitSha?: string;
   readonly focusPreviewRequest: number;
   readonly onAttachPreviewCapture: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
@@ -38,7 +39,11 @@ const primaryTabs = [
 ] as const satisfies readonly (readonly [SurfaceTab, string])[];
 const moreValues = new Set<SurfaceTab>(['logs', 'tests', 'releases', 'health']);
 
-function SurfaceIcon({ tab }: { readonly tab: 'code' | 'files' | 'more' | 'preview' }): ReactElement {
+function SurfaceIcon({
+  tab,
+}: {
+  readonly tab: 'code' | 'files' | 'more' | 'preview';
+}): ReactElement {
   switch (tab) {
     case 'preview':
       return (
@@ -70,6 +75,7 @@ function SurfaceIcon({ tab }: { readonly tab: 'code' | 'files' | 'more' | 'previ
 }
 
 export function SurfaceTabs({
+  branchId,
   fallbackCommitSha,
   focusPreviewRequest,
   onAttachPreviewCapture,
@@ -120,6 +126,7 @@ export function SurfaceTabs({
     case 'preview':
       content = (
         <PreviewFrame
+          branchId={branchId}
           events={runEvents}
           {...(fallbackCommitSha === undefined ? {} : { fallbackCommitSha })}
           onAttachToChat={onAttachPreviewCapture}
@@ -132,16 +139,41 @@ export function SurfaceTabs({
       );
       break;
     case 'files':
-      content = <CodeView organizationId={organizationId} projectId={projectId} view="files" />;
+      content = (
+        <CodeView
+          branchId={branchId}
+          organizationId={organizationId}
+          projectId={projectId}
+          view="files"
+        />
+      );
       break;
     case 'code':
-      content = <CodeView organizationId={organizationId} projectId={projectId} view="changes" />;
+      content = (
+        <CodeView
+          branchId={branchId}
+          organizationId={organizationId}
+          projectId={projectId}
+          view="changes"
+        />
+      );
       break;
     case 'logs':
     case 'tests':
     case 'releases':
     case 'health':
-      content = <MoreView activeSurface={value} events={runEvents} onRunCreated={onRunCreated} onSurfaceChange={onValueChange} organizationId={organizationId} projectId={projectId} {...(runId === undefined ? {} : { runId })} {...(runStatus === undefined ? {} : { runStatus })} />;
+      content = (
+        <MoreView
+          activeSurface={value}
+          events={runEvents}
+          onRunCreated={onRunCreated}
+          onSurfaceChange={onValueChange}
+          organizationId={organizationId}
+          projectId={projectId}
+          {...(runId === undefined ? {} : { runId })}
+          {...(runStatus === undefined ? {} : { runStatus })}
+        />
+      );
       break;
   }
 

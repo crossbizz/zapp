@@ -2,10 +2,7 @@ import { Context } from '@temporalio/activity';
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import {
-  createEventActivities,
-  EventBatchClient,
-} from '../../src/activities/events.js';
+import { createEventActivities, EventBatchClient } from '../../src/activities/events.js';
 import {
   createRunWorker,
   createTemporalOrchestrator,
@@ -21,8 +18,7 @@ import {
   type RunWorkflowInput,
 } from '../../src/workflows/run.js';
 
-const id = (prefix: 'run' | 'org' | 'proj'): string =>
-  `${prefix}_01J00000000000000000000000`;
+const id = (prefix: 'run' | 'org' | 'proj'): string => `${prefix}_01J00000000000000000000000`;
 
 function workflowInput(runId: string): RunWorkflowInput {
   return {
@@ -158,6 +154,8 @@ describe('AR-10 durable run control signals', () => {
 
   it('terminates a failed builder session instead of retrying the workflow task forever', async () => {
     const statuses: string[] = [];
+    const published: Array<{ readonly type: string; readonly payload: Record<string, unknown> }> =
+      [];
     const failedTransition = deferred<undefined>();
     const activities: RunActivities = {
       storeAssistantContent: () => Promise.reject(new Error('assistant overflow not expected')),
@@ -167,10 +165,14 @@ describe('AR-10 durable run control signals', () => {
           status: 'failed',
           commits: [],
           artifacts: [],
-          summary: 'provider request failed',
+          errorCode: 'provider_error',
+          summary: 'The model provider request failed after its retries.',
         }),
       commitAndPush: () => Promise.reject(new Error('failed run must not commit')),
-      emitEvents: () => Promise.resolve(),
+      emitEvents: ({ events }) => {
+        published.push(...events.map(({ type, payload }) => ({ type, payload })));
+        return Promise.resolve();
+      },
       transitionRunStatus: ({ status }) => {
         statuses.push(status);
         if (status === 'failed') failedTransition.resolve(undefined);
@@ -216,6 +218,10 @@ describe('AR-10 durable run control signals', () => {
     });
 
     expect(statuses).toEqual(['running', 'failed']);
+    expect(published.find(({ type }) => type === 'message.assistant')?.payload).toMatchObject({
+      content: 'The model provider request failed after its retries.',
+      model: 'policy/default',
+    });
   }, 30_000);
 
   it('finishes the active turn, checkpoints, pauses, reports status, and resumes once', async () => {
@@ -246,8 +252,7 @@ describe('AR-10 durable run control signals', () => {
           summary: 'session complete after resume',
         });
       },
-      commitAndPush: () =>
-        Promise.resolve({ commitSha: 'b'.repeat(40), diffstat: [] }),
+      commitAndPush: () => Promise.resolve({ commitSha: 'b'.repeat(40), diffstat: [] }),
       emitEvents: ({ events: batch }) => {
         const at = Date.now();
         events.push(...batch.map((event) => ({ type: event.type, at, payload: event.payload })));
@@ -279,10 +284,13 @@ describe('AR-10 durable run control signals', () => {
         workflowId: input.workflowId,
         args: [input],
       });
-      await vi.waitFor(async () => {
-        expect((await handle.query(getRunStatusQuery)).phase).toBe('session');
-        expect(sessions).toBe(1);
-      }, { timeout: 5_000 });
+      await vi.waitFor(
+        async () => {
+          expect((await handle.query(getRunStatusQuery)).phase).toBe('session');
+          expect(sessions).toBe(1);
+        },
+        { timeout: 5_000 },
+      );
       await handle.signal(pauseRunSignal, {
         runId: input.runId,
         operationKey: operationKey('b'),
@@ -337,22 +345,22 @@ describe('AR-10 durable run control signals', () => {
         operationKey: operationKey('b'),
       },
     });
-    expect(typeof (
-      (pausedPayload?.['control'] as Record<string, unknown> | undefined)?.[
+    expect(
+      typeof (pausedPayload?.['control'] as Record<string, unknown> | undefined)?.[
         'acknowledgementDeadlineAt'
-      ]
-    )).toBe('string');
+      ],
+    ).toBe('string');
     const resumedPayload = events.find((event) => event.type === 'run.resumed')?.payload;
     expect(resumedPayload).toMatchObject({
       control: {
         operationKey: operationKey('c'),
       },
     });
-    expect(typeof (
-      (resumedPayload?.['control'] as Record<string, unknown> | undefined)?.[
+    expect(
+      typeof (resumedPayload?.['control'] as Record<string, unknown> | undefined)?.[
         'acknowledgementDeadlineAt'
-      ]
-    )).toBe('string');
+      ],
+    ).toBe('string');
   }, 30_000);
 
   it('cancels the active tool, checkpoints, and acknowledges cancellation within five seconds', async () => {
@@ -426,10 +434,13 @@ describe('AR-10 durable run control signals', () => {
         workflowId: input.workflowId,
         args: [input],
       });
-      await vi.waitFor(async () => {
-        expect((await handle.query(getRunStatusQuery)).phase).toBe('session');
-        expect(activityStarted).toBe(true);
-      }, { timeout: 5_000 });
+      await vi.waitFor(
+        async () => {
+          expect((await handle.query(getRunStatusQuery)).phase).toBe('session');
+          expect(activityStarted).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
       const requestedAt = Date.now();
       await handle.signal(cancelRunSignal, {
         runId: input.runId,
@@ -452,11 +463,11 @@ describe('AR-10 durable run control signals', () => {
           operationKey: operationKey('d'),
         },
       });
-      expect(typeof (
-        (acknowledgement?.payload['control'] as Record<string, unknown> | undefined)?.[
+      expect(
+        typeof (acknowledgement?.payload['control'] as Record<string, unknown> | undefined)?.[
           'acknowledgementDeadlineAt'
-        ]
-      )).toBe('string');
+        ],
+      ).toBe('string');
     });
 
     expect(activityCancelled).toBe(true);
@@ -508,9 +519,12 @@ describe('AR-10 durable run control signals', () => {
       });
       const result = handle.result();
       void result.catch(() => undefined);
-      await vi.waitFor(() => {
-        expect(activityStarted).toBe(true);
-      }, { timeout: 5_000 });
+      await vi.waitFor(
+        () => {
+          expect(activityStarted).toBe(true);
+        },
+        { timeout: 5_000 },
+      );
       await handle.signal(pauseRunSignal, {
         runId: input.runId,
         operationKey: operationKey('2'),
@@ -562,8 +576,7 @@ describe('AR-10 durable run control signals', () => {
           redirectApplied: true,
         });
       },
-      commitAndPush: () =>
-        Promise.resolve({ commitSha: 'e'.repeat(40), diffstat: [] }),
+      commitAndPush: () => Promise.resolve({ commitSha: 'e'.repeat(40), diffstat: [] }),
       emitEvents: () => Promise.resolve(),
       transitionRunStatus: () => Promise.resolve(),
       estimateRunCost: approvalActivityNotExpected,
@@ -585,9 +598,12 @@ describe('AR-10 durable run control signals', () => {
         workflowId: input.workflowId,
         args: [input],
       });
-      await vi.waitFor(() => {
-        expect(prompts).toHaveLength(1);
-      }, { timeout: 5_000 });
+      await vi.waitFor(
+        () => {
+          expect(prompts).toHaveLength(1);
+        },
+        { timeout: 5_000 },
+      );
       const redirect = {
         runId: input.runId,
         instruction: 'Use the existing repository adapter and keep the public API unchanged.',

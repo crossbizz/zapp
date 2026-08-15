@@ -13,8 +13,14 @@ function isPublicPath(pathname: string): boolean {
   );
 }
 
-function loginUrl(request: NextRequest): URL {
-  const login = new URL('/login', request.url);
+export function loginUrl(request: NextRequest): URL {
+  const configuredAppBaseUrl = process.env.NEXT_PUBLIC_APP_BASE_URL?.trim();
+  const login = new URL(
+    '/login',
+    configuredAppBaseUrl === undefined || configuredAppBaseUrl.length === 0
+      ? request.url
+      : configuredAppBaseUrl,
+  );
   if (request.nextUrl.pathname === '/device') {
     const userCode = request.nextUrl.searchParams.get('userCode');
     if (userCode !== null) login.searchParams.set('userCode', userCode);

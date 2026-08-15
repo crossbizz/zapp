@@ -1,21 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { newId } from '@zapp/contracts';
-import type { Project, Workspace } from '@zapp/db';
+import type { AgentRun, Project, Workspace } from '@zapp/db';
 
 import type { AuthIdentity } from '../src/auth/port.js';
 import type { AuditExecutor, InMemoryAuditSink } from '../src/plugins/audit.js';
 import type { AuditRecord } from '@zapp/contracts';
 import { ORGANIZATION_HEADER } from '../src/plugins/tenant.js';
 import type { BuilderPreviewSandboxPort } from '../src/sandbox/port.js';
+import type { BuilderArtifactPort } from '../src/routes/builder-artifacts.js';
 import type { BuilderPreviewScreenshotStore } from '../src/routes/builder-preview.js';
 import type { PreviewProxyPort, PreviewProxyResponse } from '../src/routes/preview.js';
-import {
-  buildHarness,
-  signIn,
-  type Harness,
-  type TestSession,
-} from './support/harness.js';
+import { buildHarness, signIn, type Harness, type TestSession } from './support/harness.js';
 import { EMPTY_WORKSPACE_USAGE, InMemoryTenantData } from './support/tenant-db.js';
 
 const OWNER: AuthIdentity = {
@@ -125,8 +121,7 @@ class PreviewCaptureProxy implements PreviewProxyPort {
 class MemoryScreenshotStore implements BuilderPreviewScreenshotStore {
   readonly objects = new Map<
     string,
-    | { state: 'pending' }
-    | { state: 'completed'; body: Buffer; capturedAt: Date }
+    { state: 'pending' } | { state: 'completed'; body: Buffer; capturedAt: Date }
   >();
 
   reserve(key: string) {
@@ -208,7 +203,11 @@ interface Wired {
 }
 
 async function wire(
-  options: { readonly recheckIntervalMs?: number; readonly audit?: InMemoryAuditSink } = {},
+  options: {
+    readonly recheckIntervalMs?: number;
+    readonly audit?: InMemoryAuditSink;
+    readonly builderArtifacts?: BuilderArtifactPort;
+  } = {},
 ): Promise<Wired> {
   const data = new InMemoryTenantData();
   const sandbox = new PreviewSandbox();
@@ -219,6 +218,9 @@ async function wire(
     builderPreviewSandbox: sandbox,
     builderPreviewProxy: proxy,
     builderPreviewScreenshotStore: screenshotStore,
+    ...(options.builderArtifacts === undefined
+      ? {}
+      : { builderArtifacts: options.builderArtifacts }),
     ...(options.audit === undefined ? {} : { audit: options.audit }),
     ...(options.recheckIntervalMs === undefined
       ? {}
@@ -386,6 +388,46 @@ describe('public builder preview bridge', () => {
     ).toHaveLength(2);
   });
 
+  it('attributes a recovered workspace restart to the latest durable project run', async () => {
+    const wired = await wire();
+    const { project, workspace } = await seedWorkspace(wired);
+    const run: AgentRun = {
+      id: newId('run'),
+      organizationId: wired.organizationId,
+      projectId: project.id,
+      branchId: workspace.branchId,
+      mode: 'build',
+      appType: 'web',
+      model: null,
+      requestFingerprint: 'recovered-preview-run',
+      status: 'completed',
+      specificationId: null,
+      temporalWorkflowId: 'recovered-preview-workflow',
+      startedBy: wired.owner.userId,
+      budgetJson: null,
+      planMaxCredits: '1000.0000',
+      startedAt: new Date('2026-08-10T21:00:00.000Z'),
+      completedAt: new Date('2026-08-10T21:05:00.000Z'),
+    };
+    wired.data.runs.push(run);
+    Object.assign(workspace, {
+      runId: newId('run'),
+      taskId: newId('task'),
+      purpose: 'builder',
+      environment: 'zapp-dev',
+      imageTag: 'zapp-builder:test',
+    });
+
+    const response = await wired.harness.app.inject({
+      method: 'POST',
+      url: `/v1/workspaces/${workspace.id}/dev-server/restart`,
+      headers: { ...wired.asOwner, 'idempotency-key': 'builder-preview-recovered-run-01' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(wired.sandbox.restarts[0]?.workspace.runId).toBe(run.id);
+  });
+
   it('refuses restart when no validated project contract exists', async () => {
     const wired = await wire();
     const { workspace } = await seedWorkspace(wired);
@@ -402,6 +444,60 @@ describe('public builder preview bridge', () => {
       'project_contract_unavailable',
     );
     expect(wired.sandbox.restarts).toEqual([]);
+  });
+
+  it('derives a missing preview contract from the recovered workspace source', async () => {
+    const source = new Map<string, string>([
+      [
+        'package.json',
+        JSON.stringify({
+          name: 'recovered-vite-app',
+          private: true,
+          scripts: { dev: 'vite --port 3000', build: 'vite build' },
+          dependencies: { vite: '^5.4.0', typescript: '^5.6.0' },
+        }),
+      ],
+      ['pnpm-lock.yaml', 'lockfileVersion: 9.0'],
+      ['index.html', '<main id="app"></main>'],
+      ['src/main.ts', "document.querySelector('#app')!.textContent = 'Recovered';"],
+    ]);
+    const builderArtifacts: BuilderArtifactPort = {
+      listFiles: () =>
+        Promise.resolve({
+          entries: [...source.keys()].map((path) => ({ path, type: 'file' as const })),
+          truncated: false,
+        }),
+      readFile: ({ path }) => {
+        const body = source.get(path);
+        if (body === undefined) return Promise.reject(new Error('file not found'));
+        const bytes = Buffer.from(body);
+        return Promise.resolve({
+          path,
+          dataBase64: bytes.toString('base64'),
+          byteSize: bytes.length,
+          compareToken: 'a'.repeat(64),
+        });
+      },
+      editFile: () => Promise.reject(new Error('not used')),
+      compareCommits: () => Promise.reject(new Error('not used')),
+      listTests: () => Promise.reject(new Error('not used')),
+      signEvidence: () => Promise.reject(new Error('not used')),
+    };
+    const wired = await wire({ builderArtifacts });
+    const { workspace } = await seedWorkspace(wired);
+    wired.data.contracts.length = 0;
+
+    const response = await wired.harness.app.inject({
+      method: 'POST',
+      url: `/v1/workspaces/${workspace.id}/dev-server/restart`,
+      headers: { ...wired.asOwner, 'idempotency-key': 'builder-preview-derived-contract-01' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(wired.sandbox.restarts[0]?.contract).toMatchObject({
+      package_manager: 'pnpm',
+      develop: { command: 'pnpm run dev', port: 3000 },
+    });
   });
 
   it('streams validated capture records without exposing upstream credentials', async () => {
@@ -543,9 +639,7 @@ describe('public builder preview bridge', () => {
     expect(first.statusCode, first.body).toBe(502);
     const retry = await wired.harness.app.inject(request);
     expect(retry.statusCode, retry.body).toBe(409);
-    expect(retry.json<{ error: { code: string } }>().error.code).toBe(
-      'idempotency_in_progress',
-    );
+    expect(retry.json<{ error: { code: string } }>().error.code).toBe('idempotency_in_progress');
     expect(
       wired.proxy.requests.filter((candidate) => candidate.path === '/__zapp/screenshot'),
     ).toHaveLength(1);

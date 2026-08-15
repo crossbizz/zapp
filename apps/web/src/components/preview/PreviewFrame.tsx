@@ -1,7 +1,7 @@
 'use client';
 
 import type { BuilderPreviewEvent, RunEvent } from '@zapp/api-client';
-import { Button, EmptyState, ErrorState } from '@zapp/ui';
+import { Button, ErrorState } from '@zapp/ui';
 import {
   useCallback,
   useEffect,
@@ -14,6 +14,11 @@ import {
 } from 'react';
 
 import { createControlPlaneClient, type BuilderRun } from '../../lib/api';
+import {
+  claimWorkspaceAutoWake,
+  ensureProjectWorkspace,
+  restartWorkspaceOnce,
+} from '../builder/workspace-session';
 import { ConsoleDrawer } from './ConsoleDrawer';
 import { PreviewToolbar, type PreviewDevice } from './PreviewToolbar';
 import { SelectMode, type SelectedPreviewElement } from './SelectMode';
@@ -36,6 +41,7 @@ type LogResponse = Awaited<
 >;
 
 interface PreviewFrameProps {
+  readonly branchId: string;
   readonly events: readonly RunEvent[];
   readonly fallbackCommitSha?: string;
   readonly onAttachToChat: (file: File, capture: BuilderPreviewEvent) => Promise<boolean>;
@@ -387,6 +393,7 @@ function PreviewStyles(): ReactElement {
 }
 
 export function PreviewFrame({
+  branchId,
   events,
   fallbackCommitSha,
   onAttachToChat,
@@ -408,10 +415,16 @@ export function PreviewFrame({
   const [path, setPath] = useState('/');
   const [publicShareUrl, setPublicShareUrl] = useState<string>();
   const [previewUrl, setPreviewUrl] = useState<string>();
+  const [previewStartExpired, setPreviewStartExpired] = useState(false);
+  const [shareFailed, setShareFailed] = useState(false);
   const [shareRenewalGeneration, setShareRenewalGeneration] = useState(0);
   const [sharing, setSharing] = useState(false);
   const [selecting, setSelecting] = useState(false);
+  const [workspaceId, setWorkspaceId] = useState<string>();
+  const [workspaceRecoveryError, setWorkspaceRecoveryError] = useState<string>();
+  const [workspaceRecoveryGeneration, setWorkspaceRecoveryGeneration] = useState(0);
   const attachingRef = useRef(false);
+  const autoWakeWorkspaceRef = useRef<string | undefined>(undefined);
   const fixRunAttemptRef = useRef<StoredFixAttempt | undefined>(undefined);
   const fixRunPendingRef = useRef(false);
   const logCursorRef = useRef(0);
@@ -433,9 +446,55 @@ export function PreviewFrame({
   const wakeKeyRef = useRef<string | undefined>(undefined);
   const wakePendingRef = useRef(false);
   const workspaceGenerationRef = useRef(0);
+  const workspaceScopeRef = useRef<string | undefined>(undefined);
   const lifecycle = useMemo(() => previewLifecycle(events), [events]);
-  const workspaceId = eventWorkspaceId(lifecycle.event);
-  const previewUsable = lifecycle.event?.type === 'preview.ready' || logs?.state === 'ready';
+  const eventWorkspace = eventWorkspaceId(lifecycle.event);
+  const previewUsable = logs?.state === 'ready';
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let current = true;
+    const client = createControlPlaneClient(organizationId);
+    const workspaceScope = `${projectId}:${branchId}`;
+    if (workspaceScopeRef.current !== workspaceScope) {
+      workspaceScopeRef.current = workspaceScope;
+      setWorkspaceId(undefined);
+    }
+    setWorkspaceRecoveryError(undefined);
+    if (eventWorkspace === undefined && (runStatus === 'queued' || runStatus === 'running')) {
+      setOperationStatus(undefined);
+      return () => {
+        current = false;
+        controller.abort();
+      };
+    }
+    setOperationStatus('Restoring the project workspace…');
+    void ensureProjectWorkspace(client, {
+      branchId,
+      ...(eventWorkspace === undefined ? {} : { preferredWorkspaceId: eventWorkspace }),
+      projectId,
+      signal: controller.signal,
+    })
+      .then(async ({ recovered, workspace }) => {
+        if (recovered) {
+          await restartWorkspaceOnce(client, workspace.id);
+        }
+        if (!current) return;
+        setWorkspaceId(workspace.id);
+        setOperationStatus(
+          recovered ? 'Project workspace restored from the main branch.' : undefined,
+        );
+      })
+      .catch(() => {
+        if (!current || controller.signal.aborted) return;
+        setWorkspaceRecoveryError('The project workspace could not be restored from its branch.');
+        setOperationStatus(undefined);
+      });
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [branchId, eventWorkspace, organizationId, projectId, runStatus, workspaceRecoveryGeneration]);
 
   const refreshWorkspace = useCallback(
     async (signal?: AbortSignal, reset = false): Promise<void> => {
@@ -516,6 +575,8 @@ export function PreviewFrame({
     wakeKeyRef.current = undefined;
     wakePendingRef.current = false;
     setLogs(undefined);
+    setPreviewStartExpired(false);
+    setShareFailed(false);
     setCaptureEvents([]);
     setCaptureFailed(false);
     setAttaching(false);
@@ -542,16 +603,27 @@ export function PreviewFrame({
   }, [previewUrl]);
 
   useEffect(() => {
-    if (workspaceId === undefined || lifecycle.event?.type !== 'preview.starting') return;
+    if (
+      workspaceId === undefined ||
+      logs?.state === 'ready' ||
+      logs?.state === 'failed' ||
+      logs?.state === 'idle'
+    )
+      return;
     const timer = window.setInterval(() => {
       void refreshLatestWorkspace().catch(() => {
         setOperationStatus('Preview boot logs could not be refreshed.');
       });
     }, 2_000);
+    const deadline = window.setTimeout(() => {
+      setPreviewStartExpired(true);
+      setOperationStatus('Preview startup timed out. Retry the dev server without rebuilding.');
+    }, 45_000);
     return () => {
       window.clearInterval(timer);
+      window.clearTimeout(deadline);
     };
-  }, [lifecycle.event?.type, refreshLatestWorkspace, workspaceId]);
+  }, [logs?.state, refreshLatestWorkspace, workspaceId]);
 
   useEffect(() => {
     if (workspaceId === undefined || lifecycle.event?.type !== 'preview.failed') return;
@@ -580,6 +652,7 @@ export function PreviewFrame({
       .createPreviewShare(workspaceId, 'org', attempt.idempotencyKey)
       .then((response) => {
         if (!current) return;
+        setShareFailed(false);
         const completedAttempt = {
           expiresAt: response.share.expiresAt,
           idempotencyKey: attempt.idempotencyKey,
@@ -597,10 +670,8 @@ export function PreviewFrame({
       })
       .catch(() => {
         if (!current) return;
-        setOperationStatus('The authenticated preview link could not be created. Retrying…');
-        renewalTimer = window.setTimeout(() => {
-          setShareRenewalGeneration((value) => value + 1);
-        }, 5_000);
+        setShareFailed(true);
+        setOperationStatus('The authenticated preview link could not be created.');
       });
     return () => {
       current = false;
@@ -636,18 +707,10 @@ export function PreviewFrame({
   }, [connectionGeneration, organizationId, previewUrl, previewUsable, workspaceId]);
 
   const previewState: PreviewState = (() => {
-    if (
-      logs?.state !== 'ready' &&
-      (lifecycle.event?.type === 'preview.failed' || logs?.state === 'failed')
-    )
-      return 'failed';
-    if (
-      lifecycle.event?.type === 'preview.starting' ||
-      logs?.state === 'starting' ||
-      logs?.state === 'restarting'
-    )
+    if (previewStartExpired || logs?.state === 'failed') return 'failed';
+    if (logs === undefined || logs.state === 'starting' || logs.state === 'restarting')
       return 'starting';
-    if (logs?.state === 'idle') return 'sleeping';
+    if (logs.state === 'idle') return 'sleeping';
     if (lifecycle.stale) return 'stale';
     if (captureFailed) return 'disconnected';
     return 'ready';
@@ -658,6 +721,9 @@ export function PreviewFrame({
     restartPendingRef.current = true;
     const generation = workspaceGenerationRef.current;
     setOperationStatus('Restarting preview…');
+    setPreviewStartExpired(false);
+    setShareFailed(false);
+    setPreviewUrl(undefined);
     const idempotencyKey = restartKeyRef.current ?? crypto.randomUUID();
     restartKeyRef.current = idempotencyKey;
     try {
@@ -677,15 +743,18 @@ export function PreviewFrame({
     }
   };
 
-  const wake = async (): Promise<void> => {
+  const wake = useCallback(async (): Promise<void> => {
     if (workspaceId === undefined || wakePendingRef.current) return;
     wakePendingRef.current = true;
     const generation = workspaceGenerationRef.current;
     setOperationStatus('Waking preview…');
+    setPreviewStartExpired(false);
+    setShareFailed(false);
+    setPreviewUrl(undefined);
     const idempotencyKey = wakeKeyRef.current ?? crypto.randomUUID();
     wakeKeyRef.current = idempotencyKey;
     try {
-      await createControlPlaneClient(organizationId).startWorkspace(workspaceId, idempotencyKey);
+      await createControlPlaneClient(organizationId).restartDevServer(workspaceId, idempotencyKey);
       if (generation !== workspaceGenerationRef.current) return;
       wakeKeyRef.current = undefined;
       setOperationStatus('Preview wake requested.');
@@ -699,7 +768,34 @@ export function PreviewFrame({
     } finally {
       if (generation === workspaceGenerationRef.current) wakePendingRef.current = false;
     }
-  };
+  }, [organizationId, refreshLatestWorkspace, workspaceId]);
+
+  useEffect(() => {
+    if (
+      workspaceId === undefined ||
+      logs?.state !== 'idle' ||
+      autoWakeWorkspaceRef.current === workspaceId
+    ) {
+      return;
+    }
+    autoWakeWorkspaceRef.current = workspaceId;
+    if (!claimWorkspaceAutoWake(window.sessionStorage, workspaceId)) return;
+    const generation = workspaceGenerationRef.current;
+    setOperationStatus('Waking preview…');
+    void restartWorkspaceOnce(createControlPlaneClient(organizationId), workspaceId)
+      .then(() => {
+        if (generation !== workspaceGenerationRef.current) return;
+        setOperationStatus('Preview wake requested.');
+        void refreshLatestWorkspace().catch(() => {
+          setOperationStatus('Preview wake was requested, but logs could not be refreshed.');
+        });
+      })
+      .catch(() => {
+        if (generation === workspaceGenerationRef.current) {
+          setOperationStatus('Preview could not be woken. Retry safely.');
+        }
+      });
+  }, [logs?.state, organizationId, refreshLatestWorkspace, workspaceId]);
 
   const attachCapture = async (capture: BuilderPreviewEvent): Promise<void> => {
     if (workspaceId === undefined || attachingRef.current) return;
@@ -926,24 +1022,31 @@ export function PreviewFrame({
   };
 
   const previewContent = (): ReactElement => {
-    if (lifecycle.event === undefined || workspaceId === undefined) {
+    if (workspaceRecoveryError !== undefined) {
       return (
-        <EmptyState
-          description={
-            runStatus === 'queued'
+        <div className="zapp-preview-state">
+          <h2>Workspace unavailable</h2>
+          <p>{workspaceRecoveryError}</p>
+          <Button
+            onClick={() => {
+              setWorkspaceRecoveryGeneration((value) => value + 1);
+            }}
+          >
+            Retry workspace
+          </Button>
+        </div>
+      );
+    }
+    if (workspaceId === undefined) {
+      return (
+        <div aria-busy="true" className="zapp-preview-state">
+          <h2>{runStatus === 'queued' ? 'Build queued' : 'Restoring workspace'}</h2>
+          <p>
+            {runStatus === 'queued'
               ? 'The agent accepted your request and will start the workspace next.'
-              : runStatus === 'running'
-                ? 'The agent is preparing the first workspace and preview.'
-                : 'The preview will appear after the agent starts a workspace.'
-          }
-          title={
-            runStatus === 'queued'
-              ? 'Build queued'
-              : runStatus === 'running'
-                ? 'Workspace is starting'
-                : 'Preview unavailable'
-          }
-        />
+              : 'Opening the latest project branch…'}
+          </p>
+        </div>
       );
     }
     if (previewState === 'starting') {
@@ -998,6 +1101,24 @@ export function PreviewFrame({
           onRetry={() => void restart()}
           title="Preview failed"
         />
+      );
+    }
+    if (shareFailed) {
+      return (
+        <div className="zapp-preview-state">
+          <h2>Preview session unavailable</h2>
+          <p>
+            The workspace is running, but its authenticated preview session could not be opened.
+          </p>
+          <Button
+            onClick={() => {
+              setShareFailed(false);
+              setShareRenewalGeneration((value) => value + 1);
+            }}
+          >
+            Retry preview
+          </Button>
+        </div>
       );
     }
     return previewUrl === undefined ? (

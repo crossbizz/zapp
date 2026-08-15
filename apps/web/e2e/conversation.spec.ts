@@ -4,11 +4,21 @@ const apiBaseUrl = 'http://127.0.0.1:4100';
 const appBaseUrl = 'http://127.0.0.1:3100';
 const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
+const branchId = 'br_01K27Q9C2W85CMN1V9S6Q3D4FQ';
 const organizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 const contractOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 
 const projectRead = {
-  branches: [],
+  branches: [
+    {
+      createdAt: '2026-08-10T12:00:00.000Z',
+      headCommitSha: '2'.repeat(40),
+      id: branchId,
+      name: 'main',
+      organizationId,
+      projectId,
+    },
+  ],
   environments: [],
   project: {
     archivedAt: null,
@@ -485,12 +495,54 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
   const before = '1'.repeat(40);
   const after = '2'.repeat(40);
   const listedWorkspacePaths: string[] = [];
+  const workspaceCreateBodies: unknown[] = [];
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
     await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
   });
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    if (route.request().method() === 'POST') {
+      workspaceCreateBodies.push(route.request().postDataJSON());
+      await route.fulfill({
+        body: JSON.stringify({
+          workspace: {
+            branchId,
+            createdAt: '2026-08-10T12:01:00.000Z',
+            id: workspaceId,
+            lastActiveAt: '2026-08-10T12:01:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: 'provider-code-fixture',
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: 'ready',
+            terminatedAt: null,
+          },
+        }),
+        headers: corsHeaders(),
+        status: 201,
+      });
+      return;
+    }
     await route.fulfill({
-      body: JSON.stringify({ workspaces: [{ id: workspaceId }] }),
+      body: JSON.stringify({
+        workspaces: [
+          {
+            branchId,
+            createdAt: '2026-08-10T12:00:00.000Z',
+            id: 'ws_01K27Q9C2W85CMN1V9S6Q3D4F0',
+            lastActiveAt: '2026-08-10T12:00:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: null,
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: 'terminated',
+            terminatedAt: '2026-08-10T12:00:01.000Z',
+          },
+        ],
+      }),
       headers: corsHeaders(),
       status: 200,
     });
@@ -625,6 +677,7 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
   await page.getByRole('button', { name: 'src', exact: true }).click();
   await expect(page.getByRole('button', { name: 'src/page.tsx' })).toHaveCount(0);
   expect(listedWorkspacePaths).toEqual(['.:0', 'src:0']);
+  expect(workspaceCreateBodies).toEqual([{ branchId, resourceProfile: 'standard' }]);
   await page.getByLabel('Before commit').fill(before);
   await page.getByLabel('After commit').fill(after);
   await page.getByRole('button', { name: 'Compare', exact: true }).click();
@@ -1141,7 +1194,7 @@ test('uploads a replacement image after a failed send even when its metadata is 
 test('starts a new run with the project-persisted mode and model when the latest run is inactive', async ({
   page,
 }) => {
-  const previousBranchId = 'br_01K27Q9C2W85CMN1V9S6Q3D4FX';
+  const previousBranchId = branchId;
   const completedRun = {
     ...activeRun,
     branchId: previousBranchId,

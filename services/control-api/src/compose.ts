@@ -1,4 +1,8 @@
-import { createServiceTokenSigner, type ServiceTokenConfig, type TemplateRegistry } from '@zapp/config';
+import {
+  createServiceTokenSigner,
+  type ServiceTokenConfig,
+  type TemplateRegistry,
+} from '@zapp/config';
 import { createActivityIdempotencyRepository, type Database } from '@zapp/db';
 
 import { buildApp, type AppInstance } from './app.js';
@@ -57,6 +61,7 @@ import { createModelGatewayLocalAgentClient } from './local-agent/gateway.js';
 import { createLocalAgentSessionRepository } from './local-agent/store.js';
 import {
   createBuilderPreviewSandboxClient,
+  createSandboxServiceClient,
   createSupportSandboxClient,
 } from './sandbox/client.js';
 import { createS3BuilderPreviewScreenshotStore } from './routes/builder-preview.js';
@@ -64,7 +69,10 @@ import { createGitHubProvider } from './integrations/github/app.js';
 import { createGitHubIntegrationPort } from './integrations/github/install.js';
 import { createGitHubControls } from './integrations/github/controls.js';
 import { createDbGitHubSyncStore, createGitHubSyncEngine } from './integrations/github/sync.js';
-import { createDbGitHubExportStore, createGitHubExportService } from './integrations/github/export.js';
+import {
+  createDbGitHubExportStore,
+  createGitHubExportService,
+} from './integrations/github/export.js';
 import { createGitHubGitRuntime } from './integrations/github/git-runtime.js';
 import {
   createRedisGitHubAuthorizationStateStore,
@@ -331,10 +339,12 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
     githubProvider === undefined || runtime.gitServiceUrl === undefined
       ? undefined
       : (() => {
-          const git = createGitHubGitRuntime(createGitServiceProjectExportPort({
-            baseUrl: runtime.gitServiceUrl,
-            serviceTokens: runtime.serviceTokens,
-          }));
+          const git = createGitHubGitRuntime(
+            createGitServiceProjectExportPort({
+              baseUrl: runtime.gitServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
+          );
           return createGitHubControls({
             sync: createGitHubSyncEngine({
               store: createDbGitHubSyncStore(database),
@@ -504,7 +514,9 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
               storage: createS3AttachmentStorage(runtime.artifactStorage),
             },
           }),
-      ...(previewRuntime === undefined || runtime.gitServiceUrl === undefined || runtime.verificationServiceUrl === undefined
+      ...(previewRuntime === undefined ||
+      runtime.gitServiceUrl === undefined ||
+      runtime.verificationServiceUrl === undefined
         ? {}
         : {
             builderArtifacts: createBuilderArtifactClient({
@@ -523,6 +535,10 @@ export function composeApp(runtime: ServiceRuntime): AppInstance {
         ? {}
         : {
             builderPreviewSandbox: createBuilderPreviewSandboxClient({
+              baseUrl: previewRuntime.config.sandboxServiceUrl,
+              serviceTokens: runtime.serviceTokens,
+            }),
+            sandbox: createSandboxServiceClient({
               baseUrl: previewRuntime.config.sandboxServiceUrl,
               serviceTokens: runtime.serviceTokens,
             }),

@@ -9,6 +9,7 @@ import {
 } from '../src/routes/builder-preview.js';
 import {
   createBuilderPreviewSandboxClient,
+  createSandboxServiceClient,
   createSandboxStorageMeasurementClient,
   createSupportSandboxClient,
 } from '../src/sandbox/client.js';
@@ -24,6 +25,7 @@ const workspace: SandboxWorkspace = {
   providerWorkspaceId: 'provider-preview',
   status: 'active',
   resourceProfile: 'standard',
+  runId: newId('run'),
   snapshotRef: null,
   createdAt: new Date('2026-08-10T19:00:00.000Z'),
   lastActiveAt: new Date('2026-08-10T20:00:00.000Z'),
@@ -93,6 +95,56 @@ async function* byteStream(chunks: readonly Buffer[]): AsyncGenerator<Uint8Array
 }
 
 describe('builder preview sandbox client', () => {
+  it('creates a branch-backed workspace through the authenticated sandbox boundary', async () => {
+    const requests: Array<{ input: string; init: RequestInit }> = [];
+    const client = createSandboxServiceClient({
+      baseUrl: 'http://sandbox.internal/',
+      serviceTokens: { secret: TEST_SERVICE_TOKEN_SECRET },
+      fetch: (input, init) => {
+        requests.push({ input, init });
+        return Promise.resolve(
+          Response.json(
+            {
+              workspace: {
+                ...workspace,
+                providerWorkspaceId: 'provider-created',
+                status: 'ready',
+              },
+            },
+            { status: 201 },
+          ),
+        );
+      },
+    });
+    const operationKey = `op_${'d'.repeat(64)}`;
+
+    await expect(
+      client.createWorkspace({ workspace, branchName: 'main', operationKey }),
+    ).resolves.toEqual({ providerWorkspaceId: 'provider-created', status: 'ready' });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.input).toBe('http://sandbox.internal/internal/workspaces');
+    expect(requests[0]?.init.method).toBe('POST');
+    const headers = new Headers(requests[0]?.init.headers);
+    expect(headers.get('x-zapp-service-token')).toMatch(/^ey/u);
+    expect(headers.get('x-zapp-organization-id')).toBe(workspace.organizationId);
+    expect(headers.get('x-zapp-project-id')).toBe(workspace.projectId);
+    expect(headers.get('idempotency-key')).toBe(operationKey);
+    const requestBody = requests[0]?.init.body;
+    expect(typeof requestBody).toBe('string');
+    if (typeof requestBody !== 'string') throw new Error('Expected a serialized workspace body.');
+    const body = JSON.parse(requestBody) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      workspace: { id: workspace.id, branchId: workspace.branchId },
+      branchName: 'main',
+      purpose: 'builder',
+      networkProfile: 'dependency_install',
+      operationKey,
+    });
+    expect(body['runId']).toMatch(/^run_/u);
+    expect(body['taskId']).toMatch(/^task_/u);
+  });
+
   it('reads project storage through the authenticated sandbox-service boundary', async () => {
     const requests: Array<{ input: string; init: RequestInit }> = [];
     const client = createSandboxStorageMeasurementClient({
@@ -196,6 +248,7 @@ describe('builder preview sandbox client', () => {
     expect(headers.get('x-zapp-service-token')).toMatch(/^ey/u);
     expect(headers.get('x-zapp-organization-id')).toBe(workspace.organizationId);
     expect(headers.get('x-zapp-project-id')).toBe(workspace.projectId);
+    expect(headers.get('x-zapp-run-id')).toBe(workspace.runId);
     const requestBody = requests[0]?.init.body;
     expect(typeof requestBody).toBe('string');
     if (typeof requestBody !== 'string') throw new Error('restart request body must be JSON');
@@ -284,8 +337,7 @@ describe('builder preview screenshot S3 store', () => {
     const reservations = await Promise.all([store.reserve(key), store.reserve(key)]);
     expect(reservations.map((entry) => entry.state).sort()).toEqual(['acquired', 'pending']);
     const conditionalWrites = sender.commands.filter(
-      (command) =>
-        command instanceof PutObjectCommand && command.input.IfNoneMatch === '*',
+      (command) => command instanceof PutObjectCommand && command.input.IfNoneMatch === '*',
     );
     expect(conditionalWrites).toHaveLength(2);
 

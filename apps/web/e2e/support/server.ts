@@ -27,12 +27,9 @@ import {
 import { FakeAuthPort } from '../../../../services/control-api/test/support/fake-auth-port.js';
 import { InMemoryOrganizationStore } from '../../../../services/control-api/test/support/org-store.js';
 
+import { createE1Composition, E1_ORGANIZATION_ID, E1_ORGANIZATION_NAME } from './e1-composition.js';
 import {
-  createE1Composition,
-  E1_ORGANIZATION_ID,
-  E1_ORGANIZATION_NAME,
-} from './e1-composition.js';
-import {
+  nextDevWatchEnvironment,
   preserveNextGeneratedFiles,
   resetNextDevOutput,
 } from './next-dev-output.js';
@@ -221,9 +218,7 @@ const built = {
       },
       provider: {
         evaluate({ flag }) {
-          return Promise.resolve(
-            clientFeatureFlags[flag as keyof typeof clientFeatureFlags],
-          );
+          return Promise.resolve(clientFeatureFlags[flag as keyof typeof clientFeatureFlags]);
         },
       },
     }),
@@ -241,9 +236,10 @@ function hasCookie(header: string | undefined, name: string): boolean {
 }
 
 built.app.addHook('onRequest', async (request, reply) => {
-  const allowedOrigin = request.headers.origin === e1.preview.appBaseUrl.origin
-    ? e1.preview.appBaseUrl.origin
-    : appBaseUrl;
+  const allowedOrigin =
+    request.headers.origin === e1.preview.appBaseUrl.origin
+      ? e1.preview.appBaseUrl.origin
+      : appBaseUrl;
   reply.header('access-control-allow-origin', allowedOrigin);
   reply.header('access-control-allow-credentials', 'true');
   reply.header(
@@ -385,6 +381,7 @@ await built.app.listen({ host: '127.0.0.1', port: apiPort });
 const next = spawn('./node_modules/.bin/next', ['dev', '--port', String(appPort)], {
   env: {
     ...process.env,
+    ...nextDevWatchEnvironment(),
     NEXT_PUBLIC_APP_BASE_URL: appBaseUrl,
     NEXT_PUBLIC_CONTROL_API_URL: apiBaseUrl,
     ZAPP_WEB_NEXT_DIST_DIR: nextOutputName,

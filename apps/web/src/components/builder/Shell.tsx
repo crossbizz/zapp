@@ -1119,11 +1119,13 @@ export function Shell({ projectId }: ShellProps): ReactElement {
     announcedConversationMinimum,
     Math.round(effectiveConversationWidth),
   );
-  const fallbackCommitSha = project.branches.find((branch) =>
-    activeRun?.branchId === undefined || activeRun.branchId === null
-      ? branch.name === project.repository?.defaultBranch
-      : branch.id === activeRun.branchId,
-  )?.headCommitSha;
+  const activeBranch =
+    project.branches.find((branch) =>
+      activeRun?.branchId === undefined || activeRun.branchId === null
+        ? branch.name === project.repository?.defaultBranch
+        : branch.id === activeRun.branchId,
+    ) ?? project.branches.at(0);
+  const fallbackCommitSha = activeBranch?.headCommitSha;
 
   return (
     <>
@@ -1211,6 +1213,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                 id="surface-pane"
               >
                 <WorkingSurface
+                  branchId={activeBranch?.id ?? ''}
                   {...(fallbackCommitSha === undefined || fallbackCommitSha === null
                     ? {}
                     : { fallbackCommitSha })}

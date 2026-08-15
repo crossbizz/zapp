@@ -42,9 +42,36 @@ const OWNER: AuthIdentity = {
 const harnesses: Harness[] = [];
 
 const TEST_PLAN_LIMITS = loadPlanLimitsConfig({
-  trial: { concurrentAutonomousRuns: 1, concurrentSandboxes: 1, maxResourceProfile: 'small', maxRunBudgetCredits: '10.0000', maxPreviewLifetimeHours: 1, artifactRetentionDays: 7, monthlyCredits: '10.0000', seats: 1 },
-  builder: { concurrentAutonomousRuns: 3, concurrentSandboxes: 3, maxResourceProfile: 'standard', maxRunBudgetCredits: '100.0000', maxPreviewLifetimeHours: 24, artifactRetentionDays: 30, monthlyCredits: '100.0000', seats: 3 },
-  studio: { concurrentAutonomousRuns: 10, concurrentSandboxes: 10, maxResourceProfile: 'large', maxRunBudgetCredits: '1000.0000', maxPreviewLifetimeHours: 168, artifactRetentionDays: 90, monthlyCredits: '1000.0000', seats: 10 },
+  trial: {
+    concurrentAutonomousRuns: 1,
+    concurrentSandboxes: 1,
+    maxResourceProfile: 'small',
+    maxRunBudgetCredits: '10.0000',
+    maxPreviewLifetimeHours: 1,
+    artifactRetentionDays: 7,
+    monthlyCredits: '10.0000',
+    seats: 1,
+  },
+  builder: {
+    concurrentAutonomousRuns: 3,
+    concurrentSandboxes: 3,
+    maxResourceProfile: 'standard',
+    maxRunBudgetCredits: '100.0000',
+    maxPreviewLifetimeHours: 24,
+    artifactRetentionDays: 30,
+    monthlyCredits: '100.0000',
+    seats: 3,
+  },
+  studio: {
+    concurrentAutonomousRuns: 10,
+    concurrentSandboxes: 10,
+    maxResourceProfile: 'large',
+    maxRunBudgetCredits: '1000.0000',
+    maxPreviewLifetimeHours: 168,
+    artifactRetentionDays: 90,
+    monthlyCredits: '1000.0000',
+    seats: 10,
+  },
 });
 
 afterEach(async () => {
@@ -55,6 +82,7 @@ interface StartCall {
   readonly runId: string;
   readonly workflowId: string;
   readonly projectId: string;
+  readonly branchId: string | null;
   readonly mode: string;
   readonly appType: 'web' | 'mobile';
   readonly model: string | null;
@@ -179,9 +207,17 @@ class FakeSandboxServicePort {
   failCreates = 0;
   branchLockedCreates = 0;
   readonly failures = new Set<string>();
+  afterCreate?: (
+    input: { readonly workspace?: { readonly id?: string } },
+    result: {
+      readonly providerWorkspaceId: string;
+      readonly status: string;
+    },
+  ) => void;
 
   createWorkspace(input: {
     readonly operationKey?: string;
+    readonly workspace?: { readonly id?: string };
   }): Promise<{ providerWorkspaceId: string; status: string }> {
     this.calls.push('create');
     this.createInputs.push(input);
@@ -198,10 +234,12 @@ class FakeSandboxServicePort {
         }),
       );
     }
-    return Promise.resolve({
+    const result = {
       providerWorkspaceId: `sandbox-${String(this.calls.length)}`,
       status: 'provisioning',
-    });
+    };
+    this.afterCreate?.(input, result);
+    return Promise.resolve(result);
   }
 
   startWorkspace(input: { readonly operationKey?: string }): Promise<{ status: string }> {
@@ -226,7 +264,6 @@ class FakeSandboxServicePort {
       return Promise.reject(new Error('sandbox terminate rejected'));
     return Promise.resolve();
   }
-
 }
 
 class ReadCountingOrganizationStore extends InMemoryOrganizationStore {
@@ -367,12 +404,19 @@ it('atomically admits one distinct autonomous intent at the trial limit while re
       payload: { mode: 'autonomous', prompt: 'Atomically admit this autonomous run' },
     });
 
-  const [first, second] = await Promise.all([request('autonomous-race-a'), request('autonomous-race-b')]);
+  const [first, second] = await Promise.all([
+    request('autonomous-race-a'),
+    request('autonomous-race-b'),
+  ]);
   expect([first.statusCode, second.statusCode].sort()).toEqual([201, 429]);
   const admitted = first.statusCode === 201 ? first : second;
-  const replay = await request(first.statusCode === 201 ? 'autonomous-race-a' : 'autonomous-race-b');
+  const replay = await request(
+    first.statusCode === 201 ? 'autonomous-race-a' : 'autonomous-race-b',
+  );
   expect(replay.statusCode, replay.body).toBe(201);
-  expect(replay.json<{ run: { id: string } }>().run.id).toBe(admitted.json<{ run: { id: string } }>().run.id);
+  expect(replay.json<{ run: { id: string } }>().run.id).toBe(
+    admitted.json<{ run: { id: string } }>().run.id,
+  );
   expect(wired.orchestrator.starts).toHaveLength(1);
 });
 
@@ -409,7 +453,10 @@ it('retains autonomous quota after ambiguous dispatch and converges on stable-in
   };
   const payload = { mode: 'autonomous', prompt: 'Retain quota until dispatch is known' } as const;
   const ambiguous = await wired.built.app.inject({
-    method: 'POST', url: `/v1/projects/${project.id}/runs`, headers, payload,
+    method: 'POST',
+    url: `/v1/projects/${project.id}/runs`,
+    headers,
+    payload,
   });
   const competing = await wired.built.app.inject({
     method: 'POST',
@@ -424,7 +471,10 @@ it('retains autonomous quota after ambiguous dispatch and converges on stable-in
   expect(competing.statusCode).toBe(429);
 
   const retry = await wired.built.app.inject({
-    method: 'POST', url: `/v1/projects/${project.id}/runs`, headers, payload,
+    method: 'POST',
+    url: `/v1/projects/${project.id}/runs`,
+    headers,
+    payload,
   });
   expect(retry.statusCode, retry.body).toBe(201);
   expect(retry.json<{ run: { id: string } }>().run.id).toBe(wired.data.runs[0]?.id);
@@ -465,7 +515,9 @@ it('clamps a workspace resource profile to the organization plan before sandbox 
   });
 
   expect(response.statusCode, response.body).toBe(201);
-  expect(response.json<{ workspace: { resourceProfile: string } }>().workspace.resourceProfile).toBe('small');
+  expect(
+    response.json<{ workspace: { resourceProfile: string } }>().workspace.resourceProfile,
+  ).toBe('small');
   expect(sandbox.createInputs[0]).toMatchObject({ workspace: { resourceProfile: 'small' } });
 });
 
@@ -576,6 +628,8 @@ describe('POST /v1/projects/:projectId/runs', () => {
     const organizations = new ReadCountingOrganizationStore();
     const wired = await wire({ organizations });
     const project = await createProject(wired);
+    const mainBranch = wired.data.branches.find((branch) => branch.projectId === project.id);
+    expect(mainBranch).toBeDefined();
     organizations.settings.set(wired.organizationId, {
       builderCanDeploy: false,
       defaultModelPolicy: { allowedModels: 'malformed' },
@@ -605,12 +659,17 @@ describe('POST /v1/projects/:projectId/runs', () => {
       model: null,
     });
     expect(wired.data.runs).toHaveLength(1);
-    expect(wired.data.runs[0]).toMatchObject({ appType: 'web', model: null });
+    expect(wired.data.runs[0]).toMatchObject({
+      appType: 'web',
+      branchId: mainBranch?.id,
+      model: null,
+    });
     expect(wired.orchestrator.starts).toEqual([
       expect.objectContaining({
         runId: run.id,
         workflowId: run.id,
         projectId: project.id,
+        branchId: mainBranch?.id,
         mode: 'build',
         appType: 'web',
         model: null,
@@ -903,9 +962,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
     expect(replay.statusCode, replay.body).toBe(201);
     expect(replay.json()).toEqual(first.json());
     expect(conflict.statusCode, conflict.body).toBe(422);
-    expect(conflict.json<{ error: { code: string } }>().error.code).toBe(
-      'idempotency_conflict',
-    );
+    expect(conflict.json<{ error: { code: string } }>().error.code).toBe('idempotency_conflict');
     expect(wired.data.runs).toHaveLength(1);
     expect(wired.orchestrator.starts).toHaveLength(1);
     expect(wired.orchestrator.starts[0]).toMatchObject({
@@ -967,9 +1024,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
     });
 
     expect(changed.statusCode, changed.body).toBe(422);
-    expect(changed.json<{ error: { code: string } }>().error.code).toBe(
-      'idempotency_conflict',
-    );
+    expect(changed.json<{ error: { code: string } }>().error.code).toBe('idempotency_conflict');
     expect(wired.data.runs).toHaveLength(1);
     expect(wired.orchestrator.starts).toHaveLength(1);
     expect(
@@ -1056,9 +1111,7 @@ describe('POST /v1/projects/:projectId/runs', () => {
     });
 
     expect(retry.statusCode, retry.body).toBe(201);
-    expect(retry.json<{ run: { planMaxCredits: string } }>().run.planMaxCredits).toBe(
-      '1000.0000',
-    );
+    expect(retry.json<{ run: { planMaxCredits: string } }>().run.planMaxCredits).toBe('1000.0000');
     expect(wired.orchestrator.starts).toHaveLength(2);
     expect(wired.orchestrator.starts.every((start) => start.planMaxCredits === 1000)).toBe(true);
   });
@@ -1332,15 +1385,11 @@ describe('the in-memory run-create queue', () => {
 
     const settled = await Promise.allSettled([create(), create(), create()]);
 
-    expect(settled.map((result) => result.status)).toEqual([
-      'rejected',
-      'fulfilled',
-      'fulfilled',
-    ]);
+    expect(settled.map((result) => result.status)).toEqual(['rejected', 'fulfilled', 'fulfilled']);
     expect(
-      settled.slice(1).map((result) =>
-        result.status === 'fulfilled' ? result.value.outcome : 'rejected',
-      ),
+      settled
+        .slice(1)
+        .map((result) => (result.status === 'fulfilled' ? result.value.outcome : 'rejected')),
     ).toEqual(['created', 'recovered']);
     expect(data.runs).toHaveLength(1);
     expect(audits).toBe(1);
@@ -1367,15 +1416,11 @@ describe('the in-memory run-create queue', () => {
 
     const settled = await Promise.allSettled([create(), create(), create()]);
 
-    expect(settled.map((result) => result.status)).toEqual([
-      'rejected',
-      'fulfilled',
-      'fulfilled',
-    ]);
+    expect(settled.map((result) => result.status)).toEqual(['rejected', 'fulfilled', 'fulfilled']);
     expect(
-      settled.slice(1).map((result) =>
-        result.status === 'fulfilled' ? result.value.outcome : 'rejected',
-      ),
+      settled
+        .slice(1)
+        .map((result) => (result.status === 'fulfilled' ? result.value.outcome : 'rejected')),
     ).toEqual(['created', 'recovered']);
     expect(data.runs).toHaveLength(1);
     expect(completedAudits).toBe(1);
@@ -1384,6 +1429,30 @@ describe('the in-memory run-create queue', () => {
 });
 
 describe('workspace passthrough routes', () => {
+  it('accepts the sandbox service durable ready transition during workspace creation', async () => {
+    const sandbox = new FakeSandboxServicePort();
+    const wired = await wire({ sandbox });
+    const project = await createProject(wired);
+    const branch = wired.data.branches.find((candidate) => candidate.projectId === project.id);
+    sandbox.afterCreate = (input, result) => {
+      (result as { status: string }).status = 'ready';
+      const row = wired.data.workspaces.find((candidate) => candidate.id === input.workspace?.id);
+      if (row === undefined) throw new Error('workspace create intent missing');
+      row.providerWorkspaceId = result.providerWorkspaceId;
+      row.status = 'ready';
+    };
+
+    const created = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/workspaces`,
+      headers: { ...wired.as(wired.owner), 'idempotency-key': 'workspace-durable-ready-01' },
+      payload: { branchId: branch?.id, resourceProfile: 'standard' },
+    });
+
+    expect(created.statusCode, created.body).toBe(201);
+    expect(created.json<{ workspace: { status: string } }>().workspace.status).toBe('ready');
+  });
+
   it('creates, reads, starts, checkpoints and terminates a tenant workspace', async () => {
     const sandbox = new FakeSandboxServicePort();
     const wired = await wire({ sandbox });
@@ -1619,7 +1688,10 @@ describe('workspace passthrough routes', () => {
       const created = await wired.built.app.inject({
         method: 'POST',
         url: `/v1/projects/${project.id}/workspaces`,
-        headers: { ...wired.as(wired.owner), 'idempotency-key': `builder-workspace-${action}-seed` },
+        headers: {
+          ...wired.as(wired.owner),
+          'idempotency-key': `builder-workspace-${action}-seed`,
+        },
         payload: {},
       });
       const workspaceId = created.json<{ workspace: { id: string } }>().workspace.id;
@@ -1659,14 +1731,29 @@ describe('workspace passthrough routes', () => {
       ['redirect', 'queued', { prompt: 'No redirect' }],
     ] as const) {
       const seeded: AgentRun = {
-        id: newId('run'), organizationId: wired.organizationId, projectId: project.id, branchId: null,
-        mode: 'build', appType: 'web', model: null, requestFingerprint: `seed:viewer-${action}`, status, specificationId: null, temporalWorkflowId: `viewer-${action}`,
-        startedBy: wired.owner.userId, budgetJson: null, planMaxCredits: '1000.0000', startedAt: wired.built.now(), completedAt: null,
+        id: newId('run'),
+        organizationId: wired.organizationId,
+        projectId: project.id,
+        branchId: null,
+        mode: 'build',
+        appType: 'web',
+        model: null,
+        requestFingerprint: `seed:viewer-${action}`,
+        status,
+        specificationId: null,
+        temporalWorkflowId: `viewer-${action}`,
+        startedBy: wired.owner.userId,
+        budgetJson: null,
+        planMaxCredits: '1000.0000',
+        startedAt: wired.built.now(),
+        completedAt: null,
       };
       wired.data.runs.push(seeded);
       const callsBefore = wired.orchestrator.signals.length;
       const response = await wired.built.app.inject({
-        method: 'POST', url: `/v1/runs/${seeded.id}/${action}`, headers: wired.as(viewer),
+        method: 'POST',
+        url: `/v1/runs/${seeded.id}/${action}`,
+        headers: wired.as(viewer),
         ...(payload === undefined ? {} : { payload }),
       });
       expect(response.statusCode, response.body).toBe(403);
@@ -1674,7 +1761,10 @@ describe('workspace passthrough routes', () => {
     }
 
     const workspaceCreate = await wired.built.app.inject({
-      method: 'POST', url: `/v1/projects/${project.id}/workspaces`, headers: wired.as(viewer), payload: {},
+      method: 'POST',
+      url: `/v1/projects/${project.id}/workspaces`,
+      headers: wired.as(viewer),
+      payload: {},
     });
     expect(workspaceCreate.statusCode, workspaceCreate.body).toBe(403);
 
@@ -1684,17 +1774,34 @@ describe('workspace passthrough routes', () => {
       ['terminate', 'provisioning', undefined],
     ] as const) {
       const seeded: Workspace = {
-        id: newId('ws'), organizationId: wired.organizationId, projectId: project.id, branchId: null,
-        provider: 'modal', providerWorkspaceId: `viewer-${action}`, status, resourceProfile: 'standard',
-        runId: null, taskId: null, purpose: null, environment: null, imageTag: null,
-        previewMonitorEnabled: false, previewMonitorOwnerId: null, previewMonitorLeaseExpiresAt: null,
-        snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
+        id: newId('ws'),
+        organizationId: wired.organizationId,
+        projectId: project.id,
+        branchId: null,
+        provider: 'modal',
+        providerWorkspaceId: `viewer-${action}`,
+        status,
+        resourceProfile: 'standard',
+        runId: null,
+        taskId: null,
+        purpose: null,
+        environment: null,
+        imageTag: null,
+        previewMonitorEnabled: false,
+        previewMonitorOwnerId: null,
+        previewMonitorLeaseExpiresAt: null,
+        snapshotRef: null,
+        createdAt: wired.built.now(),
+        lastActiveAt: null,
+        terminatedAt: null,
         ...EMPTY_WORKSPACE_USAGE,
       };
       wired.data.workspaces.push(seeded);
       const callsBefore = sandbox.calls.length;
       const response = await wired.built.app.inject({
-        method: 'POST', url: `/v1/workspaces/${seeded.id}/${action}`, headers: wired.as(viewer),
+        method: 'POST',
+        url: `/v1/workspaces/${seeded.id}/${action}`,
+        headers: wired.as(viewer),
         ...(payload === undefined ? {} : { payload }),
       });
       expect(response.statusCode, response.body).toBe(403);
@@ -1721,16 +1828,44 @@ describe('workspace passthrough routes', () => {
       archivedAt: null,
     };
     const foreignRun: AgentRun = {
-      id: newId('run'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
-      mode: 'build', appType: 'web', model: null, requestFingerprint: 'seed:foreign-resource-run', status: 'running', specificationId: null, temporalWorkflowId: 'foreign-run',
-      startedBy: wired.owner.userId, budgetJson: null, planMaxCredits: '1000.0000', startedAt: wired.built.now(), completedAt: null,
+      id: newId('run'),
+      organizationId: foreignOrganizationId,
+      projectId: foreignProjectId,
+      branchId: null,
+      mode: 'build',
+      appType: 'web',
+      model: null,
+      requestFingerprint: 'seed:foreign-resource-run',
+      status: 'running',
+      specificationId: null,
+      temporalWorkflowId: 'foreign-run',
+      startedBy: wired.owner.userId,
+      budgetJson: null,
+      planMaxCredits: '1000.0000',
+      startedAt: wired.built.now(),
+      completedAt: null,
     };
     const foreignWorkspace: Workspace = {
-      id: newId('ws'), organizationId: foreignOrganizationId, projectId: foreignProjectId, branchId: null,
-      provider: 'modal', providerWorkspaceId: 'foreign-workspace', status: 'active', resourceProfile: 'standard',
-      runId: null, taskId: null, purpose: null, environment: null, imageTag: null,
-      previewMonitorEnabled: false, previewMonitorOwnerId: null, previewMonitorLeaseExpiresAt: null,
-      snapshotRef: null, createdAt: wired.built.now(), lastActiveAt: null, terminatedAt: null,
+      id: newId('ws'),
+      organizationId: foreignOrganizationId,
+      projectId: foreignProjectId,
+      branchId: null,
+      provider: 'modal',
+      providerWorkspaceId: 'foreign-workspace',
+      status: 'active',
+      resourceProfile: 'standard',
+      runId: null,
+      taskId: null,
+      purpose: null,
+      environment: null,
+      imageTag: null,
+      previewMonitorEnabled: false,
+      previewMonitorOwnerId: null,
+      previewMonitorLeaseExpiresAt: null,
+      snapshotRef: null,
+      createdAt: wired.built.now(),
+      lastActiveAt: null,
+      terminatedAt: null,
       ...EMPTY_WORKSPACE_USAGE,
     };
     wired.data.projects.push(foreignProject);
@@ -1745,15 +1880,23 @@ describe('workspace passthrough routes', () => {
       ['workspaces', {}],
     ] as const) {
       const response = await wired.built.app.inject({
-        method: 'POST', url: `/v1/projects/${foreignProjectId}/${kind}`, headers: wired.as(viewer), payload,
+        method: 'POST',
+        url: `/v1/projects/${foreignProjectId}/${kind}`,
+        headers: wired.as(viewer),
+        payload,
       });
       expect(response.statusCode, response.body).toBe(404);
     }
     for (const [action, payload] of [
-      ['pause', undefined], ['resume', undefined], ['cancel', undefined], ['redirect', { prompt: 'No oracle' }],
+      ['pause', undefined],
+      ['resume', undefined],
+      ['cancel', undefined],
+      ['redirect', { prompt: 'No oracle' }],
     ] as const) {
       const response = await wired.built.app.inject({
-        method: 'POST', url: `/v1/runs/${foreignRun.id}/${action}`, headers: wired.as(viewer),
+        method: 'POST',
+        url: `/v1/runs/${foreignRun.id}/${action}`,
+        headers: wired.as(viewer),
         ...(payload === undefined ? {} : { payload }),
       });
       expect(response.statusCode, response.body).toBe(404);
@@ -1763,16 +1906,25 @@ describe('workspace passthrough routes', () => {
       `/v1/runs/${foreignRun.id}/phases/${newId('phase')}/skip`,
     ].entries()) {
       const response = await wired.built.app.inject({
-        method: 'POST', url,
-        headers: { ...wired.as(viewer), 'idempotency-key': `foreign-builder-control-${String(index)}` },
+        method: 'POST',
+        url,
+        headers: {
+          ...wired.as(viewer),
+          'idempotency-key': `foreign-builder-control-${String(index)}`,
+        },
       });
       expect(response.statusCode, response.body).toBe(404);
     }
     for (const [action, payload] of [
-      ['start', undefined], ['checkpoint', { kind: 'active' }], ['terminate', undefined], ['preview', { port: 3000, ttlSeconds: 60 }],
+      ['start', undefined],
+      ['checkpoint', { kind: 'active' }],
+      ['terminate', undefined],
+      ['preview', { port: 3000, ttlSeconds: 60 }],
     ] as const) {
       const response = await wired.built.app.inject({
-        method: 'POST', url: `/v1/workspaces/${foreignWorkspace.id}/${action}`, headers: wired.as(viewer),
+        method: 'POST',
+        url: `/v1/workspaces/${foreignWorkspace.id}/${action}`,
+        headers: wired.as(viewer),
         ...(payload === undefined ? {} : { payload }),
       });
       expect(response.statusCode, response.body).toBe(404);
@@ -1805,34 +1957,70 @@ describe('workspace passthrough routes', () => {
       phaseId: string | null,
       eventTaskId: string | null = null,
     ): AgentEventRow => ({
-      id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
-      sequence, type, payloadJson, visibility: 'user', occurredAt: wired.built.now(),
-      phaseId, taskId: eventTaskId, agentId: null,
+      id: newId('evt'),
+      organizationId: wired.organizationId,
+      projectId: project.id,
+      runId,
+      sequence,
+      type,
+      payloadJson,
+      visibility: 'user',
+      occurredAt: wired.built.now(),
+      phaseId,
+      taskId: eventTaskId,
+      agentId: null,
     });
     wired.data.events.push(
-      event('artifact.created', {
-        artifactId: newId('art'), artifactType: 'implementation_plan',
-        phases: [
-          { phaseId: taskPhaseId, optional: false },
-          { phaseId: skipPhaseId, optional: true },
-        ],
-      }, 1, null),
-      event('phase.created', {
-        phaseId: taskPhaseId, sequence: 1, title: 'Required work', status: 'running',
-      }, 2, taskPhaseId),
-      event('task.created', {
-        taskId, phaseId: taskPhaseId, title: 'Build', status: 'failed', riskLevel: 'low', dependencies: [],
-      }, 3, taskPhaseId, taskId),
+      event(
+        'artifact.created',
+        {
+          artifactId: newId('art'),
+          artifactType: 'implementation_plan',
+          phases: [
+            { phaseId: taskPhaseId, optional: false },
+            { phaseId: skipPhaseId, optional: true },
+          ],
+        },
+        1,
+        null,
+      ),
+      event(
+        'phase.created',
+        {
+          phaseId: taskPhaseId,
+          sequence: 1,
+          title: 'Required work',
+          status: 'running',
+        },
+        2,
+        taskPhaseId,
+      ),
+      event(
+        'task.created',
+        {
+          taskId,
+          phaseId: taskPhaseId,
+          title: 'Build',
+          status: 'failed',
+          riskLevel: 'low',
+          dependencies: [],
+        },
+        3,
+        taskPhaseId,
+        taskId,
+      ),
     );
 
     const viewer = await joinViewer(wired);
     const forbidden = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
       headers: { ...wired.as(viewer), 'idempotency-key': 'retry-viewer-forbidden' },
     });
     expect(forbidden.statusCode, forbidden.body).toBe(403);
     const missingCsrf = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
       headers: {
         cookie: wired.owner.cookie,
         [ORGANIZATION_HEADER]: wired.organizationId,
@@ -1844,43 +2032,58 @@ describe('workspace passthrough routes', () => {
 
     const retryHeaders = { ...wired.as(wired.owner), 'idempotency-key': 'retry-failed-task-01' };
     const retry = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`, headers: retryHeaders,
+      method: 'POST',
+      url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
+      headers: retryHeaders,
     });
     const replay = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`, headers: retryHeaders,
+      method: 'POST',
+      url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
+      headers: retryHeaders,
     });
     const skip = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/phases/${skipPhaseId}/skip`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/phases/${skipPhaseId}/skip`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'skip-optional-phase-01' },
     });
 
     expect(retry.statusCode, retry.body).toBe(202);
     expect(replay.statusCode, replay.body).toBe(202);
     expect(skip.statusCode, skip.body).toBe(202);
-    expect(wired.orchestrator.signals.filter(({ signal }) => signal === 'retry_failed_task')).toEqual([
-      expect.objectContaining({ runId, taskId }),
-    ]);
-    expect(wired.orchestrator.signals).toContainEqual(expect.objectContaining({
-      runId, signal: 'skip_optional_phase', phaseId: skipPhaseId,
-    }));
+    expect(
+      wired.orchestrator.signals.filter(({ signal }) => signal === 'retry_failed_task'),
+    ).toEqual([expect.objectContaining({ runId, taskId })]);
+    expect(wired.orchestrator.signals).toContainEqual(
+      expect.objectContaining({
+        runId,
+        signal: 'skip_optional_phase',
+        phaseId: skipPhaseId,
+      }),
+    );
 
-    wired.data.events.push(event(
-      'task.updated', { taskId, status: 'running' }, 4, taskPhaseId, taskId,
-    ));
+    wired.data.events.push(
+      event('task.updated', { taskId, status: 'running' }, 4, taskPhaseId, taskId),
+    );
     const stale = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/tasks/${taskId}/retry`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'retry-stale-task-01' },
     });
     expect(stale.statusCode, stale.body).toBe(409);
-    expect(stale.json<{ error: { code: string } }>().error.code).toBe('builder_control_task_not_failed');
-    expect(wired.orchestrator.signals.filter(({ signal }) => signal === 'retry_failed_task')).toHaveLength(1);
+    expect(stale.json<{ error: { code: string } }>().error.code).toBe(
+      'builder_control_task_not_failed',
+    );
+    expect(
+      wired.orchestrator.signals.filter(({ signal }) => signal === 'retry_failed_task'),
+    ).toHaveLength(1);
   });
 
   it('resolves a matching non-budget approval kind and rejects a stale kind without mutation', async () => {
     const wired = await wire();
     const project = await createProject(wired);
     const created = await wired.built.app.inject({
-      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'typed-approval-run' },
       payload: { mode: 'autonomous', prompt: 'Wait for plan approval' },
     });
@@ -1888,13 +2091,22 @@ describe('workspace passthrough routes', () => {
     const approvalId = newId('appr');
     const artifactId = newId('art');
     wired.data.approvals.push({
-      id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
-      type: 'plan', status: 'pending', requestJson: { artifactId }, responseJson: null,
-      requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+      id: approvalId,
+      organizationId: wired.organizationId,
+      runId,
+      taskId: null,
+      type: 'plan',
+      status: 'pending',
+      requestJson: { artifactId },
+      responseJson: null,
+      requestedAt: wired.built.now(),
+      resolvedAt: null,
+      resolvedBy: null,
     });
 
     const mismatch = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/approvals/${approvalId}`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'typed-approval-mismatch' },
       payload: { kind: 'specification', decision: 'approved' },
     });
@@ -1902,14 +2114,19 @@ describe('workspace passthrough routes', () => {
     expect(wired.data.approvals.find(({ id }) => id === approvalId)?.status).toBe('pending');
 
     const approved = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/approvals/${approvalId}`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'typed-approval-plan' },
       payload: { kind: 'plan', decision: 'approved' },
     });
     expect(approved.statusCode, approved.body).toBe(200);
     expect(approved.json()).toEqual({ approval: { approvalId, kind: 'plan', status: 'approved' } });
     expect(wired.orchestrator.signals.at(-1)).toMatchObject({
-      runId, signal: 'approval_decision', approvalKind: 'plan', artifactId, decision: 'approved',
+      runId,
+      signal: 'approval_decision',
+      approvalKind: 'plan',
+      artifactId,
+      decision: 'approved',
     });
   });
 
@@ -1917,7 +2134,8 @@ describe('workspace passthrough routes', () => {
     const wired = await wire();
     const project = await createProject(wired);
     const created = await wired.built.app.inject({
-      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-response-run' },
       payload: { mode: 'autonomous', prompt: 'Interview me' },
     });
@@ -1929,46 +2147,82 @@ describe('workspace passthrough routes', () => {
       answers: [{ questionId: 'target_users', answer: 'Independent developers' }],
     } as const;
     wired.data.events.push({
-      id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
-      sequence: 1, type: 'conversation.card', visibility: 'user', occurredAt: wired.built.now(),
-      phaseId: null, taskId: null, agentId: 'planner', payloadJson: {
+      id: newId('evt'),
+      organizationId: wired.organizationId,
+      projectId: project.id,
+      runId,
+      sequence: 1,
+      type: 'conversation.card',
+      visibility: 'user',
+      occurredAt: wired.built.now(),
+      phaseId: null,
+      taskId: null,
+      agentId: 'planner',
+      payloadJson: {
         card: {
-          version: 1, kind: 'question', cardId: response.cardId,
-          questions: [{
-            questionId: 'target_users', prompt: 'Who are the target users?',
-            options: [
-              { label: 'Independent developers', tradeoff: 'Fast individual workflow', recommended: true },
-              { label: 'Enterprise teams', tradeoff: 'More governance', recommended: false },
-            ],
-          }],
+          version: 1,
+          kind: 'question',
+          cardId: response.cardId,
+          questions: [
+            {
+              questionId: 'target_users',
+              prompt: 'Who are the target users?',
+              options: [
+                {
+                  label: 'Independent developers',
+                  tradeoff: 'Fast individual workflow',
+                  recommended: true,
+                },
+                { label: 'Enterprise teams', tradeoff: 'More governance', recommended: false },
+              ],
+            },
+          ],
         },
       },
     });
     const headers = { ...wired.as(wired.owner), 'idempotency-key': 'card-response-01' };
 
     const first = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`, headers, payload: response,
+      method: 'POST',
+      url: `/v1/runs/${runId}/conversation-responses`,
+      headers,
+      payload: response,
     });
     wired.data.events.push({
-      id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
-      sequence: 2, type: 'conversation.response', visibility: 'internal', occurredAt: wired.built.now(),
-      phaseId: null, taskId: null, agentId: null, payloadJson: { response },
+      id: newId('evt'),
+      organizationId: wired.organizationId,
+      projectId: project.id,
+      runId,
+      sequence: 2,
+      type: 'conversation.response',
+      visibility: 'internal',
+      occurredAt: wired.built.now(),
+      phaseId: null,
+      taskId: null,
+      agentId: null,
+      payloadJson: { response },
     });
     const replay = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`, headers, payload: response,
+      method: 'POST',
+      url: `/v1/runs/${runId}/conversation-responses`,
+      headers,
+      payload: response,
     });
     const conflictingReplay = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/conversation-responses`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-response-conflict' },
       payload: response,
     });
     const prose = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/conversation-responses`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-response-prose' },
       payload: { content: 'Use independent developers.' },
     });
     const unknown = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/conversation-responses`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/conversation-responses`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-response-unknown' },
       payload: { ...response, cardId: 'card_unknown' },
     });
@@ -1979,16 +2233,17 @@ describe('workspace passthrough routes', () => {
     expect(conflictingReplay.statusCode, conflictingReplay.body).toBe(409);
     expect(prose.statusCode, prose.body).toBe(400);
     expect(unknown.statusCode, unknown.body).toBe(404);
-    expect(wired.orchestrator.signals.filter(({ signal }) => signal === 'conversation_card_response')).toEqual([
-      expect.objectContaining({ runId, cardId: response.cardId, response }),
-    ]);
+    expect(
+      wired.orchestrator.signals.filter(({ signal }) => signal === 'conversation_card_response'),
+    ).toEqual([expect.objectContaining({ runId, cardId: response.cardId, response })]);
   });
 
   it('reads only the run-referenced specification and bounded typed plan projection', async () => {
     const wired = await wire();
     const project = await createProject(wired);
     const created = await wired.built.app.inject({
-      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'card-artifact-run' },
       payload: { mode: 'autonomous', prompt: 'Produce a specification and plan' },
     });
@@ -1999,71 +2254,133 @@ describe('workspace passthrough routes', () => {
     const phaseId = newId('phase');
     const taskId = newId('task');
     const specificationContent = {
-      problem: 'Ship the requested app.', targetUsers: ['Developers'], goals: ['Ship'],
-      nonGoals: ['Unrelated work'], journeys: ['Create a project'], pagesRoutes: ['/'],
-      rolesPermissions: ['Owner controls the project'], dataModel: ['Project'], integrations: ['None'],
-      functionalRequirements: ['Render the project'], nonfunctionalRequirements: ['Tenant isolation'],
-      acceptanceCriteria: [{ id: 'AC-1', text: 'The project renders.', priority: 'high', criticalFlow: true }],
-      assumptions: ['A project exists'], risks: ['None'], definitionOfDone: ['AC-1 passes'],
+      problem: 'Ship the requested app.',
+      targetUsers: ['Developers'],
+      goals: ['Ship'],
+      nonGoals: ['Unrelated work'],
+      journeys: ['Create a project'],
+      pagesRoutes: ['/'],
+      rolesPermissions: ['Owner controls the project'],
+      dataModel: ['Project'],
+      integrations: ['None'],
+      functionalRequirements: ['Render the project'],
+      nonfunctionalRequirements: ['Tenant isolation'],
+      acceptanceCriteria: [
+        { id: 'AC-1', text: 'The project renders.', priority: 'high', criticalFlow: true },
+      ],
+      assumptions: ['A project exists'],
+      risks: ['None'],
+      definitionOfDone: ['AC-1 passes'],
     };
     wired.data.specifications.push({
-      id: specificationId, organizationId: wired.organizationId, projectId: project.id,
-      version: 1, status: 'draft', contentJson: specificationContent,
+      id: specificationId,
+      organizationId: wired.organizationId,
+      projectId: project.id,
+      version: 1,
+      status: 'draft',
+      contentJson: specificationContent,
       createdBy: wired.data.runs.find(({ id }) => id === runId)?.startedBy ?? newId('user'),
-      approvedBy: null, approvedAt: null,
+      approvedBy: null,
+      approvedAt: null,
     });
     wired.data.approvals.push(
       {
-        id: specificationApprovalId, organizationId: wired.organizationId, runId, taskId: null,
-        type: 'specification', status: 'pending',
-        requestJson: { artifactId: specificationId, artifactVersion: 1 }, responseJson: null,
-        requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+        id: specificationApprovalId,
+        organizationId: wired.organizationId,
+        runId,
+        taskId: null,
+        type: 'specification',
+        status: 'pending',
+        requestJson: { artifactId: specificationId, artifactVersion: 1 },
+        responseJson: null,
+        requestedAt: wired.built.now(),
+        resolvedAt: null,
+        resolvedBy: null,
       },
       {
-        id: newId('appr'), organizationId: wired.organizationId, runId, taskId: null,
-        type: 'plan', status: 'pending', requestJson: { artifactId: planArtifactId, artifactVersion: null },
-        responseJson: null, requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+        id: newId('appr'),
+        organizationId: wired.organizationId,
+        runId,
+        taskId: null,
+        type: 'plan',
+        status: 'pending',
+        requestJson: { artifactId: planArtifactId, artifactVersion: null },
+        responseJson: null,
+        requestedAt: wired.built.now(),
+        resolvedAt: null,
+        resolvedBy: null,
       },
     );
     wired.data.phases.push({
-      id: phaseId, organizationId: wired.organizationId, runId, sequence: 1,
-      title: 'Build', status: 'queued', acceptanceCriteriaJson: ['AC-1'],
+      id: phaseId,
+      organizationId: wired.organizationId,
+      runId,
+      sequence: 1,
+      title: 'Build',
+      status: 'queued',
+      acceptanceCriteriaJson: ['AC-1'],
     });
     wired.data.tasks.push({
-      id: taskId, organizationId: wired.organizationId, phaseId, parentTaskId: null,
-      title: 'Implement', status: 'queued', riskLevel: 'medium', baseCommitSha: null,
-      outputCommitSha: null, acceptanceCriteriaJson: ['AC-1'], dependenciesJson: [],
+      id: taskId,
+      organizationId: wired.organizationId,
+      phaseId,
+      parentTaskId: null,
+      title: 'Implement',
+      status: 'queued',
+      riskLevel: 'medium',
+      baseCommitSha: null,
+      outputCommitSha: null,
+      acceptanceCriteriaJson: ['AC-1'],
+      dependenciesJson: [],
       assignedAgentRole: 'builder',
     });
     wired.data.events.push({
-      id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
-      sequence: 1, type: 'artifact.created', visibility: 'user', occurredAt: wired.built.now(),
-      phaseId: null, taskId: null, agentId: 'planner', payloadJson: {
-        artifactId: planArtifactId, artifactType: 'implementation_plan',
-        phases: [{ phaseId, optional: true }], phaseCount: 1, taskCount: 1,
+      id: newId('evt'),
+      organizationId: wired.organizationId,
+      projectId: project.id,
+      runId,
+      sequence: 1,
+      type: 'artifact.created',
+      visibility: 'user',
+      occurredAt: wired.built.now(),
+      phaseId: null,
+      taskId: null,
+      agentId: 'planner',
+      payloadJson: {
+        artifactId: planArtifactId,
+        artifactType: 'implementation_plan',
+        phases: [{ phaseId, optional: true }],
+        phaseCount: 1,
+        taskCount: 1,
       },
     });
 
     const specification = await wired.built.app.inject({
-      method: 'GET', url: `/v1/runs/${runId}/specifications/${specificationId}`,
+      method: 'GET',
+      url: `/v1/runs/${runId}/specifications/${specificationId}`,
       headers: wired.as(wired.owner),
     });
     const plan = await wired.built.app.inject({
-      method: 'GET', url: `/v1/runs/${runId}/plans/${planArtifactId}`,
+      method: 'GET',
+      url: `/v1/runs/${runId}/plans/${planArtifactId}`,
       headers: wired.as(wired.owner),
     });
     const unreferenced = await wired.built.app.inject({
-      method: 'GET', url: `/v1/runs/${runId}/specifications/${newId('spec')}`,
+      method: 'GET',
+      url: `/v1/runs/${runId}/specifications/${newId('spec')}`,
       headers: wired.as(wired.owner),
     });
     const approved = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/approvals/${specificationApprovalId}`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/approvals/${specificationApprovalId}`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'approve-specification-card' },
       payload: { kind: 'specification', decision: 'approved' },
     });
 
     expect(specification.statusCode, specification.body).toBe(200);
-    expect(specification.json()).toMatchObject({ specification: { id: specificationId, content: specificationContent } });
+    expect(specification.json()).toMatchObject({
+      specification: { id: specificationId, content: specificationContent },
+    });
     expect(plan.statusCode, plan.body).toBe(200);
     expect(plan.json()).toMatchObject({
       plan: {
@@ -2075,7 +2392,9 @@ describe('workspace passthrough routes', () => {
     expect(unreferenced.statusCode, unreferenced.body).toBe(404);
     expect(approved.statusCode, approved.body).toBe(200);
     expect(wired.orchestrator.signals.at(-1)).toMatchObject({
-      signal: 'approval_decision', approvalKind: 'specification', artifactId: specificationId,
+      signal: 'approval_decision',
+      approvalKind: 'specification',
+      artifactId: specificationId,
     });
   });
 
@@ -2084,7 +2403,8 @@ describe('workspace passthrough routes', () => {
     const wired = await wire({ artifactReader });
     const project = await createProject(wired);
     const created = await wired.built.app.inject({
-      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'bounded-artifact-run' },
       payload: { mode: 'autonomous', prompt: 'Create a referenced plan diff' },
     });
@@ -2096,35 +2416,57 @@ describe('workspace passthrough routes', () => {
     const body = Buffer.from('{"added":["checkout"]}', 'utf8');
     artifactReader.objects.set(storageRef, { body, contentType: 'application/json' });
     artifactReader.objects.set(largeStorageRef, {
-      body: Buffer.alloc(64 * 1024 + 1, 0x61), contentType: 'text/plain',
+      body: Buffer.alloc(64 * 1024 + 1, 0x61),
+      contentType: 'text/plain',
     });
     const addArtifact = (id: string, key: string, content: Buffer) => {
       wired.data.artifacts.push({
-        id, organizationId: wired.organizationId, projectId: project.id, runId, taskId: null,
-        type: 'plan_diff', storageRef: key,
+        id,
+        organizationId: wired.organizationId,
+        projectId: project.id,
+        runId,
+        taskId: null,
+        type: 'plan_diff',
+        storageRef: key,
         contentHash: createHash('sha256').update(content).digest('hex'),
-        metadataJson: {}, createdAt: wired.built.now(),
+        metadataJson: {},
+        createdAt: wired.built.now(),
       });
       wired.data.events.push({
-        id: newId('evt'), organizationId: wired.organizationId, projectId: project.id, runId,
-        sequence: wired.data.events.length + 1, type: 'artifact.created', visibility: 'user',
-        occurredAt: wired.built.now(), phaseId: null, taskId: null, agentId: 'planner',
-        payloadJson: { artifactId: id, type: 'plan_diff', contentHash: createHash('sha256').update(content).digest('hex') },
+        id: newId('evt'),
+        organizationId: wired.organizationId,
+        projectId: project.id,
+        runId,
+        sequence: wired.data.events.length + 1,
+        type: 'artifact.created',
+        visibility: 'user',
+        occurredAt: wired.built.now(),
+        phaseId: null,
+        taskId: null,
+        agentId: 'planner',
+        payloadJson: {
+          artifactId: id,
+          type: 'plan_diff',
+          contentHash: createHash('sha256').update(content).digest('hex'),
+        },
       });
     };
     addArtifact(artifactId, storageRef, body);
     addArtifact(largeArtifactId, largeStorageRef, Buffer.alloc(64 * 1024 + 1, 0x61));
 
     const response = await wired.built.app.inject({
-      method: 'GET', url: `/v1/runs/${runId}/artifacts/${artifactId}`,
+      method: 'GET',
+      url: `/v1/runs/${runId}/artifacts/${artifactId}`,
       headers: wired.as(wired.owner),
     });
     const tooLarge = await wired.built.app.inject({
-      method: 'GET', url: `/v1/runs/${runId}/artifacts/${largeArtifactId}`,
+      method: 'GET',
+      url: `/v1/runs/${runId}/artifacts/${largeArtifactId}`,
       headers: wired.as(wired.owner),
     });
     const unreferenced = await wired.built.app.inject({
-      method: 'GET', url: `/v1/runs/${runId}/artifacts/${newId('art')}`,
+      method: 'GET',
+      url: `/v1/runs/${runId}/artifacts/${newId('art')}`,
       headers: wired.as(wired.owner),
     });
 
@@ -2154,20 +2496,30 @@ describe('workspace passthrough routes', () => {
     const builder = await joinBuilder(wired);
     const project = await createProject(wired);
     const created = await wired.built.app.inject({
-      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'deploy-approval-run' },
       payload: { mode: 'build', prompt: 'Prepare a production release' },
     });
     const runId = created.json<{ run: { id: string } }>().run.id;
     const approvalId = newId('appr');
     wired.data.approvals.push({
-      id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
-      type: 'deploy', status: 'pending', requestJson: {}, responseJson: null,
-      requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+      id: approvalId,
+      organizationId: wired.organizationId,
+      runId,
+      taskId: null,
+      type: 'deploy',
+      status: 'pending',
+      requestJson: {},
+      responseJson: null,
+      requestedAt: wired.built.now(),
+      resolvedAt: null,
+      resolvedBy: null,
     });
 
     const response = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/approvals/${approvalId}`,
       headers: { ...wired.as(builder), 'idempotency-key': 'deploy-approval-forbidden' },
       payload: { kind: 'deploy', decision: 'approved' },
     });
@@ -2186,7 +2538,11 @@ describe('workspace passthrough routes', () => {
         method: 'POST',
         url: `/v1/projects/${project.id}/runs`,
         headers: { ...wired.as(wired.owner), 'idempotency-key': `approval-run-${decision}` },
-        payload: { mode: 'build', prompt: 'Reach the budget boundary', budget: { maxCredits: 100 } },
+        payload: {
+          mode: 'build',
+          prompt: 'Reach the budget boundary',
+          budget: { maxCredits: 100 },
+        },
       });
       expect(created.statusCode, created.body).toBe(201);
       const runId = created.json<{ run: { id: string } }>().run.id;
@@ -2255,7 +2611,8 @@ describe('workspace passthrough routes', () => {
     const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
     const project = await createProject(wired);
     const created = await wired.built.app.inject({
-      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'trial-plan-cap-run' },
       payload: { mode: 'build', prompt: 'Reach plan maximum' },
     });
@@ -2268,19 +2625,34 @@ describe('workspace passthrough routes', () => {
     });
     const approvalId = newId('appr');
     wired.data.approvals.push({
-      id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
-      type: 'budget_increase', status: 'pending',
-      requestJson: { currentCeiling: '10.0000', absoluteCeiling: '20.0000', workspaceId: 'workspace-cap', reason: 'run_budget_exhausted' },
-      responseJson: null, requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+      id: approvalId,
+      organizationId: wired.organizationId,
+      runId,
+      taskId: null,
+      type: 'budget_increase',
+      status: 'pending',
+      requestJson: {
+        currentCeiling: '10.0000',
+        absoluteCeiling: '20.0000',
+        workspaceId: 'workspace-cap',
+        reason: 'run_budget_exhausted',
+      },
+      responseJson: null,
+      requestedAt: wired.built.now(),
+      resolvedAt: null,
+      resolvedBy: null,
     });
     const response = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/approvals/${approvalId}`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'trial-plan-cap-approval' },
       payload: { decision: 'approved' },
     });
     expect(response.statusCode, response.body).toBe(422);
     expect(response.json<{ error: { code: string } }>().error.code).toBe('plan_budget_exceeded');
-    expect(wired.data.approvals.find((approval) => approval.id === approvalId)?.status).toBe('pending');
+    expect(wired.data.approvals.find((approval) => approval.id === approvalId)?.status).toBe(
+      'pending',
+    );
     expect(wired.modelCompletions.increases).toEqual([]);
   });
 
@@ -2288,24 +2660,35 @@ describe('workspace passthrough routes', () => {
     const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
     const project = await createProject(wired);
     const created = await wired.built.app.inject({
-      method: 'POST', url: `/v1/projects/${project.id}/runs`,
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'credit-override-run' },
       payload: { mode: 'build', prompt: 'Wait at the organization credit boundary' },
     });
     const runId = created.json<{ run: { id: string } }>().run.id;
     const approvalId = newId('appr');
     wired.data.approvals.push({
-      id: approvalId, organizationId: wired.organizationId, runId, taskId: null,
-      type: 'budget_increase', status: 'pending',
+      id: approvalId,
+      organizationId: wired.organizationId,
+      runId,
+      taskId: null,
+      type: 'budget_increase',
+      status: 'pending',
       requestJson: {
-        currentCeiling: '10.0000', absoluteCeiling: '10.0000', workspaceId: 'workspace-credit',
+        currentCeiling: '10.0000',
+        absoluteCeiling: '10.0000',
+        workspaceId: 'workspace-credit',
         reason: 'organization_credit_exhausted',
       },
-      responseJson: null, requestedAt: wired.built.now(), resolvedAt: null, resolvedBy: null,
+      responseJson: null,
+      requestedAt: wired.built.now(),
+      resolvedAt: null,
+      resolvedBy: null,
     });
 
     const response = await wired.built.app.inject({
-      method: 'POST', url: `/v1/runs/${runId}/approvals/${approvalId}`,
+      method: 'POST',
+      url: `/v1/runs/${runId}/approvals/${approvalId}`,
       headers: { ...wired.as(wired.owner), 'idempotency-key': 'resolve-credit-override' },
       payload: { decision: 'approved' },
     });
@@ -2313,8 +2696,11 @@ describe('workspace passthrough routes', () => {
     expect(response.statusCode, response.body).toBe(200);
     expect(wired.modelCompletions.increases).toEqual([]);
     expect(wired.orchestrator.signals.at(-1)).toMatchObject({
-      signal: 'budget_approval', approvalId, decision: 'approved',
-      absoluteCeiling: '10.0000', reason: 'organization_credit_exhausted',
+      signal: 'budget_approval',
+      approvalId,
+      decision: 'approved',
+      absoluteCeiling: '10.0000',
+      reason: 'organization_credit_exhausted',
     });
   });
 

@@ -4,6 +4,7 @@ const apiBaseUrl = 'http://127.0.0.1:4100';
 const appBaseUrl = 'http://127.0.0.1:3100';
 const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
+const branchId = 'br_01K27Q9C2W85CMN1V9S6Q3D4FQ';
 const fixRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FZ';
 const workspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FG';
 const previewEvidenceId = 'art_01K27Q9C2W85CMN1V9S6Q3D4FH';
@@ -13,7 +14,16 @@ const contractOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 const shareUrl = `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000#token=psb_fixture`;
 
 const projectRead = {
-  branches: [],
+  branches: [
+    {
+      createdAt: '2026-08-10T12:00:00.000Z',
+      headCommitSha: previewCommitSha,
+      id: branchId,
+      name: 'main',
+      organizationId,
+      projectId,
+    },
+  ],
   environments: [],
   project: {
     archivedAt: null,
@@ -56,11 +66,7 @@ function corsHeaders(contentType = 'application/json'): Record<string, string> {
 function runFrame(
   sequence: number,
   type:
-    | 'commit.created'
-    | 'preview.failed'
-    | 'preview.ready'
-    | 'preview.starting'
-    | 'run.completed',
+    'commit.created' | 'preview.failed' | 'preview.ready' | 'preview.starting' | 'run.completed',
   payload: Readonly<Record<string, unknown>>,
 ): string {
   const data = {
@@ -87,6 +93,13 @@ async function signIn(page: Page): Promise<void> {
   await expect(page).toHaveURL('/');
 }
 
+async function reloadBuilder(page: Page): Promise<void> {
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible({
+    timeout: 15_000,
+  });
+}
+
 async function installBuilder(
   page: Page,
   runEvents: () => string,
@@ -102,6 +115,30 @@ async function installBuilder(
     }
     await route.fulfill({
       body: JSON.stringify({ items: [run], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        workspaces: [
+          {
+            branchId,
+            createdAt: '2026-08-10T12:00:00.000Z',
+            id: workspaceId,
+            lastActiveAt: '2026-08-10T12:00:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: 'provider-preview-fixture',
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: 'ready',
+            terminatedAt: null,
+          },
+        ],
+      }),
       headers: corsHeaders(),
       status: 200,
     });
@@ -157,20 +194,18 @@ test('keeps preview controls compact and gives the remaining workspace to the st
   );
   expect(stageBounds.height).toBeGreaterThanOrEqual(workspaceBounds.height - 130);
   expect(stageBounds.width).toBeGreaterThanOrEqual(workspaceBounds.width - 24);
-  await expect(page.getByRole('heading', { name: 'Build queued' })).toBeVisible();
+  await expect(page.getByRole('status', { name: 'Build status' })).toHaveText('Build queued');
 });
 
 test('keeps an existing healthy preview open when a repeated start reports failure', async ({
   page,
 }) => {
-  await installBuilder(
-    page,
-    () =>
-      runFrame(1, 'preview.failed', {
-        action: 'start',
-        code: 'dev_server_operation_failed',
-        workspaceId,
-      }),
+  await installBuilder(page, () =>
+    runFrame(1, 'preview.failed', {
+      action: 'start',
+      code: 'dev_server_operation_failed',
+      workspaceId,
+    }),
   );
   await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
     await route.fulfill({
@@ -218,6 +253,136 @@ test('keeps an existing healthy preview open when a repeated start reports failu
 
   await expect(page.getByTitle('Application preview')).toBeVisible();
   await expect(page.getByText('Preview failed')).toHaveCount(0);
+});
+
+test('rehydrates an expired run workspace from the project branch and opens its preview', async ({
+  page,
+}) => {
+  const recoveredWorkspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FR';
+  const workspaceCreateBodies: unknown[] = [];
+  let restartRequests = 0;
+  await installBuilder(page, () => runFrame(1, 'preview.ready', { action: 'start', workspaceId }));
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    if (route.request().method() === 'POST') {
+      workspaceCreateBodies.push(route.request().postDataJSON());
+      await route.fulfill({
+        body: JSON.stringify({
+          workspace: {
+            branchId,
+            createdAt: '2026-08-10T12:01:00.000Z',
+            id: recoveredWorkspaceId,
+            lastActiveAt: '2026-08-10T12:01:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: 'provider-recovered-preview',
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: 'ready',
+            terminatedAt: null,
+          },
+        }),
+        headers: corsHeaders(),
+        status: 201,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({
+        workspaces: [
+          {
+            branchId,
+            createdAt: '2026-08-10T12:00:00.000Z',
+            id: workspaceId,
+            lastActiveAt: '2026-08-10T12:00:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: null,
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: 'terminated',
+            terminatedAt: '2026-08-10T12:00:01.000Z',
+          },
+        ],
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/dev-server/restart`,
+    async (route) => {
+      restartRequests += 1;
+      await route.fulfill({
+        body: JSON.stringify({
+          ownership: 'process_group',
+          pid: 42,
+          port: 3000,
+          supervisorId: 'recovered-preview-fixture',
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/dev-server/logs*`,
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          entries: [],
+          failureId: null,
+          nextCursor: 0,
+          state: 'ready',
+          truncated: false,
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/preview/shares`,
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          share: {
+            expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString(),
+            id: '01j00000000000000000000000',
+            policy: 'org',
+            url: shareUrl,
+          },
+        }),
+        headers: corsHeaders(),
+        status: 201,
+      });
+    },
+  );
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/preview/events`,
+    async (route) => {
+      await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+    },
+  );
+  await page.route(
+    `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`,
+    async (route) => {
+      await route.fulfill({
+        body: '<!doctype html><title>Recovered preview</title><h1>Recovered application</h1>',
+        contentType: 'text/html',
+        status: 200,
+      });
+    },
+  );
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect(page.getByTitle('Application preview')).toBeVisible();
+  expect(workspaceCreateBodies).toEqual([{ branchId, resourceProfile: 'standard' }]);
+  expect(restartRequests).toBe(1);
+  await expect(page.getByText('Opening preview')).toHaveCount(0);
 });
 
 test('creates the authenticated share before opening the long-lived capture stream', async ({
@@ -314,7 +479,6 @@ test('renders preview lifecycle states from structured events and public workspa
   let logState: 'failed' | 'idle' | 'ready' | 'restarting' | 'starting' = 'starting';
   let captureFails = false;
   const restartRequests: string[] = [];
-  const startRequests: string[] = [];
   const sharePolicies: string[] = [];
   const shareKeys: string[] = [];
   const fixRunBodies: unknown[] = [];
@@ -460,34 +624,6 @@ test('renders preview lifecycle states from structured events and public workspa
       });
     },
   );
-  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/start`, async (route) => {
-    startRequests.push(route.request().headers()['idempotency-key'] ?? '');
-    if (startRequests.length === 1) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      await route.fulfill({ body: '{}', headers: corsHeaders(), status: 502 });
-      return;
-    }
-    await route.fulfill({
-      body: JSON.stringify({
-        workspace: {
-          branchId: null,
-          createdAt: '2026-08-10T12:00:00.000Z',
-          id: workspaceId,
-          lastActiveAt: '2026-08-10T12:00:01.000Z',
-          organizationId,
-          projectId,
-          provider: 'modal',
-          providerWorkspaceId: 'sb_fixture',
-          resourceProfile: 'standard',
-          snapshotRef: null,
-          status: 'ready',
-          terminatedAt: null,
-        },
-      }),
-      headers: corsHeaders(),
-      status: 200,
-    });
-  });
   await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/preview/events`, async (route) => {
     if (captureFails) {
       await route.fulfill({ body: '{}', headers: corsHeaders(), status: 503 });
@@ -520,7 +656,7 @@ test('renders preview lifecycle states from structured events and public workspa
 
   logState = 'ready';
   frames += runFrame(2, 'preview.ready', { action: 'start', workspaceId });
-  await page.reload();
+  await reloadBuilder(page);
   await expect(page.getByTitle('Application preview')).toBeVisible();
   await expect(page.getByText('/settings', { exact: true })).toBeVisible();
   await expect(page.getByText('Preview', { exact: true }).last()).toBeVisible();
@@ -546,7 +682,7 @@ test('renders preview lifecycle states from structured events and public workspa
   expect(publicShareKeys[0]).toBe(publicShareKeys[1]);
 
   frames += runFrame(3, 'commit.created', { commitSha: previewCommitSha });
-  await page.reload();
+  await reloadBuilder(page);
   await expect(page.getByText('Preview is behind latest changes — Restart')).toBeVisible();
   await page.getByRole('button', { name: 'Restart', exact: true }).evaluate((button) => {
     (button as HTMLButtonElement).click();
@@ -559,27 +695,26 @@ test('renders preview lifecycle states from structured events and public workspa
   expect(restartRequests[0]).toBe(restartRequests[1]);
 
   frames += runFrame(4, 'run.completed', { status: 'completed' });
-  await page.reload();
+  await reloadBuilder(page);
   await expect(page.getByText('Preview is behind latest changes — Restart')).toHaveCount(0);
 
   frames += runFrame(5, 'preview.ready', { action: 'restart', workspaceId });
   logState = 'idle';
-  await page.reload();
+  await reloadBuilder(page);
   await expect(page.getByRole('heading', { name: 'Preview sleeping' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Wake preview' })).toBeVisible();
+  await expect.poll(() => restartRequests.length).toBe(3);
+  expect(restartRequests[2]).not.toBe(restartRequests[1]);
   await page.getByRole('button', { name: 'Wake preview' }).evaluate((button) => {
     (button as HTMLButtonElement).click();
     (button as HTMLButtonElement).click();
   });
-  await expect(page.getByText('Preview could not be woken. Retry safely.')).toBeVisible();
-  expect(startRequests).toHaveLength(1);
-  await page.getByRole('button', { name: 'Wake preview' }).click();
-  await expect.poll(() => startRequests.length).toBe(2);
-  expect(startRequests[0]).toBe(startRequests[1]);
+  await expect.poll(() => restartRequests.length).toBe(4);
+  expect(restartRequests[3]).not.toBe(restartRequests[2]);
 
   logState = 'ready';
   captureFails = true;
-  await page.reload();
+  await reloadBuilder(page);
   await expect(page.getByRole('heading', { name: 'Preview disconnected' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry preview connection' })).toBeVisible();
 

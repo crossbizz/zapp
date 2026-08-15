@@ -91,12 +91,14 @@ test('loads one canonical loopback origin for browser auth, APIs, and --no-open'
   assert.equal(config.env.RUN_WORKFLOW_PROFILE, 'm1');
   assert.equal(config.env.SANDBOX_PROVIDER, 'docker');
   assert.equal(config.env.APP_BASE_URL, 'http://127.0.0.1:3000');
+  assert.equal(config.env.NEXT_PUBLIC_APP_BASE_URL, 'http://127.0.0.1:3000');
   assert.equal(config.env.API_BASE_URL, 'http://127.0.0.1:4000');
   assert.equal(config.env.NEXT_PUBLIC_CONTROL_API_URL, 'http://127.0.0.1:4000');
   assert.deepEqual(
     new Set(
       [
         config.env.APP_BASE_URL,
+        config.env.NEXT_PUBLIC_APP_BASE_URL,
         config.env.API_BASE_URL,
         config.env.NEXT_PUBLIC_CONTROL_API_URL,
       ].map((value) => new URL(value).hostname),
@@ -377,6 +379,10 @@ test('propagates a required child crash and never calls a Docker teardown', asyn
   assert.equal(
     started.find((spec) => spec.name === 'web').env.NEXT_PUBLIC_CONTROL_API_URL,
     'http://127.0.0.1:4000',
+  );
+  assert.equal(
+    started.find((spec) => spec.name === 'web').env.NEXT_PUBLIC_APP_BASE_URL,
+    'http://127.0.0.1:3000',
   );
   assert.equal(started.find((spec) => spec.name === 'web').env.WATCHPACK_POLLING, 'true');
 });

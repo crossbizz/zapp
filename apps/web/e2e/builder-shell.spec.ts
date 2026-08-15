@@ -815,10 +815,10 @@ test('defaults to Conversation and switches to Workspace below 1024px', async ({
     'true',
   );
   await expect(page.getByRole('button', { name: 'Open navigation' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Workspace' }).click();
+  await page.getByRole('button', { name: 'Workspace', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Conversation' })).toBeHidden();
   await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Workspace' })).toHaveAttribute(
+  await expect(page.getByRole('button', { name: 'Workspace', exact: true })).toHaveAttribute(
     'aria-pressed',
     'true',
   );

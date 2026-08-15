@@ -40,6 +40,8 @@ export type WorkspaceFilesData =
   paths['/v1/workspaces/{workspaceId}/files']['get']['responses'][200]['content']['application/json'];
 export type WorkspaceFileData =
   paths['/v1/workspaces/{workspaceId}/file']['get']['responses'][200]['content']['application/json'];
+export type ProjectWorkspace =
+  paths['/v1/projects/{projectId}/workspaces']['get']['responses'][200]['content']['application/json']['workspaces'][number];
 export type CommitComparisonData =
   paths['/v1/projects/{projectId}/compare']['get']['responses'][200]['content']['application/json'];
 export type RunTestsData =
@@ -183,11 +185,7 @@ export function createControlPlaneClient(organizationId?: string) {
         query,
         ...(signal === undefined ? {} : { signal }),
       }),
-    getProjectPreviewThumbnail: (
-      projectId: string,
-      artifactId: string,
-      signal?: AbortSignal,
-    ) =>
+    getProjectPreviewThumbnail: (projectId: string, artifactId: string, signal?: AbortSignal) =>
       client.request('/v1/projects/{projectId}/preview-thumbnail/{artifactId}', {
         method: 'GET',
         path: { projectId, artifactId },
@@ -195,73 +193,321 @@ export function createControlPlaneClient(organizationId?: string) {
         ...(signal === undefined ? {} : { signal }),
       }),
     getProject: (projectId: string, signal?: AbortSignal) =>
-      client.request('/v1/projects/{projectId}', { method: 'GET', path: { projectId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
-    updateProject: (projectId: string, body: { readonly archived?: boolean }, idempotencyKey?: string) =>
-      client.request('/v1/projects/{projectId}', { method: 'PATCH', path: { projectId }, headers: headers(true, true, idempotencyKey), body }),
+      client.request('/v1/projects/{projectId}', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    updateProject: (
+      projectId: string,
+      body: { readonly archived?: boolean },
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/projects/{projectId}', {
+        method: 'PATCH',
+        path: { projectId },
+        headers: headers(true, true, idempotencyKey),
+        body,
+      }),
     deleteProject: (projectId: string, idempotencyKey?: string) =>
-      client.request('/v1/projects/{projectId}', { method: 'DELETE', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey) }),
+      client.request('/v1/projects/{projectId}', {
+        method: 'DELETE',
+        path: { projectId },
+        headers: requiredKeyHeaders(idempotencyKey),
+      }),
     listProjectSecrets: (projectId: string, signal?: AbortSignal) =>
-      client.request('/v1/projects/{projectId}/secrets', { method: 'GET', path: { projectId }, headers: headers(), query: { limit: 100 }, ...(signal === undefined ? {} : { signal }) }),
-    createProjectSecret: (projectId: string, body: { readonly name: string; readonly value: string; readonly environmentId?: string }) =>
-      client.request('/v1/projects/{projectId}/secrets', { method: 'POST', path: { projectId }, headers: headers(true, false), body }),
+      client.request('/v1/projects/{projectId}/secrets', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        query: { limit: 100 },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    createProjectSecret: (
+      projectId: string,
+      body: { readonly name: string; readonly value: string; readonly environmentId?: string },
+    ) =>
+      client.request('/v1/projects/{projectId}/secrets', {
+        method: 'POST',
+        path: { projectId },
+        headers: headers(true, false),
+        body,
+      }),
     rotateProjectSecret: (projectId: string, secretId: string, value: string) =>
-      client.request('/v1/projects/{projectId}/secrets/{secretId}/rotate', { method: 'POST', path: { projectId, secretId }, headers: headers(true, false), body: { value } }),
+      client.request('/v1/projects/{projectId}/secrets/{secretId}/rotate', {
+        method: 'POST',
+        path: { projectId, secretId },
+        headers: headers(true, false),
+        body: { value },
+      }),
     listIntegrations: (signal?: AbortSignal) =>
-      client.request('/v1/integrations', { method: 'GET', headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+      client.request('/v1/integrations', {
+        method: 'GET',
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
     disconnectIntegration: (connectionId: string, idempotencyKey?: string) =>
-      client.request('/v1/integrations/{connectionId}', { method: 'DELETE', path: { connectionId }, headers: requiredKeyHeaders(idempotencyKey) }),
-    connectSupabase: (projectId: string, accessToken: string, projectRef: string, idempotencyKey?: string) =>
-      client.request('/v1/integrations/supabase/connect', { method: 'POST', headers: requiredKeyHeaders(idempotencyKey), body: { projectId, accessToken, configuration: { projectRef } } }),
-    connectNeon: (projectId: string, apiKey: string, providerProjectId: string, databaseName: string, idempotencyKey?: string) =>
-      client.request('/v1/integrations/neon/connect', { method: 'POST', headers: requiredKeyHeaders(idempotencyKey), body: { projectId, apiKey, configuration: { projectId: providerProjectId, databaseName } } }),
-    connectStripe: (projectId: string, apiKey: string, accountId: string, idempotencyKey?: string) =>
-      client.request('/v1/integrations/stripe/connect', { method: 'POST', headers: requiredKeyHeaders(idempotencyKey), body: { projectId, apiKey, configuration: { accountId, mode: 'test' } } }),
-    connectVercel: (projectId: string, accessToken: string, providerProjectId: string, projectName: string, idempotencyKey?: string) =>
-      client.request('/v1/integrations/vercel/connect', { method: 'POST', headers: requiredKeyHeaders(idempotencyKey), body: { projectId, accessToken, configuration: { projectId: providerProjectId, projectName } } }),
+      client.request('/v1/integrations/{connectionId}', {
+        method: 'DELETE',
+        path: { connectionId },
+        headers: requiredKeyHeaders(idempotencyKey),
+      }),
+    connectSupabase: (
+      projectId: string,
+      accessToken: string,
+      projectRef: string,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/integrations/supabase/connect', {
+        method: 'POST',
+        headers: requiredKeyHeaders(idempotencyKey),
+        body: { projectId, accessToken, configuration: { projectRef } },
+      }),
+    connectNeon: (
+      projectId: string,
+      apiKey: string,
+      providerProjectId: string,
+      databaseName: string,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/integrations/neon/connect', {
+        method: 'POST',
+        headers: requiredKeyHeaders(idempotencyKey),
+        body: { projectId, apiKey, configuration: { projectId: providerProjectId, databaseName } },
+      }),
+    connectStripe: (
+      projectId: string,
+      apiKey: string,
+      accountId: string,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/integrations/stripe/connect', {
+        method: 'POST',
+        headers: requiredKeyHeaders(idempotencyKey),
+        body: { projectId, apiKey, configuration: { accountId, mode: 'test' } },
+      }),
+    connectVercel: (
+      projectId: string,
+      accessToken: string,
+      providerProjectId: string,
+      projectName: string,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/integrations/vercel/connect', {
+        method: 'POST',
+        headers: requiredKeyHeaders(idempotencyKey),
+        body: {
+          projectId,
+          accessToken,
+          configuration: { projectId: providerProjectId, projectName },
+        },
+      }),
     listOrganizationMembers: (organizationId: string, signal?: AbortSignal) =>
-      client.request('/v1/organizations/{orgId}/members', { method: 'GET', path: { orgId: organizationId }, ...(signal === undefined ? {} : { signal }) }),
-    inviteOrganizationMember: (organizationId: string, body: { readonly email: string; readonly role: 'owner' | 'builder' | 'viewer' }) =>
-      client.request('/v1/organizations/{orgId}/invites', { method: 'POST', path: { orgId: organizationId }, headers: headers(true, false), body }),
-    updateOrganizationMember: (organizationId: string, userId: string, role: 'owner' | 'builder' | 'viewer') =>
-      client.request('/v1/organizations/{orgId}/members/{userId}', { method: 'PATCH', path: { orgId: organizationId, userId }, headers: headers(true, false), body: { role } }),
+      client.request('/v1/organizations/{orgId}/members', {
+        method: 'GET',
+        path: { orgId: organizationId },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    inviteOrganizationMember: (
+      organizationId: string,
+      body: { readonly email: string; readonly role: 'owner' | 'builder' | 'viewer' },
+    ) =>
+      client.request('/v1/organizations/{orgId}/invites', {
+        method: 'POST',
+        path: { orgId: organizationId },
+        headers: headers(true, false),
+        body,
+      }),
+    updateOrganizationMember: (
+      organizationId: string,
+      userId: string,
+      role: 'owner' | 'builder' | 'viewer',
+    ) =>
+      client.request('/v1/organizations/{orgId}/members/{userId}', {
+        method: 'PATCH',
+        path: { orgId: organizationId, userId },
+        headers: headers(true, false),
+        body: { role },
+      }),
     getOrganizationSettings: (organizationId: string, signal?: AbortSignal) =>
-      client.request('/v1/organizations/{orgId}/settings', { method: 'GET', path: { orgId: organizationId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
-    updateOrganizationSettings: (organizationId: string, builderCanDeploy: boolean, idempotencyKey?: string) =>
-      client.request('/v1/organizations/{orgId}/settings', { method: 'PATCH', path: { orgId: organizationId }, headers: requiredKeyHeaders(idempotencyKey), body: { builderCanDeploy } }),
+      client.request('/v1/organizations/{orgId}/settings', {
+        method: 'GET',
+        path: { orgId: organizationId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    updateOrganizationSettings: (
+      organizationId: string,
+      builderCanDeploy: boolean,
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/organizations/{orgId}/settings', {
+        method: 'PATCH',
+        path: { orgId: organizationId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body: { builderCanDeploy },
+      }),
     getGitHubSyncState: (projectId: string, signal?: AbortSignal) =>
-      client.request('/v1/projects/{projectId}/integrations/github', { method: 'GET', path: { projectId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
-    updateGitHubSyncPolicy: (projectId: string, syncPolicy: 'direct_push' | 'pull_request', idempotencyKey?: string) =>
-      client.request('/v1/projects/{projectId}/integrations/github/policy', { method: 'PATCH', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey), body: { syncPolicy } }),
+      client.request('/v1/projects/{projectId}/integrations/github', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    updateGitHubSyncPolicy: (
+      projectId: string,
+      syncPolicy: 'direct_push' | 'pull_request',
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/projects/{projectId}/integrations/github/policy', {
+        method: 'PATCH',
+        path: { projectId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body: { syncPolicy },
+      }),
     syncGitHubNow: (projectId: string, idempotencyKey?: string) =>
-      client.request('/v1/projects/{projectId}/integrations/github/sync', { method: 'POST', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey) }),
-    exportToGitHub: (projectId: string, body: { readonly installationId: string; readonly repositoryName: string; readonly private: boolean; readonly syncPolicy: 'direct_push' | 'pull_request' }, idempotencyKey?: string) =>
-      client.request('/v1/projects/{projectId}/integrations/github/export', { method: 'POST', path: { projectId }, headers: requiredKeyHeaders(idempotencyKey), body }),
+      client.request('/v1/projects/{projectId}/integrations/github/sync', {
+        method: 'POST',
+        path: { projectId },
+        headers: requiredKeyHeaders(idempotencyKey),
+      }),
+    exportToGitHub: (
+      projectId: string,
+      body: {
+        readonly installationId: string;
+        readonly repositoryName: string;
+        readonly private: boolean;
+        readonly syncPolicy: 'direct_push' | 'pull_request';
+      },
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/projects/{projectId}/integrations/github/export', {
+        method: 'POST',
+        path: { projectId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body,
+      }),
     listProjectReleases: (projectId: string, cursor?: string, signal?: AbortSignal) =>
-      client.request('/v1/projects/{projectId}/releases', { method: 'GET', path: { projectId }, headers: headers(), query: { limit: 20, ...(cursor === undefined ? {} : { cursor }) }, ...(signal === undefined ? {} : { signal }) }),
+      client.request('/v1/projects/{projectId}/releases', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        query: { limit: 20, ...(cursor === undefined ? {} : { cursor }) },
+        ...(signal === undefined ? {} : { signal }),
+      }),
     getRelease: (releaseId: string, signal?: AbortSignal) =>
-      client.request('/v1/releases/{releaseId}', { method: 'GET', path: { releaseId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+      client.request('/v1/releases/{releaseId}', {
+        method: 'GET',
+        path: { releaseId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
     getReleaseEvidence: (releaseId: string, signal?: AbortSignal) =>
-      client.request('/v1/releases/{releaseId}/evidence', { method: 'GET', path: { releaseId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+      client.request('/v1/releases/{releaseId}/evidence', {
+        method: 'GET',
+        path: { releaseId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
     getDeploymentPreview: (releaseId: string, retarget = false, signal?: AbortSignal) =>
-      client.request('/v1/releases/{releaseId}/deployment-preview', { method: 'GET', path: { releaseId }, headers: headers(), query: { retarget }, ...(signal === undefined ? {} : { signal }) }),
-    runReadinessAction: (releaseId: string, body: { readonly findingId: string; readonly action: 'fix' | 'review' | 'waive'; readonly reason?: string }, idempotencyKey?: string) =>
-      client.request('/v1/releases/{releaseId}/readiness-actions', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body }),
+      client.request('/v1/releases/{releaseId}/deployment-preview', {
+        method: 'GET',
+        path: { releaseId },
+        headers: headers(),
+        query: { retarget },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    runReadinessAction: (
+      releaseId: string,
+      body: {
+        readonly findingId: string;
+        readonly action: 'fix' | 'review' | 'waive';
+        readonly reason?: string;
+      },
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/releases/{releaseId}/readiness-actions', {
+        method: 'POST',
+        path: { releaseId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body,
+      }),
     approveRelease: (releaseId: string, idempotencyKey?: string) =>
-      client.request('/v1/releases/{releaseId}/approve', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey) }),
-    deployRelease: (releaseId: string, body: { readonly deploymentType: 'first_deploy' | 'redeploy' | 'replace_deployment'; readonly dataDisposition?: 'preserve' | 'transfer' | 'reset' }, idempotencyKey?: string) =>
-      client.request('/v1/releases/{releaseId}/deploy', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body }),
+      client.request('/v1/releases/{releaseId}/approve', {
+        method: 'POST',
+        path: { releaseId },
+        headers: requiredKeyHeaders(idempotencyKey),
+      }),
+    deployRelease: (
+      releaseId: string,
+      body: {
+        readonly deploymentType: 'first_deploy' | 'redeploy' | 'replace_deployment';
+        readonly dataDisposition?: 'preserve' | 'transfer' | 'reset';
+      },
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/releases/{releaseId}/deploy', {
+        method: 'POST',
+        path: { releaseId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body,
+      }),
     getDeployment: (deploymentId: string, signal?: AbortSignal) =>
-      client.request('/v1/deployments/{deploymentId}', { method: 'GET', path: { deploymentId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
-    runDeploymentAction: (deploymentId: string, body: { readonly action: 'retry' | 'fix' | 'ask'; readonly stage?: string; readonly prompt?: string }, idempotencyKey?: string) =>
-      client.request('/v1/deployments/{deploymentId}/actions', { method: 'POST', path: { deploymentId }, headers: requiredKeyHeaders(idempotencyKey), body }),
+      client.request('/v1/deployments/{deploymentId}', {
+        method: 'GET',
+        path: { deploymentId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    runDeploymentAction: (
+      deploymentId: string,
+      body: {
+        readonly action: 'retry' | 'fix' | 'ask';
+        readonly stage?: string;
+        readonly prompt?: string;
+      },
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/deployments/{deploymentId}/actions', {
+        method: 'POST',
+        path: { deploymentId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body,
+      }),
     getProductionHistory: (projectId: string, signal?: AbortSignal) =>
-      client.request('/v1/projects/{projectId}/production', { method: 'GET', path: { projectId }, headers: headers(), ...(signal === undefined ? {} : { signal }) }),
+      client.request('/v1/projects/{projectId}/production', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
+      }),
     getRollbackPreview: (releaseId: string, toDeploymentId?: string, signal?: AbortSignal) =>
-      client.request('/v1/releases/{releaseId}/rollback-preview', { method: 'GET', path: { releaseId }, headers: headers(), query: { ...(toDeploymentId === undefined ? {} : { toDeploymentId }) }, ...(signal === undefined ? {} : { signal }) }),
-    rollbackRelease: (releaseId: string, body: { readonly toDeploymentId?: string; readonly reason: string }, idempotencyKey?: string) =>
-      client.request('/v1/releases/{releaseId}/rollback', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body }),
+      client.request('/v1/releases/{releaseId}/rollback-preview', {
+        method: 'GET',
+        path: { releaseId },
+        headers: headers(),
+        query: { ...(toDeploymentId === undefined ? {} : { toDeploymentId }) },
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    rollbackRelease: (
+      releaseId: string,
+      body: { readonly toDeploymentId?: string; readonly reason: string },
+      idempotencyKey?: string,
+    ) =>
+      client.request('/v1/releases/{releaseId}/rollback', {
+        method: 'POST',
+        path: { releaseId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body,
+      }),
     forkRelease: (releaseId: string, idempotencyKey?: string) =>
-      client.request('/v1/releases/{releaseId}/fork', { method: 'POST', path: { releaseId }, headers: requiredKeyHeaders(idempotencyKey), body: { startFixRun: true } }),
+      client.request('/v1/releases/{releaseId}/fork', {
+        method: 'POST',
+        path: { releaseId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body: { startFixRun: true },
+      }),
     createProject: (body: CreateProjectInput, idempotencyKey?: string, signal?: AbortSignal) =>
       client.request('/v1/projects', {
         method: 'POST',
@@ -358,15 +604,12 @@ export function createControlPlaneClient(organizationId?: string) {
       supportSession: string,
       signal?: AbortSignal,
     ) =>
-      client.request(
-        '/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics',
-        {
-          method: 'GET',
-          path: { organizationId: targetOrganizationId, runId },
-          headers: { 'x-zapp-support-session': supportSession },
-          ...(signal === undefined ? {} : { signal }),
-        },
-      ),
+      client.request('/v1/admin/organizations/{organizationId}/runs/{runId}/diagnostics', {
+        method: 'GET',
+        path: { organizationId: targetOrganizationId, runId },
+        headers: { 'x-zapp-support-session': supportSession },
+        ...(signal === undefined ? {} : { signal }),
+      }),
     terminateAdminRun: (
       targetOrganizationId: string,
       runId: string,
@@ -601,6 +844,13 @@ export function createControlPlaneClient(organizationId?: string) {
         query: { limit: 25 },
         ...(signal === undefined ? {} : { signal }),
       }),
+    createWorkspace: (projectId: string, branchId: string, idempotencyKey?: string) =>
+      client.request('/v1/projects/{projectId}/workspaces', {
+        method: 'POST',
+        path: { projectId },
+        headers: requiredKeyHeaders(idempotencyKey),
+        body: { branchId, resourceProfile: 'standard' },
+      }),
     listWorkspaceFiles: (workspaceId: string, path = '.', signal?: AbortSignal) =>
       client.request('/v1/workspaces/{workspaceId}/files', {
         method: 'GET',
@@ -619,7 +869,11 @@ export function createControlPlaneClient(organizationId?: string) {
       }),
     editWorkspaceFile: (
       workspaceId: string,
-      body: { readonly path: string; readonly dataBase64: string; readonly expectedCompareToken: string },
+      body: {
+        readonly path: string;
+        readonly dataBase64: string;
+        readonly expectedCompareToken: string;
+      },
       idempotencyKey?: string,
     ) =>
       client.request('/v1/workspaces/{workspaceId}/edits', {
@@ -628,7 +882,12 @@ export function createControlPlaneClient(organizationId?: string) {
         headers: requiredKeyHeaders(idempotencyKey),
         body,
       }),
-    compareProjectCommits: (projectId: string, before: string, after: string, signal?: AbortSignal) =>
+    compareProjectCommits: (
+      projectId: string,
+      before: string,
+      after: string,
+      signal?: AbortSignal,
+    ) =>
       client.request('/v1/projects/{projectId}/compare', {
         method: 'GET',
         path: { projectId },

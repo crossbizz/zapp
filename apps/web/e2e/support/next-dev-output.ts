@@ -5,6 +5,10 @@ import { resolve } from 'node:path';
 const webAppDirectory = fileURLToPath(new URL('../../', import.meta.url));
 export const defaultNextDevOutputDirectory = resolve(webAppDirectory, '.next');
 
+export function nextDevWatchEnvironment(): { readonly WATCHPACK_POLLING: 'true' } {
+  return { WATCHPACK_POLLING: 'true' };
+}
+
 export async function resetNextDevOutput(
   nextOutputDirectory = defaultNextDevOutputDirectory,
 ): Promise<void> {

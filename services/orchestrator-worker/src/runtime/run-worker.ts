@@ -33,9 +33,7 @@ const WorkspaceResponseSchema = z
   .strict();
 const ReusableWorkspaceStatusResponseSchema = z
   .object({
-    workspace: z
-      .object({ id: idSchema('ws'), status: z.literal('ready') })
-      .passthrough(),
+    workspace: z.object({ id: idSchema('ws'), status: z.literal('ready') }).passthrough(),
     providerStatus: WorkspaceStatusSchema,
   })
   .strict();
@@ -273,15 +271,11 @@ export async function composeProductionActivities(options: {
           },
         );
         if (statusResponse.ok) {
-          const status = ReusableWorkspaceStatusResponseSchema.parse(
-            await statusResponse.json(),
-          );
+          const status = ReusableWorkspaceStatusResponseSchema.parse(await statusResponse.json());
           if (status.providerStatus === 'ready') {
             return { workspaceId: status.workspace.id };
           }
-          const staleKey = operationKey(
-            `${input.idempotencyKey}:retire:${status.workspace.id}`,
-          );
+          const staleKey = operationKey(`${input.idempotencyKey}:retire:${status.workspace.id}`);
           const staleHeaders = await serviceHeaders(env, 'sandbox-service', input);
           staleHeaders.set('idempotency-key', staleKey);
           const terminationResponse = await fetchImpl(
@@ -390,6 +384,34 @@ export async function composeProductionActivities(options: {
       if (paths.length > 0) {
         const pushed = await runtime.git({ operation: 'push' });
         if (pushed.exitCode !== 0) throw new Error('Unable to push the workspace commit');
+      }
+      const [workspace] = await database
+        .select({ branchId: workspaces.branchId })
+        .from(workspaces)
+        .where(
+          and(
+            eq(workspaces.id, input.workspaceId),
+            eq(workspaces.organizationId, input.organizationId),
+            eq(workspaces.projectId, input.projectId),
+          ),
+        )
+        .limit(1);
+      if (workspace?.branchId === null || workspace?.branchId === undefined) {
+        throw new Error('Unable to resolve the workspace branch for the generated commit');
+      }
+      const [persistedBranch] = await database
+        .update(branches)
+        .set({ headCommitSha: commitSha })
+        .where(
+          and(
+            eq(branches.id, workspace.branchId),
+            eq(branches.organizationId, input.organizationId),
+            eq(branches.projectId, input.projectId),
+          ),
+        )
+        .returning({ id: branches.id });
+      if (persistedBranch === undefined) {
+        throw new Error('Unable to persist the generated branch commit');
       }
       return {
         commitSha,

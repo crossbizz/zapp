@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   defaultNextDevOutputDirectory,
+  nextDevWatchEnvironment,
   preserveNextGeneratedFiles,
   resetNextDevOutput,
 } from '../e2e/support/next-dev-output.js';
@@ -15,7 +16,9 @@ const fixtureDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    fixtureDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+    fixtureDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
 
@@ -41,6 +44,10 @@ void test('defaults to the absolute web app Next output directory', () => {
 
   assert.equal(isAbsolute(defaultNextDevOutputDirectory), true);
   assert.equal(defaultNextDevOutputDirectory, join(webAppDirectory, '.next'));
+});
+
+void test('uses polling for repository-scale local and E2E Next watchers', () => {
+  assert.deepEqual(nextDevWatchEnvironment(), { WATCHPACK_POLLING: 'true' });
 });
 
 void test('restores tracked files that Next rewrites during an isolated dev run', async () => {

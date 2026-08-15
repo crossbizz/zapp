@@ -363,7 +363,7 @@ test('keeps Manage, Billing, and mobile builder navigation axe clean and contain
     .toBe(true);
   await axeClean(page);
 
-  const workspacePane = page.getByRole('button', { name: 'Workspace' });
+  const workspacePane = page.getByRole('button', { name: 'Workspace', exact: true });
   await workspacePane.click();
   await page.mouse.move(0, 0);
   await expect(page.getByRole('region', { name: 'Workspace' })).toBeVisible();

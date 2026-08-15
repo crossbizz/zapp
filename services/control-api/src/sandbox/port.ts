@@ -19,6 +19,7 @@ export const WorkspacePortSchema = z
     providerWorkspaceId: z.string().nullable(),
     status: WorkspaceStatusSchema,
     resourceProfile: z.enum(['small', 'standard', 'large']),
+    runId: idSchema('run').nullable(),
     snapshotRef: z.string().nullable(),
     createdAt: z.date(),
     lastActiveAt: z.date().nullable(),
@@ -78,9 +79,7 @@ export const TerminateOrganizationResultSchema = z
   .object({ terminated: z.number().int().nonnegative() })
   .strict();
 
-const SandboxBranchLockedCauseSchema = z
-  .object({ code: z.literal('branch_locked') })
-  .passthrough();
+const SandboxBranchLockedCauseSchema = z.object({ code: z.literal('branch_locked') }).passthrough();
 
 export function isSandboxBranchLockedError(error: unknown): boolean {
   return SandboxBranchLockedCauseSchema.safeParse(error).success;
@@ -88,15 +87,9 @@ export function isSandboxBranchLockedError(error: unknown): boolean {
 
 /** Public workspace lifecycle only; raw filesystem and command access stay internal. */
 export interface SandboxServicePort {
-  createWorkspace(
-    input: z.infer<typeof CreateWorkspaceInputSchema>,
-  ): Promise<unknown>;
-  startWorkspace(
-    input: z.infer<typeof StartWorkspaceInputSchema>,
-  ): Promise<unknown>;
-  checkpointWorkspace(
-    input: z.infer<typeof CheckpointWorkspaceInputSchema>,
-  ): Promise<unknown>;
+  createWorkspace(input: z.infer<typeof CreateWorkspaceInputSchema>): Promise<unknown>;
+  startWorkspace(input: z.infer<typeof StartWorkspaceInputSchema>): Promise<unknown>;
+  checkpointWorkspace(input: z.infer<typeof CheckpointWorkspaceInputSchema>): Promise<unknown>;
   terminateWorkspace(input: z.infer<typeof TerminateWorkspaceInputSchema>): Promise<unknown>;
 }
 

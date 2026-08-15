@@ -51,6 +51,7 @@ export function toSandboxWorkspace(workspace: Workspace): SandboxWorkspace {
     providerWorkspaceId: workspace.providerWorkspaceId,
     status: workspace.status,
     resourceProfile: workspace.resourceProfile,
+    runId: workspace.runId,
     snapshotRef: workspace.snapshotRef,
     createdAt: workspace.createdAt,
     lastActiveAt: workspace.lastActiveAt,
@@ -88,7 +89,9 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
       authorize(ctx, 'edit_code');
       const operationKey = operationOf(request);
       const organization =
-        deps.planLimits === undefined ? undefined : await deps.organizations.findById(ctx.organizationId);
+        deps.planLimits === undefined
+          ? undefined
+          : await deps.organizations.findById(ctx.organizationId);
       const resourceProfile =
         deps.planLimits === undefined || organization === undefined
           ? request.body.resourceProfile
@@ -140,7 +143,27 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
             });
           },
         });
-        if (completed === undefined) throw sandboxFailed();
+        if (completed === undefined) {
+          const durable = await ctx.db.workspaces.getById(workspace.id);
+          if (
+            durable === undefined ||
+            durable.providerWorkspaceId !== result.providerWorkspaceId ||
+            durable.status !== result.status
+          ) {
+            throw sandboxFailed();
+          }
+          await request.auditDetached({
+            organizationId: ctx.organizationId,
+            action: 'workspace.created',
+            target: { type: 'workspace', id: durable.id },
+            metadata: {
+              operationKey,
+              operationState: 'completed',
+              status: durable.status,
+            },
+          });
+          return await reply.status(201).send({ workspace: toWorkspace(durable) });
+        }
         return await reply.status(201).send({ workspace: toWorkspace(completed) });
       }
       return await reply.status(201).send({ workspace: toWorkspace(workspace) });
@@ -173,7 +196,10 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
     apply: async (workspace, operationKey) =>
       StartWorkspaceResultSchema.parse(
         await deps.sandbox.startWorkspace(
-          StartWorkspaceInputSchema.parse({ workspace: toSandboxWorkspace(workspace), operationKey }),
+          StartWorkspaceInputSchema.parse({
+            workspace: toSandboxWorkspace(workspace),
+            operationKey,
+          }),
         ),
       ),
     patch: (result) => ({ status: StartWorkspaceResultSchema.parse(result).status }),
@@ -220,10 +246,7 @@ export function registerWorkspaceRoutes(app: AppInstance, deps: WorkspaceRoutesD
         | 'workspace.start_requested'
         | 'workspace.checkpoint_requested'
         | 'workspace.terminate_requested';
-      readonly completed:
-        | 'workspace.started'
-        | 'workspace.checkpointed'
-        | 'workspace.terminated';
+      readonly completed: 'workspace.started' | 'workspace.checkpointed' | 'workspace.terminated';
       readonly body: z.ZodTypeAny | undefined;
       readonly apply: (
         workspace: Workspace,
@@ -316,11 +339,7 @@ function invalidWorkspaceState(): ApiError {
   return new ApiError('invalid_workspace_state', 409, 'That workspace cannot accept this action.');
 }
 function branchLocked(): ApiError {
-  return new ApiError(
-    'branch_locked',
-    409,
-    'The branch already has an active writer.',
-  );
+  return new ApiError('branch_locked', 409, 'The branch already has an active writer.');
 }
 function sandboxFailed(): ApiError {
   return new ApiError(

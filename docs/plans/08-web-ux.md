@@ -358,6 +358,18 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Run focused control-plane tests, affected lint/typecheck, verify the running local stack no longer emits the handshake error, and run the repository push gate.
 - [x] Commit: `fix(preview): preserve Vite HMR WebSocket protocol`
 
+#### WEB-18-FIX-9 - durable branch workspaces and truthful agent failures
+
+**Root cause:** The builder trusted a run-scoped workspace after its provider workspace had expired, treated a sleeping dev server as a new start, and did not persist the pushed branch head. A terminal worker failure could also end without an assistant message. Finally, the polling Next dev watcher observed its own custom `.next-e2e-*` output, causing full reloads that made the editor and preview appear to flicker or hang.
+**Files:** Modify `apps/web/{e2e,src,test,next.config.ts,package.json}`, `scripts/local/{config.mjs}`, `scripts/local.test.mjs`, `services/control-api/{src,test}`, `services/orchestrator-worker/{src,test}`, this plan, and `tasks/todo.md`. No desktop files are in scope.
+
+- [x] Reject terminated and foreign-branch workspaces, recover from the real project branch through the public workspace API, and coalesce concurrent recovery, restart, and automatic wake requests.
+- [x] Use the existing dev-server restart lifecycle for sleeping previews, retain one workspace across run-event changes, and bound authenticated-share retries so the iframe remains stable.
+- [x] Persist the generated commit on the branch, default branchless follow-up runs to the active main branch, and emit a useful assistant explanation before failed or budget-exhausted terminal status.
+- [x] Keep the code surface backed by the recovered workspace and exclude VCS, dependency, and generated Next output from the polling watcher.
+- [x] Verify focused web/API/worker TDD suites, the complete browser suite, a live branch-backed Docker preview share/exchange/redeem chain, affected lint/typecheck, and the cold repository gate.
+- [x] Commit: `fix(web): recover durable previews and agent failures`
+
 ---
 
 ## Testing strategy
@@ -371,6 +383,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-9 done — Recovered expired workspaces from their durable branch, automatically restarted sleeping previews without duplicate calls, persisted generated branch heads, made terminal agent failures explanatory, and stopped Next from watching its own output; focused API/worker suites and all 135 browser tests passed, with a live Docker preview returning the generated app through share, exchange, redemption, and proxy delivery.
 - 2026-08-15 WEB-18-FIX-8 done — Preserved Vite's HMR WebSocket subprotocol through the control-to-sandbox bridge; the real socket regression passed, a live Docker workspace negotiated and held `vite-hmr`, all 134 browser tests passed, and the repository gate ran against the restored local stack.
 - 2026-08-14 WEB-18-FIX-7 done — Restored canonical lazy workspace trees and CHIPS-compatible embedded preview sessions; focused API/browser coverage and all 134 web tests passed, while live Chromium rendered the generated app and opened the real `src/main.ts` from its active workspace.
 - 2026-08-14 WEB-18-FIX-5 done — Restored source-only generated commits, single-stream run events, durable branch reuse, real preview lifecycle projection, canonical localhost redemption, and compact Lovable-style Preview/Files/Code/More; real Anthropic Docker run completed with 5/5 generated tests, source-only commit, preview ready, and share/exchange/redeem/document/source checks 201/200/200/200/200; web 134/134, runtime 15/15, Mission Control 5/5, local 14/14, config 84/84, orchestrator integration 45/45, lint/typecheck and cold repository gate passed.

@@ -35,10 +35,7 @@ import {
   TransitionPhaseTasksInputSchema,
   type AutonomousActivities,
 } from './autonomous.js';
-import {
-  processRedirectPlanChange,
-  type RedirectPlanChangeHooks,
-} from './redirect.js';
+import { processRedirectPlanChange, type RedirectPlanChangeHooks } from './redirect.js';
 import { runTaskBatchWorkflow, TaskWorkflowResultSchema } from './task.js';
 import {
   BudgetApprovalResolutionSchema,
@@ -66,8 +63,7 @@ export { fixCreditBalanceExhaustedSignal, fixWorkflow } from './fix.js';
 
 const workflowIdSchema = (
   prefix: 'run' | 'org' | 'proj' | 'br' | 'art' | 'phase' | 'task' | 'vr',
-): z.ZodString =>
-  z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`));
+): z.ZodString => z.string().regex(new RegExp(`^${prefix}_[0-9A-HJKMNP-TV-Z]{26}$`));
 
 export const RunWorkflowInputSchema = RunWorkflowStartInputSchema;
 export type RunWorkflowInput = z.infer<typeof RunWorkflowInputSchema>;
@@ -175,9 +171,7 @@ export const BuildModeApprovalAssessmentSchema = z
     risk: z.enum(['low', 'medium', 'high']),
   })
   .strict();
-export type BuildModeApprovalAssessment = z.infer<
-  typeof BuildModeApprovalAssessmentSchema
->;
+export type BuildModeApprovalAssessment = z.infer<typeof BuildModeApprovalAssessmentSchema>;
 
 const AssessBuildPlanApprovalInputSchema = z
   .object({
@@ -202,11 +196,10 @@ export function shouldAutoApproveBuildPlan(
   );
 }
 
-export interface BuildModeActivities
-  extends Pick<
-    AutonomousActivities,
-    'producePlan' | 'approvePlan' | 'resolveIntegrationHead' | 'transitionPhaseTasks'
-  > {
+export interface BuildModeActivities extends Pick<
+  AutonomousActivities,
+  'producePlan' | 'approvePlan' | 'resolveIntegrationHead' | 'transitionPhaseTasks'
+> {
   /**
    * Loads the immutable plan artifact and derives diff size and risk in the
    * code-owned policy layer. It must fail closed when trusted classification
@@ -309,7 +302,9 @@ const RunControlContinuationSchema = z
     pendingSkips: z.array(SkipOptionalPhaseSignalSchema).max(100).optional(),
     failedTaskIds: z.array(workflowIdSchema('task')).max(10_000).optional(),
     startedTaskIds: z.array(workflowIdSchema('task')).max(10_000).optional(),
-    taskAttempts: z.record(workflowIdSchema('task'), z.number().int().nonnegative().max(100)).optional(),
+    taskAttempts: z
+      .record(workflowIdSchema('task'), z.number().int().nonnegative().max(100))
+      .optional(),
   })
   .strict();
 const RunWorkflowStateSchema = RunWorkflowInputSchema.extend({
@@ -344,7 +339,10 @@ export const RunWorkflowResultSchema = z.discriminatedUnion('status', [
   z
     .object({
       status: z.literal('completed'),
-      commitSha: z.string().regex(/^[0-9a-f]{40,64}$/u).nullable(),
+      commitSha: z
+        .string()
+        .regex(/^[0-9a-f]{40,64}$/u)
+        .nullable(),
     })
     .strict(),
   z.object({ status: z.literal('cancelled'), checkpointRef: z.string().min(1) }).strict(),
@@ -471,11 +469,7 @@ const PROTOTYPE_MODE_INSTRUCTIONS =
 const DEFAULT_MODE_INSTRUCTIONS =
   'Implement the requested application directly. Prefer TypeScript. Inspect the execution contract and file tree once. If the repository is blank or scaffold-only, do not inspect git history, database schema, release state, empty logs, or unrelated integrations. Create runnable application files immediately, install dependencies, start the development server, run the preview smoke test, and fix any reported errors. Continue until the requested verification succeeds.';
 
-function buildTaskPrompt(
-  input: RunWorkflowInput,
-  planArtifactId: string,
-  task: PlanTask,
-): string {
+function buildTaskPrompt(input: RunWorkflowInput, planArtifactId: string, task: PlanTask): string {
   return [
     `Build request: ${input.prompt}`,
     `Approved lightweight plan: ${planArtifactId}`,
@@ -483,7 +477,7 @@ function buildTaskPrompt(
     `Acceptance criteria: ${task.acceptanceCriteriaIds.join(', ')}`,
     `Expected files: ${task.expectedFiles.join(', ') || 'discover from the repository'}`,
     `Required tests: ${task.requiredTests.join(', ') || 'project-required VF gate set'}`,
-    'Make only this task\'s change. Finish with a commit; verification runs independently afterward.',
+    "Make only this task's change. Finish with a commit; verification runs independently afterward.",
   ].join('\n');
 }
 
@@ -655,8 +649,7 @@ async function executeRunWorkflow(
   let resumeOperationKey = input.control?.resumeOperationKey ?? null;
   let cancelRequested = input.control?.cancelRequested ?? false;
   let cancelOperationKey = input.control?.cancelOperationKey ?? null;
-  let cancelAcknowledgementDeadlineAt =
-    input.control?.cancelAcknowledgementDeadlineAt ?? null;
+  let cancelAcknowledgementDeadlineAt = input.control?.cancelAcknowledgementDeadlineAt ?? null;
   const pendingRedirects = [...(input.control?.pendingRedirects ?? [])];
   const pendingMessages = [...(input.control?.pendingMessages ?? [])];
   const pendingRetries = [...(input.control?.pendingRetries ?? [])];
@@ -736,7 +729,8 @@ async function executeRunWorkflow(
   });
   setHandler(creditBalanceExhaustedSignal, (value) => {
     const signal = acceptControlSignal(value);
-    if (!rememberOperation(signal.operationKey) || cancelRequested || creditBalanceExhausted) return;
+    if (!rememberOperation(signal.operationKey) || cancelRequested || creditBalanceExhausted)
+      return;
     creditBalanceExhausted = true;
     creditBalanceOperationKey = signal.operationKey;
   });
@@ -823,10 +817,7 @@ async function executeRunWorkflow(
       existingCheckpointRef ??
       (await checkpointControlBoundary(workspaceId, 'cancel', cancelOperationKey));
     const operation = OperationKeySchema.parse(cancelOperationKey);
-    const acknowledgementDeadlineAt = z
-      .string()
-      .datetime()
-      .parse(cancelAcknowledgementDeadlineAt);
+    const acknowledgementDeadlineAt = z.string().datetime().parse(cancelAcknowledgementDeadlineAt);
     await controlEvents.emitEvents({
       flushImmediately: true,
       events: [
@@ -852,11 +843,7 @@ async function executeRunWorkflow(
   ): Promise<RunWorkflowResult | undefined> => {
     if (cancelRequested) return await completeCancellation(workspaceId);
     if (!pauseRequested) return undefined;
-    const checkpointRef = await checkpointControlBoundary(
-      workspaceId,
-      'pause',
-      pauseOperationKey,
-    );
+    const checkpointRef = await checkpointControlBoundary(workspaceId, 'pause', pauseOperationKey);
     const pauseOperation = OperationKeySchema.parse(pauseOperationKey);
     const pauseAcknowledgementDeadlineAt = new Date(
       Date.now() + CONTROL_ACKNOWLEDGEMENT_BUDGET_MS,
@@ -873,18 +860,13 @@ async function executeRunWorkflow(
             kind: 'run_control_checkpoint',
           },
         ),
-        event(
-          input,
-          'run.paused',
-          `control-paused-${pauseOperationKey?.slice(-12) ?? 'unkeyed'}`,
-          {
-            checkpointRef,
-            control: {
-              operationKey: pauseOperation,
-              acknowledgementDeadlineAt: pauseAcknowledgementDeadlineAt,
-            },
+        event(input, 'run.paused', `control-paused-${pauseOperationKey?.slice(-12) ?? 'unkeyed'}`, {
+          checkpointRef,
+          control: {
+            operationKey: pauseOperation,
+            acknowledgementDeadlineAt: pauseAcknowledgementDeadlineAt,
           },
-        ),
+        }),
       ],
     });
     currentStatus = 'paused';
@@ -945,25 +927,38 @@ async function executeRunWorkflow(
     await events.transitionRunStatus({
       runId: input.runId,
       status: 'waiting_for_approval',
-      idempotencyKey: operationKey(input, `status-organization-credit-${episodeOperationKey.slice(-12)}`),
+      idempotencyKey: operationKey(
+        input,
+        `status-organization-credit-${episodeOperationKey.slice(-12)}`,
+      ),
     });
     await events.emitEvents({
       events: [
-        event(input, 'conversation.card', `organization-credit-card-${episodeOperationKey.slice(-12)}`, {
-          card: {
-            version: 1,
-            kind: 'approval',
-            cardId: `card_${input.runId}:organization-credit:${episodeOperationKey.slice(-12)}`,
-            approvalId: requested.approvalId,
-            approvalKind: 'budget_increase',
+        event(
+          input,
+          'conversation.card',
+          `organization-credit-card-${episodeOperationKey.slice(-12)}`,
+          {
+            card: {
+              version: 1,
+              kind: 'approval',
+              cardId: `card_${input.runId}:organization-credit:${episodeOperationKey.slice(-12)}`,
+              approvalId: requested.approvalId,
+              approvalKind: 'budget_increase',
+            },
           },
-        }),
-        event(input, 'approval.requested', `organization-credit-${episodeOperationKey.slice(-12)}`, {
-          approvalId: requested.approvalId,
-          type: 'budget_increase',
-          reason: 'organization_credit_exhausted',
-          absoluteCeiling: requested.absoluteCeiling,
-        }),
+        ),
+        event(
+          input,
+          'approval.requested',
+          `organization-credit-${episodeOperationKey.slice(-12)}`,
+          {
+            approvalId: requested.approvalId,
+            type: 'budget_increase',
+            reason: 'organization_credit_exhausted',
+            absoluteCeiling: requested.absoluteCeiling,
+          },
+        ),
       ],
     });
     await condition(() => budgetResolutions.has(requested.approvalId) || cancelRequested);
@@ -980,40 +975,59 @@ async function executeRunWorkflow(
       return RunWorkflowResultSchema.parse({ status: 'cancelled', checkpointRef });
     }
     const resolution = budgetResolutions.get(requested.approvalId);
-    if (
-      resolution === undefined ||
-      resolution.reason !== 'organization_credit_exhausted'
-    ) throw new Error('organization credit approval resolution does not match the request');
+    if (resolution === undefined || resolution.reason !== 'organization_credit_exhausted')
+      throw new Error('organization credit approval resolution does not match the request');
     await events.emitEvents({
       events: [
-        event(input, 'approval.resolved', `organization-credit-resolution-${episodeOperationKey.slice(-12)}`, {
-          approvalId: requested.approvalId,
-          decision: resolution.decision,
-          reason: resolution.reason,
-        }),
+        event(
+          input,
+          'approval.resolved',
+          `organization-credit-resolution-${episodeOperationKey.slice(-12)}`,
+          {
+            approvalId: requested.approvalId,
+            decision: resolution.decision,
+            reason: resolution.reason,
+          },
+        ),
       ],
     });
     if (resolution.decision === 'rejected') {
-      const checkpointRef = workspaceId === null
-        ? `run:${input.runId}:organization-credit`
-        : (await approvals.checkpointBudgetStop({
-            runId: input.runId,
-            organizationId: input.organizationId,
-            projectId: input.projectId,
-            workspaceId,
-            approvalId: requested.approvalId,
-            idempotencyKey: operationKey(input, `organization-credit-stop-${episodeOperationKey.slice(-12)}`),
-          })).checkpointRef;
+      const checkpointRef =
+        workspaceId === null
+          ? `run:${input.runId}:organization-credit`
+          : (
+              await approvals.checkpointBudgetStop({
+                runId: input.runId,
+                organizationId: input.organizationId,
+                projectId: input.projectId,
+                workspaceId,
+                approvalId: requested.approvalId,
+                idempotencyKey: operationKey(
+                  input,
+                  `organization-credit-stop-${episodeOperationKey.slice(-12)}`,
+                ),
+              })
+            ).checkpointRef;
       await events.transitionRunStatus({
         runId: input.runId,
         status: 'cancelled',
-        idempotencyKey: operationKey(input, `status-organization-credit-rejected-${episodeOperationKey.slice(-12)}`),
+        idempotencyKey: operationKey(
+          input,
+          `status-organization-credit-rejected-${episodeOperationKey.slice(-12)}`,
+        ),
       });
       await events.emitEvents({
-        events: [event(input, 'run.cancelled', `organization-credit-rejected-${episodeOperationKey.slice(-12)}`, {
-          reason: 'organization_credit_exhausted',
-          checkpointRef,
-        })],
+        events: [
+          event(
+            input,
+            'run.cancelled',
+            `organization-credit-rejected-${episodeOperationKey.slice(-12)}`,
+            {
+              reason: 'organization_credit_exhausted',
+              checkpointRef,
+            },
+          ),
+        ],
       });
       currentStatus = 'cancelled';
       currentPhase = 'terminal';
@@ -1029,7 +1043,10 @@ async function executeRunWorkflow(
     await events.transitionRunStatus({
       runId: input.runId,
       status: 'running',
-      idempotencyKey: operationKey(input, `status-organization-credit-approved-${episodeOperationKey.slice(-12)}`),
+      idempotencyKey: operationKey(
+        input,
+        `status-organization-credit-approved-${episodeOperationKey.slice(-12)}`,
+      ),
     });
     return await honorOrganizationCreditBoundary(workspaceId, resumedPhase);
   };
@@ -1131,10 +1148,9 @@ async function executeRunWorkflow(
     if (controlResult !== undefined) return controlResult;
     return continueAsNew<typeof runWorkflow>({
       ...input,
-      continuation:
-        lightweightBuild
-          ? { phase: 'build_plan', workspaceId }
-          : { phase: 'session', workspaceId },
+      continuation: lightweightBuild
+        ? { phase: 'build_plan', workspaceId }
+        : { phase: 'session', workspaceId },
       budgetAttempt,
       sessionStep,
       lastEmittedAssistantTurn,
@@ -1225,16 +1241,19 @@ async function executeRunWorkflow(
       } finally {
         activeScope = undefined;
       }
-      const autoApproved = shouldAutoApproveBuildPlan(
-        assessment,
-        BUILD_MODE_APPROVAL_CONFIG,
-      );
+      const autoApproved = shouldAutoApproveBuildPlan(assessment, BUILD_MODE_APPROVAL_CONFIG);
       await events.emitEvents({
         events: [
-          event(input, 'phase.created', 'build-phase-created', {
-            phaseId: phase.id,
-            name: phase.title,
-          }, { phaseId: phase.id }),
+          event(
+            input,
+            'phase.created',
+            'build-phase-created',
+            {
+              phaseId: phase.id,
+              name: phase.title,
+            },
+            { phaseId: phase.id },
+          ),
           event(
             input,
             'phase.started',
@@ -1301,17 +1320,16 @@ async function executeRunWorkflow(
             }),
           ],
         });
-        await condition(
-          () => {
-            const resolution = buildPlanResolutions.get(produced.planArtifactId);
-            return (
-              resolution !== undefined &&
+        await condition(() => {
+          const resolution = buildPlanResolutions.get(produced.planArtifactId);
+          return (
+            (resolution !== undefined &&
               (resolution.approvalId === undefined ||
                 resolution.approvalId === requestedApproval.approvalId) &&
-              (resolution.approvalKind === undefined || resolution.approvalKind === 'plan')
-            ) || cancelRequested;
-          },
-        );
+              (resolution.approvalKind === undefined || resolution.approvalKind === 'plan')) ||
+            cancelRequested
+          );
+        });
         if (cancelRequested) return await completeCancellation(workspaceId);
         const resolution = buildPlanResolutions.get(produced.planArtifactId);
         if (
@@ -1319,7 +1337,8 @@ async function executeRunWorkflow(
           (resolution.approvalId !== undefined &&
             resolution.approvalId !== requestedApproval.approvalId) ||
           (resolution.approvalKind !== undefined && resolution.approvalKind !== 'plan')
-        ) throw new Error('build_plan_approval_disappeared');
+        )
+          throw new Error('build_plan_approval_disappeared');
         await events.emitEvents({
           events: [
             event(input, 'approval.resolved', 'build-plan-approval-resolved', {
@@ -1549,26 +1568,31 @@ async function executeRunWorkflow(
       while (pendingSkips.length > 0) {
         const request = pendingSkips.shift();
         if (request === undefined) break;
-        const eligibility = skipOptionalPhaseEligibility(
-          plan,
-          request.phaseId,
-          startedTaskIds,
-          [],
-        );
+        const eligibility = skipOptionalPhaseEligibility(plan, request.phaseId, startedTaskIds, []);
         await events.emitEvents({
-          events: [event(input, 'task.updated', `build-skip:${request.operationKey}`, {
-            control: 'skip_optional_phase',
-            outcome: 'rejected',
-            reason: eligibility.reason,
-            operationKey: request.operationKey,
-            phaseId: request.phaseId,
-          }, { phaseId: phase.id })],
+          events: [
+            event(
+              input,
+              'task.updated',
+              `build-skip:${request.operationKey}`,
+              {
+                control: 'skip_optional_phase',
+                outcome: 'rejected',
+                reason: eligibility.reason,
+                operationKey: request.operationKey,
+                phaseId: request.phaseId,
+              },
+              { phaseId: phase.id },
+            ),
+          ],
         });
       }
 
       const preExecuteControlResult = await honorNewWorkBoundary(workspaceId, 'session');
       if (preExecuteControlResult !== undefined) return preExecuteControlResult;
-      const taskCommitById = new Map(taskCommits.map(({ taskId, commitSha }) => [taskId, commitSha]));
+      const taskCommitById = new Map(
+        taskCommits.map(({ taskId, commitSha }) => [taskId, commitSha]),
+      );
       if (taskCommitById.size !== taskCommits.length) {
         throw ApplicationFailure.nonRetryable(
           'Build execution continuation contains duplicate task commits',
@@ -1636,12 +1660,18 @@ async function executeRunWorkflow(
       }
       await events.emitEvents({
         events: [
-          event(input, 'task.created', `build-task-${nextTask.id}-created`, {
-            phaseId: phase.id,
-            taskId: nextTask.id,
-            title: nextTask.title,
-            acceptanceCriteriaIds: nextTask.acceptanceCriteriaIds,
-          }, { phaseId: phase.id, taskId: nextTask.id }),
+          event(
+            input,
+            'task.created',
+            `build-task-${nextTask.id}-created`,
+            {
+              phaseId: phase.id,
+              taskId: nextTask.id,
+              title: nextTask.title,
+              acceptanceCriteriaIds: nextTask.acceptanceCriteriaIds,
+            },
+            { phaseId: phase.id, taskId: nextTask.id },
+          ),
         ],
       });
       const preChildCreditResult = await honorNewWorkBoundary(workspaceId, 'session');
@@ -1652,32 +1682,36 @@ async function executeRunWorkflow(
       activeScope = taskScope;
       let result: z.infer<typeof TaskWorkflowResultSchema>;
       try {
-        const results = z.array(TaskWorkflowResultSchema).length(1).parse(
-          await taskScope.run(async () =>
-            await executeChild(runTaskBatchWorkflow, {
-              workflowId: `build:${input.runId}:${planArtifactId}:${nextTask.id}:attempt:${String(attempt)}`,
-              args: [
-                {
-                  runId: input.runId,
-                  maxConcurrency: 1,
-                  tasks: [
+        const results = z
+          .array(TaskWorkflowResultSchema)
+          .length(1)
+          .parse(
+            await taskScope.run(
+              async () =>
+                await executeChild(runTaskBatchWorkflow, {
+                  workflowId: `build:${input.runId}:${planArtifactId}:${nextTask.id}:attempt:${String(attempt)}`,
+                  args: [
                     {
                       runId: input.runId,
-                      organizationId: input.organizationId,
-                      projectId: input.projectId,
-                      taskId: nextTask.id,
-                      mode: 'build' as const,
-                      model: input.model,
-                      prompt: buildTaskPrompt(input, planArtifactId, nextTask),
-                      budget: { maxCredits: Math.max(1, nextTask.estimate.credits) },
-                      attempt,
+                      maxConcurrency: 1,
+                      tasks: [
+                        {
+                          runId: input.runId,
+                          organizationId: input.organizationId,
+                          projectId: input.projectId,
+                          taskId: nextTask.id,
+                          mode: 'build' as const,
+                          model: input.model,
+                          prompt: buildTaskPrompt(input, planArtifactId, nextTask),
+                          budget: { maxCredits: Math.max(1, nextTask.estimate.credits) },
+                          attempt,
+                        },
+                      ],
                     },
                   ],
-                },
-              ],
-            }),
-          ),
-        );
+                }),
+            ),
+          );
         const onlyResult = results[0];
         if (onlyResult === undefined) throw new Error('build_task_result_missing');
         result = onlyResult;
@@ -1713,7 +1747,10 @@ async function executeRunWorkflow(
         for (;;) {
           const requestIndex = pendingRetries.findIndex(({ taskId }) => taskId === result.taskId);
           if (requestIndex < 0) {
-            await condition(() => pendingRetries.some(({ taskId }) => taskId === result.taskId) || cancelRequested);
+            await condition(
+              () =>
+                pendingRetries.some(({ taskId }) => taskId === result.taskId) || cancelRequested,
+            );
             if (cancelRequested) return await completeCancellation(workspaceId);
             continue;
           }
@@ -1726,20 +1763,34 @@ async function executeRunWorkflow(
             taskCommits.map(({ taskId }) => taskId),
           );
           await events.emitEvents({
-            events: [event(input, 'task.updated', `build-retry:${request.operationKey}`, {
-              control: 'retry_failed_task',
-              outcome: eligibility.accepted ? 'accepted' : 'rejected',
-              reason: eligibility.reason,
-              operationKey: request.operationKey,
-              taskId: result.taskId,
-            }, { phaseId: phase.id, taskId: result.taskId })],
+            events: [
+              event(
+                input,
+                'task.updated',
+                `build-retry:${request.operationKey}`,
+                {
+                  control: 'retry_failed_task',
+                  outcome: eligibility.accepted ? 'accepted' : 'rejected',
+                  reason: eligibility.reason,
+                  operationKey: request.operationKey,
+                  taskId: result.taskId,
+                },
+                { phaseId: phase.id, taskId: result.taskId },
+              ),
+            ],
           });
           if (!eligibility.accepted) continue;
           failedTaskIds = failedTaskIds.filter((taskId) => taskId !== result.taskId);
           taskAttempts[result.taskId] = attempt + 1;
           return await continueAsNew<typeof runWorkflow>({
             ...input,
-            continuation: { phase: 'build_execute', workspaceId, planArtifactId, plan, taskCommits },
+            continuation: {
+              phase: 'build_execute',
+              workspaceId,
+              planArtifactId,
+              plan,
+              taskCommits,
+            },
             budgetAttempt,
             sessionStep,
             lastEmittedAssistantTurn,
@@ -1848,12 +1899,18 @@ async function executeRunWorkflow(
       }
       await events.emitEvents({
         events: [
-          event(input, 'verification.completed', 'build-verification-completed', {
-            phaseId: phase.id,
-            commitSha,
-            verificationResultId: verification.verificationResultId,
-            decision: verification.decision,
-          }, { phaseId: phase.id }),
+          event(
+            input,
+            'verification.completed',
+            'build-verification-completed',
+            {
+              phaseId: phase.id,
+              commitSha,
+              verificationResultId: verification.verificationResultId,
+              decision: verification.decision,
+            },
+            { phaseId: phase.id },
+          ),
         ],
       });
       if (verification.decision !== 'approved') {
@@ -1887,17 +1944,29 @@ async function executeRunWorkflow(
       await events.emitEvents({
         events: [
           ...plan.tasks.map((task) =>
-            event(input, 'task.completed', `build-task-${task.id}-completed`, {
-              phaseId: phase.id,
-              taskId: task.id,
-              commitSha: taskCommitById.get(task.id),
-              verificationResultId: verification.verificationResultId,
-            }, { phaseId: phase.id, taskId: task.id }),
+            event(
+              input,
+              'task.completed',
+              `build-task-${task.id}-completed`,
+              {
+                phaseId: phase.id,
+                taskId: task.id,
+                commitSha: taskCommitById.get(task.id),
+                verificationResultId: verification.verificationResultId,
+              },
+              { phaseId: phase.id, taskId: task.id },
+            ),
           ),
-          event(input, 'phase.completed', 'build-phase-completed', {
-            phaseId: phase.id,
-            commitSha,
-          }, { phaseId: phase.id }),
+          event(
+            input,
+            'phase.completed',
+            'build-phase-completed',
+            {
+              phaseId: phase.id,
+              commitSha,
+            },
+            { phaseId: phase.id },
+          ),
           event(input, 'run.completed', 'run-completed', { status: 'completed', commitSha }),
         ],
       });
@@ -1934,10 +2003,7 @@ async function executeRunWorkflow(
           }),
         ],
       });
-      const preSessionControlResult = await honorNewWorkBoundary(
-        sessionWorkspaceId,
-        'session',
-      );
+      const preSessionControlResult = await honorNewWorkBoundary(sessionWorkspaceId, 'session');
       if (preSessionControlResult !== undefined) return preSessionControlResult;
       const sessionScope = new CancellationScope();
       activeScope = sessionScope;
@@ -1993,16 +2059,16 @@ async function executeRunWorkflow(
       } finally {
         activeScope = undefined;
       }
-      const controlResult = await honorNewWorkBoundary(
-        sessionWorkspaceId,
-        'session',
-      );
+      const controlResult = await honorNewWorkBoundary(sessionWorkspaceId, 'session');
       if (controlResult !== undefined) return controlResult;
       if (sessionResult.redirectApplied === true) pendingRedirects.shift();
       if (sessionResult.messageApplied === true) pendingMessages.shift();
       const assistantTurn = sessionResult.turn ?? sessionStep + 1;
       if (
-        (sessionResult.status === 'completed' || sessionResult.status === 'yielded') &&
+        (sessionResult.status === 'completed' ||
+          sessionResult.status === 'yielded' ||
+          sessionResult.status === 'failed' ||
+          sessionResult.status === 'budget_exhausted') &&
         assistantTurn > lastEmittedAssistantTurn
       ) {
         const model = sessionResult.model ?? input.model ?? 'policy/default';
@@ -2036,10 +2102,7 @@ async function executeRunWorkflow(
             currentCeiling,
             absoluteCeiling: nextRunCreditCeiling(input.budget.maxCredits, input.planMaxCredits),
             reason: 'run_budget_exhausted',
-            idempotencyKey: operationKey(
-              input,
-              `budget-increase-${String(budgetAttempt)}`,
-            ),
+            idempotencyKey: operationKey(input, `budget-increase-${String(budgetAttempt)}`),
           });
           currentStatus = 'waiting_for_approval';
           await events.transitionRunStatus({
@@ -2068,9 +2131,7 @@ async function executeRunWorkflow(
               }),
             ],
           });
-          await condition(
-            () => budgetResolutions.has(requested.approvalId) || cancelRequested,
-          );
+          await condition(() => budgetResolutions.has(requested.approvalId) || cancelRequested);
           if (cancelRequested) return await completeCancellation(sessionWorkspaceId);
           const resolution = budgetResolutions.get(requested.approvalId);
           if (resolution === undefined) throw new Error('budget approval resolution disappeared');
@@ -2125,10 +2186,7 @@ async function executeRunWorkflow(
           await events.transitionRunStatus({
             runId: input.runId,
             status: 'running',
-            idempotencyKey: operationKey(
-              input,
-              `status-budget-resumed-${String(budgetAttempt)}`,
-            ),
+            idempotencyKey: operationKey(input, `status-budget-resumed-${String(budgetAttempt)}`),
           });
           break;
         }
@@ -2183,7 +2241,10 @@ async function executeRunWorkflow(
             'prototype_preview_gate_incomplete',
           );
         }
-        const mocks = z.array(PrototypeMockSchema).max(100).parse(sessionResult.mocks ?? []);
+        const mocks = z
+          .array(PrototypeMockSchema)
+          .max(100)
+          .parse(sessionResult.mocks ?? []);
         if (mocks.length > 0) {
           await events.emitEvents({
             events: [
@@ -2275,17 +2336,12 @@ async function executeRunWorkflow(
     if (cancelRequested) return await completeCancellation(commitWorkspaceId);
     const postCommitControlResult = await honorNewWorkBoundary(commitWorkspaceId, 'commit');
     if (postCommitControlResult !== undefined) return postCommitControlResult;
-    const commitCreated = event(
-      input,
-      'commit.created',
-      `commit-created-${String(sessionStep)}`,
-      {
-        commitSha: committed.commitSha,
-        message: M1_COMMIT_MESSAGE,
-        diffstat: committed.diffstat,
-        mode: input.mode,
-      },
-    );
+    const commitCreated = event(input, 'commit.created', `commit-created-${String(sessionStep)}`, {
+      commitSha: committed.commitSha,
+      message: M1_COMMIT_MESSAGE,
+      diffstat: committed.diffstat,
+      mode: input.mode,
+    });
     if (pendingRedirects.length > 0 || pendingMessages.length > 0) {
       await events.emitEvents({ events: [commitCreated] });
       return await continueAsNew<typeof runWorkflow>({
@@ -2357,10 +2413,7 @@ export async function buildWorkflow(inputValue: unknown): Promise<RunWorkflowRes
   const continuedFromExecutionRunId = workflowInfo().continuedFromExecutionRunId;
   if (continuedFromExecutionRunId === undefined) {
     const possibleContinuation = RunWorkflowStateSchema.safeParse(inputValue);
-    if (
-      possibleContinuation.success &&
-      possibleContinuation.data.continuation !== undefined
-    ) {
+    if (possibleContinuation.success && possibleContinuation.data.continuation !== undefined) {
       rejectExternallyStartedContinuation();
     }
     const input = RunWorkflowInputSchema.parse(inputValue);

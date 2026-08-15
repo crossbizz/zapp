@@ -70,6 +70,31 @@ function requestBodyText(body: BodyInit | null | undefined): string {
   return body;
 }
 
+function branchHeadDatabase(branchId = RUN_INPUT.branchId): {
+  readonly database: never;
+  readonly persisted: Array<Readonly<Record<string, unknown>>>;
+} {
+  const persisted: Array<Readonly<Record<string, unknown>>> = [];
+  const select = vi.fn(() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(() => ({
+        limit: vi.fn(() => Promise.resolve([{ branchId }])),
+      })),
+    })),
+  }));
+  const update = vi.fn(() => ({
+    set: vi.fn((values: Readonly<Record<string, unknown>>) => ({
+      where: vi.fn(() => ({
+        returning: vi.fn(() => {
+          persisted.push(values);
+          return Promise.resolve([{ id: branchId }]);
+        }),
+      })),
+    })),
+  }));
+  return { database: { select, update } as never, persisted };
+}
+
 describe('the local M1 routing profile', () => {
   it('gives long-running Builder tools enough heartbeat headroom', () => {
     expect(SESSION_ACTIVITY_HEARTBEAT_TIMEOUT).toBe('30 seconds');
@@ -152,22 +177,19 @@ describe('the local M1 routing profile', () => {
     } as unknown as Client;
     const environment = new MockActivityEnvironment(undefined, { client });
 
-    const result = await environment.run(
-      (input) => activities.runBuilderSession(input),
-      {
-        runId: RUN_INPUT.runId,
-        organizationId: RUN_INPUT.organizationId,
-        projectId: RUN_INPUT.projectId,
-        workspaceId: `ws_${'2'.repeat(26)}`,
-        mode: 'build' as const,
-        model: null,
-        prompt: 'Confirm the build is ready.',
-        allowedTools: [],
-        modeInstructions: 'Return a concise build result.',
-        budget: { maxCredits: 100 },
-        idempotencyKey: 'publish-production-session-events',
-      },
-    );
+    const result = await environment.run((input) => activities.runBuilderSession(input), {
+      runId: RUN_INPUT.runId,
+      organizationId: RUN_INPUT.organizationId,
+      projectId: RUN_INPUT.projectId,
+      workspaceId: `ws_${'2'.repeat(26)}`,
+      mode: 'build' as const,
+      model: null,
+      prompt: 'Confirm the build is ready.',
+      allowedTools: [],
+      modeInstructions: 'Return a concise build result.',
+      budget: { maxCredits: 100 },
+      idempotencyKey: 'publish-production-session-events',
+    });
 
     expect(result).toMatchObject({ status: 'completed', summary: 'The build is ready.' });
     expect(published.length).toBeGreaterThan(0);
@@ -180,9 +202,7 @@ describe('the local M1 routing profile', () => {
         innerJoin: vi.fn(() => ({
           where: vi.fn(() => ({
             limit: vi.fn(() =>
-              Promise.resolve([
-                { name: 'main', startedAt: new Date('2026-08-14T12:00:00.000Z') },
-              ]),
+              Promise.resolve([{ name: 'main', startedAt: new Date('2026-08-14T12:00:00.000Z') }]),
             ),
           })),
         })),
@@ -241,6 +261,7 @@ describe('the local M1 routing profile', () => {
 
   it('completes a no-op builder run by retaining the existing workspace commit', async () => {
     const commitSha = 'a'.repeat(40);
+    const branchHead = branchHeadDatabase();
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -286,13 +307,14 @@ describe('the local M1 routing profile', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
-    if (address === null || typeof address === 'string') throw new Error('Test server did not bind');
+    if (address === null || typeof address === 'string')
+      throw new Error('Test server did not bind');
     const activities = await composeProductionActivities({
       env: loadRunWorkerEnv({
         ...VALID_ENV,
         SANDBOX_SERVICE_URL: `http://127.0.0.1:${String(address.port)}`,
       }),
-      database: {} as never,
+      database: branchHead.database,
     });
 
     try {
@@ -306,6 +328,7 @@ describe('the local M1 routing profile', () => {
           idempotencyKey: 'no-op-builder-run',
         }),
       ).resolves.toEqual({ commitSha, diffstat: [] });
+      expect(branchHead.persisted).toEqual([{ headCommitSha: commitSha }]);
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
@@ -318,7 +341,9 @@ describe('the local M1 routing profile', () => {
 
   it('commits only project source files when a generated app has local build artifacts', async () => {
     const commitSha = 'b'.repeat(40);
-    const gitRequests: Array<{ readonly operation?: string; readonly paths?: readonly string[] }> = [];
+    const branchHead = branchHeadDatabase();
+    const gitRequests: Array<{ readonly operation?: string; readonly paths?: readonly string[] }> =
+      [];
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -375,13 +400,14 @@ describe('the local M1 routing profile', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
-    if (address === null || typeof address === 'string') throw new Error('Test server did not bind');
+    if (address === null || typeof address === 'string')
+      throw new Error('Test server did not bind');
     const activities = await composeProductionActivities({
       env: loadRunWorkerEnv({
         ...VALID_ENV,
         SANDBOX_SERVICE_URL: `http://127.0.0.1:${String(address.port)}`,
       }),
-      database: {} as never,
+      database: branchHead.database,
     });
 
     try {
@@ -408,6 +434,7 @@ describe('the local M1 routing profile', () => {
           paths: ['src/main.ts', 'package.json'],
         },
       ]);
+      expect(branchHead.persisted).toEqual([{ headCommitSha: commitSha }]);
     } finally {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
@@ -426,9 +453,7 @@ describe('the local M1 routing profile', () => {
         innerJoin: vi.fn(() => ({
           where: vi.fn(() => ({
             limit: vi.fn(() =>
-              Promise.resolve([
-                { name: 'main', startedAt: new Date('2026-08-14T12:00:00.000Z') },
-              ]),
+              Promise.resolve([{ name: 'main', startedAt: new Date('2026-08-14T12:00:00.000Z') }]),
             ),
           })),
         })),

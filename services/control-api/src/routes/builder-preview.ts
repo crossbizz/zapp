@@ -14,14 +14,12 @@ import {
 } from '@aws-sdk/client-s3';
 import { Readable } from 'node:stream';
 import { z } from 'zod';
+import { scanProjectCapabilities } from '@zapp/project-adapters';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
-import {
-  IDEMPOTENT_REPLAY_HEADER,
-  IdempotencyHeadersSchema,
-} from '../plugins/idempotency.js';
+import { IDEMPOTENT_REPLAY_HEADER, IdempotencyHeadersSchema } from '../plugins/idempotency.js';
 import {
   ReadBuilderPreviewLogsInputSchema,
   RestartBuilderPreviewInputSchema,
@@ -30,11 +28,13 @@ import {
 import { operationOf } from './runs.js';
 import { toSandboxWorkspace } from './workspaces.js';
 import type { PreviewProxyPort } from './preview.js';
+import type { BuilderArtifactPort } from './builder-artifacts.js';
 
 const WorkspaceParams = z.object({ workspaceId: idSchema('ws') });
 
 export interface BuilderPreviewRoutesDeps {
   readonly sandbox: BuilderPreviewSandboxPort;
+  readonly artifacts?: BuilderArtifactPort;
   readonly proxy: PreviewProxyPort;
   readonly screenshots: BuilderPreviewScreenshotStore;
   readonly publicOrigin: URL;
@@ -64,10 +64,7 @@ export type BuilderPreviewScreenshotReservation =
   | { readonly state: 'pending' }
   | { readonly state: 'completed'; readonly body: Buffer; readonly capturedAt: Date };
 
-export type BuilderPreviewS3Command =
-  | GetObjectCommand
-  | PutObjectCommand
-  | DeleteObjectCommand;
+export type BuilderPreviewS3Command = GetObjectCommand | PutObjectCommand | DeleteObjectCommand;
 
 export interface BuilderPreviewS3CommandSender {
   send(command: BuilderPreviewS3Command): Promise<unknown>;
@@ -129,9 +126,56 @@ export function registerBuilderPreviewRoutes(
       if (workspace === undefined) throw workspaceNotFound();
       authorize(ctx, 'edit_code');
       const stored = await ctx.db.contracts.latestForProject(workspace.projectId);
-      if (stored === undefined) throw projectContractUnavailable();
-      const contract = ExecutionContractSchema.safeParse(stored.contractJson);
-      if (!contract.success) throw projectContractUnavailable();
+      let contract =
+        stored === undefined
+          ? undefined
+          : ExecutionContractSchema.safeParse(stored.contractJson).data;
+      if (contract === undefined && deps.artifacts !== undefined) {
+        try {
+          const scan = await scanProjectCapabilities({
+            workspaceRoot: '.',
+            listFiles: async (glob) =>
+              (
+                await deps.artifacts?.listFiles({
+                  organizationId: ctx.organizationId,
+                  projectId: workspace.projectId,
+                  workspaceId: workspace.id,
+                  path: '.',
+                  glob,
+                  maxDepth: 100,
+                })
+              )?.entries
+                .filter(({ type }) => type === 'file')
+                .map(({ path }) => path) ?? [],
+            readFile: async (path) => {
+              const file = await deps.artifacts?.readFile({
+                organizationId: ctx.organizationId,
+                projectId: workspace.projectId,
+                workspaceId: workspace.id,
+                path,
+              });
+              if (file === undefined) throw new Error('workspace source unavailable');
+              return new TextDecoder('utf-8', { fatal: true }).decode(
+                Buffer.from(file.dataBase64, 'base64'),
+              );
+            },
+          });
+          contract = ExecutionContractSchema.parse(scan.contract);
+        } catch {
+          throw projectContractUnavailable();
+        }
+      }
+      if (contract === undefined) throw projectContractUnavailable();
+      const attachedRun =
+        workspace.runId === null ? undefined : await ctx.db.runs.getById(workspace.runId);
+      const latestRun =
+        attachedRun === undefined
+          ? (await ctx.db.runs.byProject(workspace.projectId, 1))[0]
+          : undefined;
+      const previewWorkspace = toSandboxWorkspace({
+        ...workspace,
+        runId: attachedRun?.id ?? latestRun?.id ?? workspace.runId,
+      });
       const operationKey = operationOf(request);
       await request.auditDetached({
         organizationId: ctx.organizationId,
@@ -144,8 +188,8 @@ export function registerBuilderPreviewRoutes(
         response = BuilderPreviewDevServerResponseSchema.parse(
           await deps.sandbox.restartDevServer(
             RestartBuilderPreviewInputSchema.parse({
-              workspace: toSandboxWorkspace(workspace),
-              contract: contract.data,
+              workspace: previewWorkspace,
+              contract,
               operationKey,
             }),
           ),
@@ -262,9 +306,7 @@ export function registerBuilderPreviewRoutes(
           screenshotAuditEntry(ctx.organizationId, workspace.id, operationKey, 'completed'),
           reservation.capturedAt,
         );
-        reply
-          .header('content-type', 'image/png')
-          .header(IDEMPOTENT_REPLAY_HEADER, 'true');
+        reply.header('content-type', 'image/png').header(IDEMPOTENT_REPLAY_HEADER, 'true');
         return await reply.send(reservation.body);
       }
       if (reservation.state === 'pending') {
@@ -377,7 +419,8 @@ function watchAuthorization(
     pending = true;
     timeout = setTimeout(close, 5_000);
     timeout.unref();
-    void deps.revalidateAuthorization(context)
+    void deps
+      .revalidateAuthorization(context)
       .then((allowed) => {
         if (!stopped && !allowed) close();
       })
@@ -523,10 +566,7 @@ function getObjectResult(value: unknown): {
     readonly ContentType?: unknown;
     readonly Metadata?: unknown;
   };
-  if (
-    result.ContentType !== undefined &&
-    typeof result.ContentType !== 'string'
-  ) {
+  if (result.ContentType !== undefined && typeof result.ContentType !== 'string') {
     throw new Error('screenshot object content type is invalid');
   }
   let metadata: Record<string, string> | undefined;
@@ -611,10 +651,13 @@ async function* validatedCaptureStream(
 }
 
 function acceptsEventStream(header: string | undefined): boolean {
-  return header === undefined || header.split(',').some((entry) => {
-    const value = entry.split(';', 1)[0]?.trim().toLowerCase();
-    return value === 'text/event-stream' || value === '*/*';
-  });
+  return (
+    header === undefined ||
+    header.split(',').some((entry) => {
+      const value = entry.split(';', 1)[0]?.trim().toLowerCase();
+      return value === 'text/event-stream' || value === '*/*';
+    })
+  );
 }
 
 function mediaType(value: string | readonly string[] | undefined): string | undefined {

@@ -30,6 +30,30 @@ void it('connects next dev to the real local control API when no override is sup
   assert.equal(nextConfig.distDir, '.next-e2e-test');
 });
 
+void it('does not watch repository worktrees during local development', async () => {
+  const { default: nextConfig } = await import('../next.config.js');
+
+  const configureWebpack = nextConfig.webpack;
+  assert.equal(typeof configureWebpack, 'function');
+  assert.ok(configureWebpack);
+  const configured: unknown = configureWebpack({ watchOptions: {} }, { dev: true } as never);
+  assert.ok(configured !== null && typeof configured === 'object' && 'watchOptions' in configured);
+  const { watchOptions } = configured;
+  assert.ok(
+    watchOptions !== null &&
+      typeof watchOptions === 'object' &&
+      'ignored' in watchOptions &&
+      'poll' in watchOptions,
+  );
+  assert.deepEqual(watchOptions.ignored, [
+    '**/.git/**',
+    '**/.next*/**',
+    '**/.worktrees/**',
+    '**/node_modules/**',
+  ]);
+  assert.equal(watchOptions.poll, 1_000);
+});
+
 void it('runs one signal-owning E2E supervisor with enough time to restore generated configuration', async () => {
   const { default: playwrightConfig } = await import('../playwright.config.js');
   const webServer = Array.isArray(playwrightConfig.webServer)

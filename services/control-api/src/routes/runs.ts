@@ -36,12 +36,7 @@ import { allowedModelsFromPolicy } from '../orgs/model-policy.js';
 import type { OrganizationStore } from '../orgs/store.js';
 import { actorOf } from '../plugins/auth.js';
 import { authorize, tenantOf } from '../plugins/tenant.js';
-import {
-  RunSchema,
-  SpecificationResponseSchema,
-  toRun,
-  toSpecification,
-} from '../tenant/view.js';
+import { RunSchema, SpecificationResponseSchema, toRun, toSpecification } from '../tenant/view.js';
 import {
   BuilderRetryReasonSchema,
   BuilderSkipReasonSchema,
@@ -58,10 +53,7 @@ import {
   type CreditBalanceGate,
 } from '../usage/limits.js';
 import type { IncidentRecord, IncidentStore } from './incidents.js';
-import {
-  MAX_PUBLIC_RUN_ARTIFACT_BYTES,
-  type RunArtifactReaderPort,
-} from './run-artifacts.js';
+import { MAX_PUBLIC_RUN_ARTIFACT_BYTES, type RunArtifactReaderPort } from './run-artifacts.js';
 
 const RunParams = z.object({ runId: idSchema('run') });
 const ProjectParams = z.object({ projectId: idSchema('proj') });
@@ -106,14 +98,18 @@ const ApprovalDecisionShape = {
   reason: z.string().trim().min(1).max(2_000).optional(),
 } as const;
 const ResolveApprovalBody = z.union([
-  z.object({
-    ...ApprovalDecisionShape,
-    kind: z.literal('budget_increase').optional().default('budget_increase'),
-  })
-  .strict(),
-  z.object({ ...ApprovalDecisionShape, kind: z.enum([
-    'specification', 'plan', 'plan_diff', 'migration', 'deploy',
-  ]) }).strict(),
+  z
+    .object({
+      ...ApprovalDecisionShape,
+      kind: z.literal('budget_increase').optional().default('budget_increase'),
+    })
+    .strict(),
+  z
+    .object({
+      ...ApprovalDecisionShape,
+      kind: z.enum(['specification', 'plan', 'plan_diff', 'migration', 'deploy']),
+    })
+    .strict(),
 ]);
 const ApprovalRequestPayload = z
   .object({
@@ -153,11 +149,13 @@ const ResolvedBudgetApprovalResponse = z
   .strict();
 const ResolvedTypedApprovalResponse = z
   .object({
-    approval: z.object({
-      approvalId: idSchema('appr'),
-      kind: RunApprovalKindSchema.exclude(['budget_increase']),
-      status: z.enum(['approved', 'rejected']),
-    }).strict(),
+    approval: z
+      .object({
+        approvalId: idSchema('appr'),
+        kind: RunApprovalKindSchema.exclude(['budget_increase']),
+        status: z.enum(['approved', 'rejected']),
+      })
+      .strict(),
   })
   .strict();
 const BuilderTaskParams = RunParams.extend({ taskId: idSchema('task') }).strict();
@@ -166,49 +164,82 @@ const BuilderControlResponse = z.object({ operationKey: OperationKeySchema }).st
 const ConversationResponseAccepted = z.object({ operationKey: OperationKeySchema }).strict();
 const RunSpecificationParams = RunParams.extend({ specificationId: idSchema('spec') }).strict();
 const RunPlanParams = RunParams.extend({ artifactId: idSchema('art') }).strict();
-const PlanReferenceEventSchema = z.object({
-  artifactId: idSchema('art'),
-  artifactType: z.literal('implementation_plan'),
-  phases: z.array(z.object({ phaseId: idSchema('phase'), optional: z.boolean() }).strict()).max(1_000),
-}).passthrough();
-const BoundedCriteriaSchema = z.array(z.string().min(1).max(2_000)).max(1_000);
-const RunPlanResponse = z.object({
-  plan: z.object({
+const PlanReferenceEventSchema = z
+  .object({
     artifactId: idSchema('art'),
-    approvalId: idSchema('appr'),
-    approvalKind: z.enum(['plan', 'plan_diff']),
-    phaseCount: z.number().int().nonnegative(),
-    taskCount: z.number().int().nonnegative(),
-    truncated: z.boolean(),
-    phases: z.array(z.object({
-      id: idSchema('phase'), sequence: z.number().int().positive(), title: z.string().min(1).max(500),
-      status: z.string().min(1).max(64), acceptanceCriteria: BoundedCriteriaSchema,
-      optional: z.boolean(),
-    }).strict()).max(100),
-    tasks: z.array(z.object({
-      id: idSchema('task'), phaseId: idSchema('phase'), title: z.string().min(1).max(500),
-      status: z.string().min(1).max(64), riskLevel: z.enum(['low', 'medium', 'high']),
-      acceptanceCriteria: BoundedCriteriaSchema, dependencies: z.array(idSchema('task')).max(1_000),
-      assignedAgentRole: z.string().min(1).max(160).nullable(),
-    }).strict()).max(1_000),
-  }).strict(),
-}).strict();
-const RunArtifactResponse = z.object({
-  artifact: z.object({
-    id: idSchema('art'),
+    artifactType: z.literal('implementation_plan'),
+    phases: z
+      .array(z.object({ phaseId: idSchema('phase'), optional: z.boolean() }).strict())
+      .max(1_000),
+  })
+  .passthrough();
+const BoundedCriteriaSchema = z.array(z.string().min(1).max(2_000)).max(1_000);
+const RunPlanResponse = z
+  .object({
+    plan: z
+      .object({
+        artifactId: idSchema('art'),
+        approvalId: idSchema('appr'),
+        approvalKind: z.enum(['plan', 'plan_diff']),
+        phaseCount: z.number().int().nonnegative(),
+        taskCount: z.number().int().nonnegative(),
+        truncated: z.boolean(),
+        phases: z
+          .array(
+            z
+              .object({
+                id: idSchema('phase'),
+                sequence: z.number().int().positive(),
+                title: z.string().min(1).max(500),
+                status: z.string().min(1).max(64),
+                acceptanceCriteria: BoundedCriteriaSchema,
+                optional: z.boolean(),
+              })
+              .strict(),
+          )
+          .max(100),
+        tasks: z
+          .array(
+            z
+              .object({
+                id: idSchema('task'),
+                phaseId: idSchema('phase'),
+                title: z.string().min(1).max(500),
+                status: z.string().min(1).max(64),
+                riskLevel: z.enum(['low', 'medium', 'high']),
+                acceptanceCriteria: BoundedCriteriaSchema,
+                dependencies: z.array(idSchema('task')).max(1_000),
+                assignedAgentRole: z.string().min(1).max(160).nullable(),
+              })
+              .strict(),
+          )
+          .max(1_000),
+      })
+      .strict(),
+  })
+  .strict();
+const RunArtifactResponse = z
+  .object({
+    artifact: z
+      .object({
+        id: idSchema('art'),
+        type: z.string().min(1).max(160),
+        contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
+        byteSize: z.number().int().nonnegative().max(MAX_PUBLIC_RUN_ARTIFACT_BYTES),
+        contentType: z.string().min(1).max(255),
+        encoding: z.enum(['utf8', 'base64']),
+        content: z.string().max(100_000),
+      })
+      .strict(),
+  })
+  .strict();
+const RunArtifactReferenceSchema = z
+  .object({
+    artifactId: idSchema('art'),
     type: z.string().min(1).max(160),
     contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
-    byteSize: z.number().int().nonnegative().max(MAX_PUBLIC_RUN_ARTIFACT_BYTES),
-    contentType: z.string().min(1).max(255),
-    encoding: z.enum(['utf8', 'base64']),
-    content: z.string().max(100_000),
-  }).strict(),
-}).strict();
-const RunArtifactReferenceSchema = z.object({
-  artifactId: idSchema('art'),
-  type: z.string().min(1).max(160),
-  contentHash: z.string().regex(/^[0-9a-f]{64}$/u),
-}).passthrough();
+  })
+  .passthrough();
 
 const SIGNALS = {
   pause: {
@@ -272,11 +303,13 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       const ctx = tenantOf(request);
       const project = await ctx.db.projects.getById(request.params.projectId);
       if (project === undefined) throw projectNotFound();
-      if (
-        request.body.branchId !== undefined &&
-        (await ctx.db.branches.getForProject(project.id, request.body.branchId)) === undefined
-      )
-        throw branchNotFound();
+      const branch =
+        request.body.branchId === undefined
+          ? (await ctx.db.branches.byProject(project.id)).find(
+              (candidate) => candidate.name === 'main' && candidate.status === 'active',
+            )
+          : await ctx.db.branches.getForProject(project.id, request.body.branchId);
+      if (branch === undefined) throw branchNotFound();
       authorize(ctx, 'start_run');
       let sourceIncident: IncidentRecord | undefined;
       if (request.body.mode === 'fix') {
@@ -359,7 +392,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             workflowId: runId,
             requestFingerprint,
             projectId: project.id,
-            branchId: request.body.branchId ?? null,
+            branchId: branch.id,
             mode: request.body.mode,
             ...(request.body.mode === 'autonomous' && limit !== undefined
               ? { concurrentAutonomousLimit: limit.concurrentAutonomousRuns }
@@ -625,20 +658,28 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
               organizationId: ctx.organizationId,
               action: 'run.task_retry_rejected',
               target: { type: 'run', id: row.id },
-              metadata: { operationKey, operationState: 'rejected', taskId: request.params.taskId, reason },
+              metadata: {
+                operationKey,
+                operationState: 'rejected',
+                taskId: request.params.taskId,
+                reason,
+              },
             });
           },
         });
         throw builderControlConflict(reason);
       }
-      await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
-        runId: claim.entity.id,
-        workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
-        mode: claim.entity.mode,
-        signal: 'retry_failed_task',
-        taskId: request.params.taskId,
-        operationKey,
-      }));
+      await signalBuilderControl(
+        deps.orchestrator,
+        SignalRunInputSchema.parse({
+          runId: claim.entity.id,
+          workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
+          mode: claim.entity.mode,
+          signal: 'retry_failed_task',
+          taskId: request.params.taskId,
+          operationKey,
+        }),
+      );
       const completed = await ctx.db.runs.completeOperation({
         runId: claim.entity.id,
         operationKey,
@@ -680,7 +721,11 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             organizationId: ctx.organizationId,
             action: 'run.phase_skip_requested',
             target: { type: 'run', id: row.id },
-            metadata: { operationKey, operationState: 'requested', phaseId: request.params.phaseId },
+            metadata: {
+              operationKey,
+              operationState: 'requested',
+              phaseId: request.params.phaseId,
+            },
           });
         },
       });
@@ -706,20 +751,28 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
               organizationId: ctx.organizationId,
               action: 'run.phase_skip_rejected',
               target: { type: 'run', id: row.id },
-              metadata: { operationKey, operationState: 'rejected', phaseId: request.params.phaseId, reason },
+              metadata: {
+                operationKey,
+                operationState: 'rejected',
+                phaseId: request.params.phaseId,
+                reason,
+              },
             });
           },
         });
         throw builderControlConflict(reason);
       }
-      await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
-        runId: claim.entity.id,
-        workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
-        mode: claim.entity.mode,
-        signal: 'skip_optional_phase',
-        phaseId: request.params.phaseId,
-        operationKey,
-      }));
+      await signalBuilderControl(
+        deps.orchestrator,
+        SignalRunInputSchema.parse({
+          runId: claim.entity.id,
+          workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
+          mode: claim.entity.mode,
+          signal: 'skip_optional_phase',
+          phaseId: request.params.phaseId,
+          operationKey,
+        }),
+      );
       const completed = await ctx.db.runs.completeOperation({
         runId: claim.entity.id,
         operationKey,
@@ -731,7 +784,11 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             organizationId: ctx.organizationId,
             action: 'run.phase_skip_signalled',
             target: { type: 'run', id: row.id },
-            metadata: { operationKey, operationState: 'completed', phaseId: request.params.phaseId },
+            metadata: {
+              operationKey,
+              operationState: 'completed',
+              phaseId: request.params.phaseId,
+            },
           });
         },
       });
@@ -881,7 +938,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       if (
         expectedQuestionIds.length !== suppliedQuestionIds.length ||
         expectedQuestionIds.some((questionId) => !suppliedQuestionIds.includes(questionId))
-      ) throw conversationResponseMismatch();
+      )
+        throw conversationResponseMismatch();
       const resolved = events
         .filter(({ type }) => type === 'conversation.response')
         .map(({ payloadJson }) => ConversationResponseEventPayloadSchema.safeParse(payloadJson))
@@ -910,15 +968,18 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         return await reply.status(202).send({ operationKey });
       }
       if (claim.outcome !== 'dispatch') throw invalidRunState();
-      await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
-        runId: claim.entity.id,
-        workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
-        mode: 'autonomous',
-        signal: 'conversation_card_response',
-        cardId: request.body.cardId,
-        response: request.body,
-        operationKey,
-      }));
+      await signalBuilderControl(
+        deps.orchestrator,
+        SignalRunInputSchema.parse({
+          runId: claim.entity.id,
+          workflowId: claim.entity.temporalWorkflowId ?? claim.entity.id,
+          mode: 'autonomous',
+          signal: 'conversation_card_response',
+          cardId: request.body.cardId,
+          response: request.body,
+          operationKey,
+        }),
+      );
       const completed = await ctx.db.runs.completeOperation({
         runId: claim.entity.id,
         operationKey,
@@ -958,9 +1019,10 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       if (run === undefined) throw runNotFound();
       authorize(ctx, 'view_project');
       const rows = await ctx.db.missionControl.forRun(run.id);
-      const reference = rows.approvals.find((approval) =>
-        approval.type === 'specification' &&
-        referencedArtifactId(approval.requestJson) === request.params.specificationId
+      const reference = rows.approvals.find(
+        (approval) =>
+          approval.type === 'specification' &&
+          referencedArtifactId(approval.requestJson) === request.params.specificationId,
       );
       if (reference === undefined) throw runArtifactNotFound();
       const specification = await ctx.db.specifications.getForProject(
@@ -970,7 +1032,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       if (
         specification === undefined ||
         referencedArtifactVersion(reference.requestJson) !== specification.version
-      ) throw runArtifactNotFound();
+      )
+        throw runArtifactNotFound();
       return { specification: toSpecification(specification) };
     },
   );
@@ -990,17 +1053,22 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         ctx.db.events.byRun(run.id),
         ctx.db.missionControl.forRun(run.id),
       ]);
-      const approval = rows.approvals.find((candidate) =>
-        (candidate.type === 'plan' || candidate.type === 'plan_diff') &&
-        referencedArtifactId(candidate.requestJson) === request.params.artifactId
+      const approval = rows.approvals.find(
+        (candidate) =>
+          (candidate.type === 'plan' || candidate.type === 'plan_diff') &&
+          referencedArtifactId(candidate.requestJson) === request.params.artifactId,
       );
-      const reference = events.find(({ type, payloadJson }) =>
-        type === 'artifact.created' &&
-        PlanReferenceEventSchema.safeParse(payloadJson).data?.artifactId === request.params.artifactId
+      const reference = events.find(
+        ({ type, payloadJson }) =>
+          type === 'artifact.created' &&
+          PlanReferenceEventSchema.safeParse(payloadJson).data?.artifactId ===
+            request.params.artifactId,
       );
       if (approval === undefined || reference === undefined) throw runArtifactNotFound();
       const parsedReference = PlanReferenceEventSchema.parse(reference.payloadJson);
-      const optionalByPhase = new Map(parsedReference.phases.map(({ phaseId, optional }) => [phaseId, optional]));
+      const optionalByPhase = new Map(
+        parsedReference.phases.map(({ phaseId, optional }) => [phaseId, optional]),
+      );
       const phases = rows.phases.slice(0, 100).map((phase) => ({
         id: phase.id,
         sequence: phase.sequence,
@@ -1054,10 +1122,14 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         .map(({ payloadJson }) => RunArtifactReferenceSchema.safeParse(payloadJson))
         .find((parsed) => parsed.success && parsed.data.artifactId === request.params.artifactId);
       if (
-        artifact === undefined || reference === undefined || !reference.success ||
-        artifact.projectId !== run.projectId || artifact.type !== reference.data.type ||
+        artifact === undefined ||
+        reference === undefined ||
+        !reference.success ||
+        artifact.projectId !== run.projectId ||
+        artifact.type !== reference.data.type ||
         artifact.contentHash !== reference.data.contentHash
-      ) throw runArtifactNotFound();
+      )
+        throw runArtifactNotFound();
       const object = await deps.artifactReader.read({
         key: artifact.storageRef,
         maxBytes: MAX_PUBLIC_RUN_ARTIFACT_BYTES,
@@ -1119,18 +1191,20 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           if (
             (budgetRequest.reason === 'run_budget_exhausted' && requested <= current) ||
             (budgetRequest.reason === 'organization_credit_exhausted' && requested !== current)
-          ) throw planBudgetExceeded();
+          )
+            throw planBudgetExceeded();
         }
       } else if (
         request.body.kind === 'specification' ||
         request.body.kind === 'plan' ||
         request.body.kind === 'plan_diff'
       ) {
-        artifactId = z.object({
-          artifactId: request.body.kind === 'specification'
-            ? z.string().min(1).max(512)
-            : idSchema('art'),
-        }).passthrough()
+        artifactId = z
+          .object({
+            artifactId:
+              request.body.kind === 'specification' ? z.string().min(1).max(512) : idSchema('art'),
+          })
+          .passthrough()
           .parse(approval.requestJson).artifactId;
       }
       const resolved = await ctx.db.approvals.resolve({
@@ -1160,7 +1234,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
         throw approvalNotFound();
       if (resolved.outcome === 'conflict') throw approvalConflict();
       if (request.body.kind === 'budget_increase') {
-        const approvalRequest = budgetRequest ?? decodeApprovalRequestPayload(resolved.approval.requestJson);
+        const approvalRequest =
+          budgetRequest ?? decodeApprovalRequestPayload(resolved.approval.requestJson);
         if (
           request.body.decision === 'approved' &&
           approvalRequest.reason === 'run_budget_exhausted'
@@ -1175,19 +1250,22 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             absoluteCeiling: approvalRequest.absoluteCeiling,
           });
         }
-        await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
-          runId: run.id,
-          workflowId: run.temporalWorkflowId ?? run.id,
-          mode: run.mode,
-          signal: 'budget_approval',
-          approvalId: resolved.approval.id,
-          decision: request.body.decision,
-          reason: approvalRequest.reason,
-          ...(request.body.decision === 'approved'
-            ? { absoluteCeiling: approvalRequest.absoluteCeiling }
-            : {}),
-          operationKey,
-        }));
+        await signalBuilderControl(
+          deps.orchestrator,
+          SignalRunInputSchema.parse({
+            runId: run.id,
+            workflowId: run.temporalWorkflowId ?? run.id,
+            mode: run.mode,
+            signal: 'budget_approval',
+            approvalId: resolved.approval.id,
+            decision: request.body.decision,
+            reason: approvalRequest.reason,
+            ...(request.body.decision === 'approved'
+              ? { absoluteCeiling: approvalRequest.absoluteCeiling }
+              : {}),
+            operationKey,
+          }),
+        );
         return ResolvedBudgetApprovalResponse.parse({
           approval: {
             approvalId: resolved.approval.id,
@@ -1197,17 +1275,20 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           },
         });
       }
-      await signalBuilderControl(deps.orchestrator, SignalRunInputSchema.parse({
-        runId: run.id,
-        workflowId: run.temporalWorkflowId ?? run.id,
-        mode: run.mode,
-        signal: 'approval_decision',
-        approvalId: resolved.approval.id,
-        approvalKind: request.body.kind,
-        decision: request.body.decision,
-        ...(artifactId === undefined ? {} : { artifactId }),
-        operationKey,
-      }));
+      await signalBuilderControl(
+        deps.orchestrator,
+        SignalRunInputSchema.parse({
+          runId: run.id,
+          workflowId: run.temporalWorkflowId ?? run.id,
+          mode: run.mode,
+          signal: 'approval_decision',
+          approvalId: resolved.approval.id,
+          approvalKind: request.body.kind,
+          decision: request.body.decision,
+          ...(artifactId === undefined ? {} : { artifactId }),
+          operationKey,
+        }),
+      );
       return ResolvedTypedApprovalResponse.parse({
         approval: {
           approvalId: resolved.approval.id,
@@ -1282,12 +1363,14 @@ function runNotFound(): ApiError {
   return new ApiError('run_not_found', 404, 'That run does not exist.');
 }
 function referencedArtifactId(value: unknown): string | undefined {
-  return z.object({ artifactId: z.string().min(1).max(512) }).passthrough()
+  return z
+    .object({ artifactId: z.string().min(1).max(512) })
+    .passthrough()
     .safeParse(value).data?.artifactId;
 }
 function referencedArtifactVersion(value: unknown): number | undefined {
-  return z.object({ artifactVersion: z.number().int().positive() }).passthrough()
-    .safeParse(value).data?.artifactVersion;
+  return z.object({ artifactVersion: z.number().int().positive() }).passthrough().safeParse(value)
+    .data?.artifactVersion;
 }
 function runArtifactNotFound(): ApiError {
   return new ApiError('run_artifact_not_found', 404, 'That run artifact does not exist.');
@@ -1306,11 +1389,18 @@ function runArtifactContentInvalid(): ApiError {
     'That run artifact failed integrity verification.',
   );
 }
-function encodePublicArtifact(body: Buffer, contentType: string): {
+function encodePublicArtifact(
+  body: Buffer,
+  contentType: string,
+): {
   readonly encoding: 'utf8' | 'base64';
   readonly content: string;
 } {
-  if (contentType.startsWith('text/') || contentType === 'application/json' || contentType.endsWith('+json')) {
+  if (
+    contentType.startsWith('text/') ||
+    contentType === 'application/json' ||
+    contentType.endsWith('+json')
+  ) {
     try {
       return { encoding: 'utf8', content: new TextDecoder('utf-8', { fatal: true }).decode(body) };
     } catch {

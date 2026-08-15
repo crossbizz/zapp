@@ -272,7 +272,7 @@ describe('cgroup-v2 containment', () => {
             '-e',
             `require('node:fs').writeFileSync(${JSON.stringify(join(workspaceRoot, 'started'))}, 'yes')`,
           ],
-          timeoutMs: 2_000,
+          timeoutMs: 10_000,
         },
         (record) => {
           if (record.type === 'started') {

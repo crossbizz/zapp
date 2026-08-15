@@ -807,6 +807,9 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           });
           registerBuilderPreviewRoutes(app, {
             sandbox: tenant.builderPreviewSandbox ?? createUnavailableBuilderPreviewSandbox(),
+            ...(tenant.builderArtifacts === undefined
+              ? {}
+              : { artifacts: tenant.builderArtifacts }),
             proxy: tenant.builderPreviewProxy ?? createUnavailableBuilderPreviewProxy(),
             screenshots:
               tenant.builderPreviewScreenshotStore ??

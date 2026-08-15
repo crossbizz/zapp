@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   BuilderPreviewDevServerResponseSchema,
   BuilderPreviewLogsResponseSchema,
@@ -9,18 +11,43 @@ import { z } from 'zod';
 import type { SandboxStorageMeasurementPort } from '../usage/collectors/storage.js';
 
 import {
+  CheckpointWorkspaceInputSchema,
+  CheckpointWorkspaceResultSchema,
+  CreateWorkspaceInputSchema,
+  CreateWorkspaceResultSchema,
   ReadBuilderPreviewLogsInputSchema,
   RestartBuilderPreviewInputSchema,
   SandboxServiceError,
+  StartWorkspaceInputSchema,
+  StartWorkspaceResultSchema,
   SupportTerminateWorkspaceResultSchema,
   TerminateOrganizationInputSchema,
   TerminateOrganizationResultSchema,
   TerminateWorkspaceInputSchema,
   type BuilderPreviewSandboxPort,
+  type SandboxServicePort,
   type SupportSandboxServicePort,
 } from './port.js';
 
 const REQUEST_DEADLINE_MS = 10_000;
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+function lifecycleId(prefix: 'run' | 'task', value: string): string {
+  const bytes = createHash('sha256').update(value).digest();
+  let bits = 0;
+  let accumulator = 0;
+  let output = '';
+  for (const byte of bytes) {
+    accumulator = (accumulator << 8) | byte;
+    bits += 8;
+    while (bits >= 5 && output.length < 26) {
+      bits -= 5;
+      output += CROCKFORD.charAt((accumulator >>> bits) & 31);
+    }
+    if (output.length === 26) break;
+  }
+  return `${prefix}_${output}`;
+}
 
 const StorageProjectSchema = z
   .object({ organizationId: idSchema('org'), projectId: idSchema('proj') })
@@ -36,6 +63,123 @@ export interface BuilderPreviewSandboxClientOptions {
   readonly baseUrl: string;
   readonly serviceTokens: ServiceTokenConfig;
   readonly fetch?: (input: string, init: RequestInit) => Promise<Response>;
+}
+
+const LifecycleWorkspaceResponseSchema = z
+  .object({
+    workspace: z
+      .object({
+        providerWorkspaceId: z.string().min(1).nullable(),
+        status: z.string().min(1),
+      })
+      .passthrough(),
+  })
+  .strict();
+
+/** Shipping CP-9 lifecycle bridge used by the public workspace recovery API. */
+export function createSandboxServiceClient(
+  options: BuilderPreviewSandboxClientOptions,
+): SandboxServicePort {
+  const baseUrl = options.baseUrl.replace(/\/+$/u, '');
+  const signer = createServiceTokenSigner(options.serviceTokens);
+  const doFetch = options.fetch ?? ((input, init) => fetch(input, init));
+
+  const headersFor = async (
+    workspace: { readonly organizationId: string; readonly projectId: string },
+    operationKey: string,
+  ): Promise<Record<string, string>> => {
+    const { token } = await signer.signServiceToken({
+      service: 'control-api',
+      aud: 'sandbox-service',
+    });
+    return {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'idempotency-key': operationKey,
+      'x-zapp-service-token': token,
+      'x-zapp-organization-id': workspace.organizationId,
+      'x-zapp-project-id': workspace.projectId,
+    };
+  };
+
+  const post = async (
+    path: string,
+    workspace: { readonly organizationId: string; readonly projectId: string },
+    operationKey: string,
+    body: unknown,
+  ): Promise<unknown> => {
+    const response = await request(doFetch, `${baseUrl}${path}`, {
+      method: 'POST',
+      headers: await headersFor(workspace, operationKey),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
+    });
+    return await readableJson(response);
+  };
+
+  return {
+    async createWorkspace(untrustedInput) {
+      const input = CreateWorkspaceInputSchema.parse(untrustedInput);
+      if (input.workspace.branchId === null || input.branchName === undefined) {
+        throw new SandboxServiceError();
+      }
+      const workspaceRow = { ...input.workspace, runId: undefined };
+      const result = LifecycleWorkspaceResponseSchema.parse(
+        await post('/internal/workspaces', input.workspace, input.operationKey, {
+          workspace: workspaceRow,
+          branchName: input.branchName,
+          runId: lifecycleId('run', `workspace:${input.workspace.id}`),
+          taskId: lifecycleId('task', `workspace:${input.workspace.id}`),
+          purpose: 'builder',
+          env: {},
+          networkProfile: 'dependency_install',
+          integrationDomains: [],
+          operationKey: input.operationKey,
+        }),
+      );
+      return CreateWorkspaceResultSchema.parse({
+        providerWorkspaceId: result.workspace.providerWorkspaceId,
+        status: result.workspace.status,
+      });
+    },
+
+    async startWorkspace(untrustedInput) {
+      const input = StartWorkspaceInputSchema.parse(untrustedInput);
+      const result = LifecycleWorkspaceResponseSchema.parse(
+        await post(
+          `/internal/workspaces/${encodeURIComponent(input.workspace.id)}/attach`,
+          input.workspace,
+          input.operationKey,
+          { operationKey: input.operationKey },
+        ),
+      );
+      return StartWorkspaceResultSchema.parse({ status: result.workspace.status });
+    },
+
+    async checkpointWorkspace(untrustedInput) {
+      const input = CheckpointWorkspaceInputSchema.parse(untrustedInput);
+      return CheckpointWorkspaceResultSchema.parse(
+        await post(
+          `/internal/workspaces/${encodeURIComponent(input.workspace.id)}/checkpoint`,
+          input.workspace,
+          input.operationKey,
+          { kind: input.kind, operationKey: input.operationKey },
+        ),
+      );
+    },
+
+    async terminateWorkspace(untrustedInput) {
+      const input = TerminateWorkspaceInputSchema.parse(untrustedInput);
+      LifecycleWorkspaceResponseSchema.parse(
+        await post(
+          `/internal/workspaces/${encodeURIComponent(input.workspace.id)}/terminate`,
+          input.workspace,
+          input.operationKey,
+          { operationKey: input.operationKey },
+        ),
+      );
+    },
+  };
 }
 
 export function createSandboxStorageMeasurementClient(
@@ -114,6 +258,7 @@ export function createBuilderPreviewSandboxClient(
 
     async restartDevServer(untrustedInput) {
       const input = RestartBuilderPreviewInputSchema.parse(untrustedInput);
+      if (input.workspace.runId === null) throw new SandboxServiceError();
       const response = await request(
         doFetch,
         `${baseUrl}/internal/workspaces/${input.workspace.id}/dev-server/restart`,
@@ -123,6 +268,7 @@ export function createBuilderPreviewSandboxClient(
             ...(await headersFor(input)),
             'content-type': 'application/json',
             'idempotency-key': input.operationKey,
+            'x-zapp-run-id': input.workspace.runId,
           },
           body: JSON.stringify({ contract: input.contract }),
           signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
