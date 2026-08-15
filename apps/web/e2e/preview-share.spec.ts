@@ -4,7 +4,7 @@ const apiBaseUrl = 'http://127.0.0.1:4100';
 const organizationId = 'org_01J00000000000000000000000';
 const shareId = '01j00000000000000000000000';
 const bearer = 'psb_public-fragment-secret';
-const previewOrigin = `https://${organizationId.slice(4).toLowerCase()}-${shareId}.preview.zapp.test`;
+const previewOrigin = `http://${organizationId.slice(4).toLowerCase()}-${shareId}.preview.localhost:4100`;
 
 function cors(route: Route, body: unknown, headers: Record<string, string> = {}): Promise<void> {
   return route.fulfill({
@@ -41,11 +41,15 @@ async function installPreviewExchange(page: Page): Promise<string[]> {
     await cors(
       route,
       { expiresAt: '2026-08-09T12:00:00.000Z' },
-      { 'set-cookie': '__Host-zapp_preview=opaque; Path=/; Secure; HttpOnly; SameSite=Lax' },
+      {
+        'set-cookie':
+          '__Host-zapp_preview=opaque; Path=/; Secure; HttpOnly; SameSite=None; Partitioned',
+      },
     );
   });
   await page.route(`${previewOrigin}/`, async (route) => {
     seen.push(`GET ${route.request().url()}`);
+    expect(route.request().headers()['cookie']).toContain('__Host-zapp_preview=opaque');
     await route.fulfill({
       body: '<!doctype html><title>Isolated preview</title><h1>Preview ready</h1>',
       contentType: 'text/html',

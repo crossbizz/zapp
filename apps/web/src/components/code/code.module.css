@@ -67,6 +67,11 @@
   flex: 0 0 0.85rem;
   color: var(--zapp-text-muted);
   text-align: center;
+  transition: transform 120ms ease;
+}
+
+.iconExpanded {
+  transform: rotate(90deg);
 }
 
 .editor {

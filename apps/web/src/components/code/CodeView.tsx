@@ -18,6 +18,13 @@ function encodeBase64(value: string): string {
   return btoa(binary);
 }
 
+function canonicalWorkspacePath(directory: string, entryPath: string): string {
+  if (directory === '.' || entryPath === directory || entryPath.startsWith(`${directory}/`)) {
+    return entryPath;
+  }
+  return `${directory}/${entryPath}`;
+}
+
 export function CodeView({ organizationId, projectId, view }: { readonly organizationId: string; readonly projectId: string; readonly view: 'files' | 'changes' }): ReactElement {
   const client = createControlPlaneClient(organizationId);
   const [workspaceId, setWorkspaceId] = useState<string>();
@@ -52,7 +59,10 @@ export function CodeView({ organizationId, projectId, view }: { readonly organiz
       setEntries((current) => {
         const merged = new Map(current.map((entry) => [entry.path, entry]));
         for (const entry of listed.entries) {
-          if (isVisibleWorkspacePath(entry.path)) merged.set(entry.path, entry);
+          const canonicalPath = canonicalWorkspacePath(path, entry.path);
+          if (isVisibleWorkspacePath(canonicalPath)) {
+            merged.set(canonicalPath, { ...entry, path: canonicalPath });
+          }
         }
         return [...merged.values()];
       });

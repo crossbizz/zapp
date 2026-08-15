@@ -255,6 +255,9 @@ describe('WS-12 public preview shares', () => {
     });
     expect(redeemed.statusCode, redeemed.body).toBe(200);
     expect(redeemed.headers['set-cookie']).toContain('__Host-zapp_preview=');
+    expect(redeemed.headers['set-cookie']).toContain('SameSite=None');
+    expect(redeemed.headers['set-cookie']).toContain('Partitioned');
+    expect(redeemed.headers['set-cookie']).not.toContain('SameSite=Lax');
     expect(redeemed.headers['cache-control']).toBe('no-store');
     expect(redeemed.headers['access-control-allow-origin']).toBe('https://app.zapp.test');
     expect(redeemed.headers['access-control-allow-credentials']).toBe('true');

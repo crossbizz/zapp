@@ -484,6 +484,7 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
   const artifactId = 'art_01K27Q9C2W85CMN1V9S6Q3D4FE';
   const before = '1'.repeat(40);
   const after = '2'.repeat(40);
+  const listedWorkspacePaths: string[] = [];
   await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
     await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
   });
@@ -497,9 +498,19 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
   await page.route(
     new RegExp(`${apiBaseUrl}/v1/workspaces/${workspaceId}/files(?:\\?.*)?$`, 'u'),
     async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const requestedPath = requestUrl.searchParams.get('path') ?? '.';
+      const maximumDepth = requestUrl.searchParams.get('maxDepth') ?? '';
+      listedWorkspacePaths.push(`${requestedPath}:${maximumDepth}`);
       await route.fulfill({
         body: JSON.stringify({
-          entries: [{ path: 'src/page.tsx', type: 'file' }],
+          entries:
+            requestedPath === 'src'
+              ? [{ path: 'page.tsx', type: 'file' }]
+              : [
+                  { path: 'src', type: 'directory' },
+                  { path: 'index.html', type: 'file' },
+                ],
           truncated: false,
         }),
         headers: corsHeaders(),
@@ -605,8 +616,15 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
 
   await openBuilder(page);
   await page.getByRole('tab', { name: 'Code' }).click();
+  await expect(page.getByRole('button', { name: 'src/page.tsx' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'src', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'src/page.tsx' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'page.tsx', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'src/page.tsx' }).click();
   await expect(page.getByText(/Checkout/u)).toBeVisible();
+  await page.getByRole('button', { name: 'src', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'src/page.tsx' })).toHaveCount(0);
+  expect(listedWorkspacePaths).toEqual(['.:0', 'src:0']);
   await page.getByLabel('Before commit').fill(before);
   await page.getByLabel('After commit').fill(after);
   await page.getByRole('button', { name: 'Compare', exact: true }).click();

@@ -545,7 +545,7 @@ export function registerPreviewRoutes(app: AppInstance, deps: PreviewRoutesDeps)
         .header('cache-control', 'no-store')
         .header(
           'set-cookie',
-          `${SESSION_COOKIE}=${credential.id}.${credential.secret}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+          `${SESSION_COOKIE}=${credential.id}.${credential.secret}; Path=/; Secure; HttpOnly; SameSite=None; Partitioned`,
         );
       return { expiresAt: issued.expiresAt.toISOString() };
     },

@@ -606,7 +606,7 @@ export function createControlPlaneClient(organizationId?: string) {
         method: 'GET',
         path: { workspaceId },
         headers: headers(),
-        query: { path, maxDepth: 1 },
+        query: { path, maxDepth: 0 },
         ...(signal === undefined ? {} : { signal }),
       }),
     readWorkspaceFile: (workspaceId: string, path: string, signal?: AbortSignal) =>

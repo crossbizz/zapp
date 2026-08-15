@@ -337,6 +337,17 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Run focused local tests, affected lint/typecheck, the cold package/browser phase, and the complete pre-push repository gate.
 - [x] Commit: `fix(local): unify authenticated loopback origin`
 
+#### WEB-18-FIX-7 - real workspace tree and embedded preview authorization
+
+**Root cause:** Directory listings below `.` return paths relative to the requested directory, but the web client merged those paths at the root and rendered a permanently flat list. Local embedded previews also used a `SameSite=Lax` cookie across the `127.0.0.1` to `*.preview.localhost` site boundary, so Chromium withheld the cookie from the iframe request and the proxy returned `preview_unauthorized`.
+**Files:** Modify `apps/web/src/components/code/{CodeView,FileTree,code.module.css}`, `apps/web/src/lib/api.ts`, `apps/web/e2e/{conversation,preview-share}.spec.ts`, `services/control-api/src/routes/preview.ts`, `services/control-api/test/preview.test.ts`, this plan, and `tasks/todo.md`. No desktop files are in scope.
+
+- [x] List only immediate workspace children, canonicalize nested paths against their requested directory, and render an expandable tree that opens the real canonical file path.
+- [x] Issue the authenticated preview cookie for a cross-site embedded context using `SameSite=None; Partitioned` while retaining the host-only, secure, HttpOnly boundary.
+- [x] Prove the browser sends the preview cookie on the final isolated-origin iframe request and that nested real project files expand, collapse, and open without root duplicates.
+- [x] Run focused browser/API tests, affected lint/typecheck, a live local project check on port 3000, and the repository push gate.
+- [x] Commit: `fix(web): restore project files and embedded preview`
+
 ---
 
 ## Testing strategy
@@ -350,6 +361,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-14 WEB-18-FIX-7 done — Restored canonical lazy workspace trees and CHIPS-compatible embedded preview sessions; focused API/browser coverage and all 134 web tests passed, while live Chromium rendered the generated app and opened the real `src/main.ts` from its active workspace.
 - 2026-08-14 WEB-18-FIX-5 done — Restored source-only generated commits, single-stream run events, durable branch reuse, real preview lifecycle projection, canonical localhost redemption, and compact Lovable-style Preview/Files/Code/More; real Anthropic Docker run completed with 5/5 generated tests, source-only commit, preview ready, and share/exchange/redeem/document/source checks 201/200/200/200/200; web 134/134, runtime 15/15, Mission Control 5/5, local 14/14, config 84/84, orchestrator integration 45/45, lint/typecheck and cold repository gate passed.
 - 2026-08-14 WEB-18-FIX-4 done - Matched the live Lovable/Base44 editor density with 23-28px icon controls, a 28px page selector, and a balanced 44/56 split; preview acceptance passed 1/1, builder shell passed 24/24, lint/typecheck passed, and signed-in browser interactions produced no console errors. A real prompt reached Temporal but Modal rejected provisioning with RESOURCE_EXHAUSTED because the provider workspace exceeded its spend limit, so a new live preview remains externally blocked until that limit is raised.
 - 2026-08-14 WEB-18-FIX-3 done — Repaired the real prompt-to-workspace pipeline, authenticated preview transport, persistent sandbox/Git lifecycle, and compact immersive builder; verified a real Anthropic run plus preview share/redeem chain, live Stytch-to-Google redirect on port 3000, web 132/132, preview proxy 110/110, sandbox 194 passed with 18 provider-gated skips, and the complete cold repository gate including private Forgejo clone.
