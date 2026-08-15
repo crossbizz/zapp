@@ -949,6 +949,9 @@ const GRANT_RECORD = z
     expiresAt: z.string().datetime(),
   })
   .strict();
+const REDIS_GRANT_RECORD = GRANT_RECORD.extend({
+  redeemOperationKey: z.string().min(1).optional(),
+}).strict();
 const SESSION_RECORD = GRANT_RECORD.extend({ secretHash: z.string().length(64) }).strict();
 const REMEMBER_SECRET = `
   if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
@@ -1004,7 +1007,7 @@ export function createRedisPreviewSessionStore(
     } catch {
       return undefined;
     }
-    const parsed = GRANT_RECORD.safeParse(decoded);
+    const parsed = REDIS_GRANT_RECORD.safeParse(decoded);
     return parsed.success
       ? {
           organizationId: parsed.data.organizationId,

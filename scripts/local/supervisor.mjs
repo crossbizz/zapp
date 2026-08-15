@@ -275,11 +275,11 @@ export async function runLocal(options = {}) {
           WATCHPACK_POLLING: 'true',
         },
       ),
-      'http://localhost:3000/login',
+      'http://127.0.0.1:3000/login',
     );
 
-    output('[local] ready: http://localhost:3000');
-    if (config.openBrowser) await controlled(openBrowser('http://localhost:3000'));
+    output('[local] ready: http://127.0.0.1:3000');
+    if (config.openBrowser) await controlled(openBrowser('http://127.0.0.1:3000'));
     await Promise.race([stopped.promise, supervisor.failure]);
     await shutdown();
     return 0;

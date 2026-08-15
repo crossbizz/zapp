@@ -299,6 +299,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-18-FIX-3 Immersive builder prompt and preview repair
 - [x] WEB-18-FIX-4 Compact reference editor chrome and balanced workspace
 - [x] WEB-18-FIX-5 Reliable local preview and reference workspace surfaces
+- [x] WEB-18-FIX-6 Canonical local auth and browser origin
 - [x] M6-GATE-FIX-1 Bound preview-proxy browser cleanup under cold-gate contention
 - [x] OPS-13-FIX-1 Narrow child-process runtime owners in Semgrep
 - [x] V-1 Build the 10-app benchmark suite (PRD §40.2) from VF fixtures

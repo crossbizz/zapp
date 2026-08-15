@@ -316,7 +316,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 **Interfaces consumed:** Existing run/conversation/preview/file/code/log/test/settings APIs, structured run SSE, sandbox workspace tools, Git service commit tool, and authenticated preview share/exchange/redeem proxy.
 
-**Interfaces produced:** No new route. Mission Control now projects the existing public preview lifecycle contract; follow-up runs inherit the durable branch; local UI origin is canonically `http://localhost:3000`.
+**Interfaces produced:** No new route. Mission Control now projects the existing public preview lifecycle contract; follow-up runs inherit the durable branch. WEB-18-FIX-6 supersedes this task's local UI hostname after the host-only auth cookie exposed the split-origin defect.
 
 - [x] Filter generated/dependency/VCS paths before commit and in the code explorer so a successful generated build cannot overflow the event API or expose implementation noise.
 - [x] Share one run-event stream across conversation and preview, start preview capture only after the authenticated share exists, and preserve the latest branch when starting a follow-up run.
@@ -324,6 +324,18 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Project real `preview.starting|ready|failed` payloads in Mission Control and make the localhost preview origin complete share → exchange → redemption → proxied app delivery.
 - [x] Verify focused TDD suites, full web acceptance, affected package lint/typecheck/tests, one real generated commit and preview, and the cold repository gate.
 - [x] Commit: `fix(web): restore reliable local preview workspace`
+
+#### WEB-18-FIX-6 - canonical local auth and browser origin
+
+**Root cause:** The local Stytch callback and host-only session cookie use `127.0.0.1`, while `APP_BASE_URL`, CORS, readiness, and the launched UI use `localhost`. A signed-in request can pass server middleware on `127.0.0.1` and then stall when the browser's credentialed `/v1/me` request is rejected by exact-origin CORS.
+**Files:** Modify `scripts/local/{config,supervisor}.mjs`, `scripts/local.test.mjs`, `services/control-api/src/routes/preview.ts`, `services/control-api/test/integration/redis.test.ts`, `docs/dev-setup.md`, this plan, and `tasks/todo.md`. No public API contract, cookie policy, or desktop file changes are in scope.
+
+- [x] Add a failing local regression that requires the browser, API, and launched UI to use one canonical `127.0.0.1` hostname.
+- [x] Pin `APP_BASE_URL`, readiness, browser launch, and setup documentation to `http://127.0.0.1:3000`.
+- [x] Keep a redeemed Redis preview grant parseable so a browser refresh can replay the keyed exchange and reopen the iframe.
+- [x] Restart the real `pnpm local` entry point and verify signed-in session bootstrap, exact-origin credentialed CORS, and the existing preview share/redemption flow.
+- [x] Run focused local tests, affected lint/typecheck, the cold package/browser phase, and the complete pre-push repository gate.
+- [x] Commit: `fix(local): unify authenticated loopback origin`
 
 ---
 
@@ -390,3 +402,4 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - 2026-08-11 WEB-14 BLOCKED — API-first audit confirmed the prerequisite DEP-12 lifecycle is not live: the release service has no callable readiness/deploy/evidence/rollback runtime, and the public API exposes neither DEP-3 confirmation effects nor DEP-6 live deployment-stage reads/events. Rendering the flow from UI fixtures would create a browser-private success path, so the task remains unchecked and no mock-only deploy UI was added.
 - 2026-08-11 WEB-15 BLOCKED — API-first audit found no public production-health, synthetic-history, release-annotation, deploy-history, rollback-target, or DEP-9 database-compatibility projection for this screen; its DEP-12/OPS-8 prerequisites are also incomplete. The task remains unchecked and no inferred Grafana/Faro or rollback state was introduced.
 - 2026-08-12 WEB-16 phased — Shipped versioned credit burn-down plus generated SDK, authoritative Stripe-synced seat status, usage/billing/audit screens, budget alerts, exact org-scoped activation events, axe-clean home/dashboard/builder/deploy-readiness entry, and keyboard-activated prompt/create/preview/deploy-entry slices; one capped review's three Important findings were fixed, real PostgreSQL credit/seat lifecycle tests passed, and the final web gate passed 95/95. The connected successful prompt→preview→deploy acceptance remains BLOCKED on WEB-14's missing public deploy lifecycle, so WEB-16 and its tracker remain unchecked; no provider call was required.
+- 2026-08-14 WEB-18-FIX-6 done — Unified local auth, CORS, readiness, and browser launch on `127.0.0.1`; preserved redeemed Redis preview grants for keyed refresh replay; verified real session bootstrap, preview share/exchange/redeem, 134/134 browser tests, 115/115 workspace-agent tests after one cold-suite concurrency failure, and the complete pre-push repository gate; GitHub, Supabase, Neon, and generated-app Stripe live tests remained visibly credential-gated.

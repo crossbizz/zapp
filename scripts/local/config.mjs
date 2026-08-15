@@ -167,7 +167,7 @@ export function loadLocalConfig({
     REDIS_URL: 'redis://127.0.0.1:6379',
     TEMPORAL_ADDRESS: '127.0.0.1:7233',
     TEMPORAL_NAMESPACE: 'default',
-    APP_BASE_URL: 'http://localhost:3000',
+    APP_BASE_URL: 'http://127.0.0.1:3000',
     API_BASE_URL: 'http://127.0.0.1:4000',
     CONTROL_API_URL: 'http://127.0.0.1:4000',
     CONTROL_API_INTERNAL_URL: 'http://127.0.0.1:4000',

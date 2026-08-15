@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
+import { newId } from '@zapp/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createRedisTokenDenylist, sessionFamilyKey } from '../../src/auth/denylist.js';
@@ -12,6 +13,7 @@ import {
 } from '../../src/orgs/invites.js';
 import { createRedisIdempotencyStore } from '../../src/plugins/idempotency.js';
 import { createRedisRateLimiter, type RateLimiter } from '../../src/plugins/rate-limit.js';
+import { createRedisPreviewSessionStore } from '../../src/routes/preview.js';
 import type { RateLimitRule } from '../../src/config/rate-limits.js';
 import { createRedisConnection, type RedisConnection } from '../../src/redis/client.js';
 import { hasRedis, redisUrl } from './helpers.js';
@@ -373,6 +375,27 @@ describe.skipIf(!hasRedis)('the Redis-backed stores', () => {
       expect(decision.outcome).toBe('unavailable');
       expect(reported).toBeDefined();
       await gone.close();
+    });
+  });
+
+  describe('the preview session store', () => {
+    it('replays a grant after its redemption operation was recorded', async () => {
+      const sessions = createRedisPreviewSessionStore(redis);
+      const record = {
+        organizationId: newId('org'),
+        shareId: 'a'.repeat(26),
+        expiresAt: new Date(Date.now() + MINUTE),
+      };
+      const grant = unique('preview-grant');
+
+      try {
+        await sessions.issueGrant(record, grant);
+        expect(await sessions.consumeGrant(record, grant, unique('redeem'))).toBe(true);
+
+        await expect(sessions.issueGrant(record, grant)).resolves.toEqual(record);
+      } finally {
+        await sessions.revoke(record.organizationId, record.shareId);
+      }
     });
   });
 });
