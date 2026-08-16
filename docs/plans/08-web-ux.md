@@ -514,6 +514,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Keep other cards usable, clean only the deleted project's thumbnail/state, and abort timers/requests plus clear stale state on organization changes.
 - [x] Prove permission visibility, headers/idempotency, confirmation, bounded polling, retry-key rotation, multi-card isolation, and organization fencing in focused and full web suites. Commit: `feat(web): add project-card deletion`
 
+### Task WEB-21 [M6]: Lovable-parity tabbed code editor
+
+**Files:** Modify the existing code surface, web dependencies, focused Node/Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-lovable-code-editor.md`.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Replace the plain source `<pre>` with a full-height CodeMirror 6 surface providing line numbers, syntax coloring, selection, light active-line treatment, and the existing role-gated edit/save flow.
+- [ ] Add a compact Lovable-style semantic file explorer with search, expand/collapse-all, folder/file-type icons, lazy hierarchy, and a clear selected state.
+- [ ] Add ordered, deduplicated, closeable open-file tabs plus truthful copy-reference, copy-content, and download actions for the selected file.
+- [ ] Prove API tenant headers, read-only/editable roles, tab behavior, file actions, syntax rendering, accessibility, full builder regression coverage, and visual parity. Commit: `feat(web): add Lovable-parity code editor`
+
 ---
 
 ## Testing strategy
