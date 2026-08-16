@@ -965,6 +965,9 @@ export interface AgentHttpStream {
 export interface ModalWorkspaceSdkPort {
   createWorkspace(input: ModalWorkspaceCreateOptions): Promise<ModalWorkspaceSandbox>;
   getWorkspace(providerWorkspaceId: string): Promise<ModalWorkspaceSandbox | undefined>;
+  getWorkspaceForTermination?(
+    providerWorkspaceId: string,
+  ): Promise<ModalWorkspaceSandbox | undefined>;
   measureProjectVolumeBytes(input: {
     readonly organizationId: string;
     readonly projectId: string;
@@ -2501,7 +2504,7 @@ export class ModalSandboxProvider {
     const id = z.string().min(1).parse(providerWorkspaceId);
     const sdk = this.sdkFactory(this.modalEnvironment);
     try {
-      const sandbox = await sdk.getWorkspace(id);
+      const sandbox = await (sdk.getWorkspaceForTermination?.(id) ?? sdk.getWorkspace(id));
       if (sandbox === undefined) return;
       await sandbox.terminate();
       const deadline = this.clockMs() + HEALTH_PROBE_TIMEOUT_MS;

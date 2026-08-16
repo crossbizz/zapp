@@ -47,9 +47,7 @@ const DockerInspectSchema = z
       .object({
         Id: z.string().regex(/^[a-f0-9]{12,64}$/u),
         State: z.object({ Running: z.boolean() }).passthrough(),
-        Config: z
-          .object({ Labels: z.record(z.string()).nullish() })
-          .passthrough(),
+        Config: z.object({ Labels: z.record(z.string()).nullish() }).passthrough(),
         NetworkSettings: z
           .object({
             Networks: z.record(z.unknown()),
@@ -87,8 +85,10 @@ interface DockerWorkspaceSdkOptions {
   readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
-export interface DockerSandboxProviderOptions
-  extends Omit<ModalSandboxProviderOptions, 'credentials' | 'sdkFactory'> {
+export interface DockerSandboxProviderOptions extends Omit<
+  ModalSandboxProviderOptions,
+  'credentials' | 'sdkFactory'
+> {
   readonly command?: DockerCommandPort;
   readonly fetcher?: typeof fetch;
 }
@@ -116,7 +116,9 @@ export function createDockerCommandPort(): DockerCommandPort {
               resolve({ exitCode: code, stdout, stderr });
               return;
             }
-            reject(new Error(code === 'ENOENT' ? 'Docker CLI is unavailable' : 'Docker command failed'));
+            reject(
+              new Error(code === 'ENOENT' ? 'Docker CLI is unavailable' : 'Docker command failed'),
+            );
           },
         );
       });
@@ -146,19 +148,22 @@ async function runOrThrow(
 }
 
 function networkName(sandboxName: string): string {
-  return `${z.string().regex(/^zapp-writer-[a-f0-9]{32}$/u).parse(sandboxName)}-net`;
+  return `${z
+    .string()
+    .regex(/^zapp-writer-[a-f0-9]{32}$/u)
+    .parse(sandboxName)}-net`;
 }
 
 function cgroupName(sandboxName: string): string {
-  return `${z.string().regex(/^zapp-writer-[a-f0-9]{32}$/u).parse(sandboxName)}-cgroup`;
+  return `${z
+    .string()
+    .regex(/^zapp-writer-[a-f0-9]{32}$/u)
+    .parse(sandboxName)}-cgroup`;
 }
 
 function labels(input: ModalWorkspaceCreateOptions): readonly string[] {
   return [
-    ...Object.entries(input.tags).flatMap(([name, value]) => [
-      '--label',
-      `zapp.${name}=${value}`,
-    ]),
+    ...Object.entries(input.tags).flatMap(([name, value]) => ['--label', `zapp.${name}=${value}`]),
     '--label',
     `zapp.sandbox_name=${input.sandboxName}`,
   ];
@@ -248,7 +253,9 @@ export function providerSnapshotDigest(untrustedId: string): string {
   return DockerImageDigestSchema.parse(`sha256:${id.slice('im-docker-'.length)}`);
 }
 
-export function createDockerWorkspaceSdk(options: DockerWorkspaceSdkOptions): ModalWorkspaceSdkPort {
+export function createDockerWorkspaceSdk(
+  options: DockerWorkspaceSdkOptions,
+): ModalWorkspaceSdkPort {
   const command = options.command ?? createDockerCommandPort();
   const imageRef = imageReference(options.imageRef);
   const fetcher = options.fetcher ?? fetch;
@@ -299,7 +306,9 @@ export function createDockerWorkspaceSdk(options: DockerWorkspaceSdkOptions): Mo
     );
   }
 
-  function adapt(initialInspect: z.infer<typeof DockerInspectSchema>[number]): ModalWorkspaceSandbox {
+  function adapt(
+    initialInspect: z.infer<typeof DockerInspectSchema>[number],
+  ): ModalWorkspaceSandbox {
     const providerWorkspaceId = DockerContainerIdSchema.parse(initialInspect.Id);
 
     async function current(): Promise<z.infer<typeof DockerInspectSchema>[number]> {
@@ -516,6 +525,11 @@ export function createDockerWorkspaceSdk(options: DockerWorkspaceSdkOptions): Mo
       }
     },
     async getWorkspace(providerWorkspaceId) {
+      const id = z.string().min(1).parse(providerWorkspaceId);
+      const inspect = await inspectContainer(command, id);
+      return inspect === undefined || !inspect.State.Running ? undefined : adapt(inspect);
+    },
+    async getWorkspaceForTermination(providerWorkspaceId) {
       const id = z.string().min(1).parse(providerWorkspaceId);
       const inspect = await inspectContainer(command, id);
       return inspect === undefined ? undefined : adapt(inspect);

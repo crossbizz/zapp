@@ -474,6 +474,10 @@ export function PreviewFrame({
   const previewUsable = logs?.state === 'ready';
   const wakeInProgress =
     wakeRequested || (workspaceId !== undefined && autoWakeWorkspaceRef.current === workspaceId);
+  const requestWorkspaceRecovery = useCallback((): void => {
+    setOperationStatus('The workspace stopped responding. Restoring it from the project branch…');
+    setWorkspaceRecoveryGeneration((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -622,13 +626,11 @@ export function PreviewFrame({
     setSharing(false);
     setSelecting(false);
     if (workspaceId === undefined) return;
-    void refreshLatestWorkspace(true, true).catch(() => {
-      setOperationStatus('Preview status could not be refreshed.');
-    });
+    void refreshLatestWorkspace(true, true).catch(requestWorkspaceRecovery);
     return () => {
       refreshControllerRef.current?.abort();
     };
-  }, [refreshLatestWorkspace, workspaceId]);
+  }, [refreshLatestWorkspace, requestWorkspaceRecovery, workspaceId]);
 
   useLayoutEffect(() => {
     previewGenerationRef.current += 1;
@@ -646,9 +648,7 @@ export function PreviewFrame({
     )
       return;
     const timer = window.setInterval(() => {
-      void refreshLatestWorkspace().catch(() => {
-        setOperationStatus('Preview boot logs could not be refreshed.');
-      });
+      void refreshLatestWorkspace().catch(requestWorkspaceRecovery);
     }, 2_000);
     const deadline = window.setTimeout(() => {
       wakePendingRef.current = false;
@@ -661,7 +661,7 @@ export function PreviewFrame({
       window.clearInterval(timer);
       window.clearTimeout(deadline);
     };
-  }, [logs?.state, refreshLatestWorkspace, wakeInProgress, workspaceId]);
+  }, [logs?.state, refreshLatestWorkspace, requestWorkspaceRecovery, wakeInProgress, workspaceId]);
 
   useEffect(() => {
     if (logs?.state !== 'ready' && logs?.state !== 'failed') return;
@@ -1142,24 +1142,24 @@ export function PreviewFrame({
         ? 'Build needs another run'
         : terminalWithoutWorkspace
           ? 'Preview unavailable'
-        : runStatus === 'queued'
-          ? 'Build queued'
-          : runStatus === 'completed'
-            ? 'Restoring workspace'
-            : runStatus === undefined
-              ? 'Loading build'
-              : 'Build in progress';
+          : runStatus === 'queued'
+            ? 'Build queued'
+            : runStatus === 'completed'
+              ? 'Restoring workspace'
+              : runStatus === undefined
+                ? 'Loading build'
+                : 'Build in progress';
       const description = terminalWithoutRevision
         ? 'The previous run ended before it saved a preview revision. Retry the build in this conversation.'
         : terminalWithoutWorkspace
           ? 'This run ended before the agent started a project workspace.'
-        : runStatus === 'queued'
-          ? 'The agent accepted your request and will start the workspace next.'
-          : runStatus === 'completed'
-            ? 'Opening the latest project branch…'
-            : runStatus === undefined
-              ? 'Checking the latest run before opening its workspace…'
-              : 'The preview will open as soon as the agent starts the project workspace.';
+          : runStatus === 'queued'
+            ? 'The agent accepted your request and will start the workspace next.'
+            : runStatus === 'completed'
+              ? 'Opening the latest project branch…'
+              : runStatus === undefined
+                ? 'Checking the latest run before opening its workspace…'
+                : 'The preview will open as soon as the agent starts the project workspace.';
       return (
         <div
           {...(terminalWithoutWorkspace ? {} : { 'aria-busy': true })}

@@ -8,6 +8,7 @@ import type { SandboxServiceEnv } from '../src/env.js';
 import { registerSandboxHealthRoute } from '../src/app.js';
 import {
   composeSandboxRuntime,
+  createAttachmentBackgroundWork,
   type SandboxRuntimeFactories,
 } from '../src/runtime.js';
 import { createPostgresNetworkPolicyRecorder } from '../src/network/postgres.js';
@@ -126,6 +127,52 @@ afterEach(() => {
 });
 
 describe('sandbox runtime composition', () => {
+  it('cleans a terminated provider workspace before releasing its durable attachment', async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const rows = {
+      listAttachments: vi.fn(() =>
+        Promise.resolve([
+          {
+            row: {
+              id: 'ws_stopped',
+              providerWorkspaceId: 'provider-stopped',
+              status: 'ready',
+            },
+          },
+        ]),
+      ),
+      transition: vi.fn(
+        (...args: [string, string, { readonly terminatedAt: Date }, string]) => {
+          void args;
+          calls.push('row.terminated');
+          controller.abort();
+          return Promise.resolve({});
+        },
+      ),
+    };
+    const provider = {
+      getStatus: vi.fn(() => Promise.resolve('terminated')),
+      terminateWorkspace: vi.fn(() => {
+        calls.push('provider.terminated');
+        return Promise.resolve();
+      }),
+    };
+
+    await createAttachmentBackgroundWork({
+      provider: provider as never,
+      rows: rows as never,
+    }).run(controller.signal);
+
+    expect(calls).toEqual(['provider.terminated', 'row.terminated']);
+    expect(provider.terminateWorkspace).toHaveBeenCalledWith('provider-stopped');
+    const transition = rows.transition.mock.calls[0];
+    expect(transition?.[0]).toBe('ws_stopped');
+    expect(transition?.[1]).toBe('terminated');
+    expect(transition?.[2].terminatedAt).toBeInstanceOf(Date);
+    expect(transition?.[3]).toBe('ready');
+  });
+
   it('keeps the workspace-agent credential stable across service restarts', async () => {
     const first = harness();
     const second = harness();
@@ -284,8 +331,8 @@ describe('sandbox PostgreSQL network audit', () => {
         providerEnforced: true,
       },
     });
-    await expect(
-      recorder.record({ ...record, workspaceId: newId('ws') }),
-    ).rejects.toThrow('conflicting identity');
+    await expect(recorder.record({ ...record, workspaceId: newId('ws') })).rejects.toThrow(
+      'conflicting identity',
+    );
   });
 });

@@ -103,7 +103,9 @@ export interface SandboxRuntimeFactories {
     readonly env: SandboxServiceEnv;
   }) => SandboxTelemetryRelay;
   readonly loadPricing: () => Promise<SandboxPricing>;
-  readonly composeApp: (input: ComposeOptions) => Promise<Awaited<ReturnType<typeof composeSandboxApp>>>;
+  readonly composeApp: (
+    input: ComposeOptions,
+  ) => Promise<Awaited<ReturnType<typeof composeSandboxApp>>>;
   readonly createBackgroundWork: (input: {
     readonly rows: WorkspaceState;
     readonly provider: WorkspaceAgentProvider;
@@ -154,7 +156,7 @@ async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
   }
 }
 
-function createAttachmentBackgroundWork(input: {
+export function createAttachmentBackgroundWork(input: {
   readonly rows: WorkspaceState;
   readonly provider: WorkspaceAgentProvider;
 }): BackgroundWork {
@@ -166,6 +168,7 @@ function createAttachmentBackgroundWork(input: {
             if (record.row.providerWorkspaceId === null) continue;
             const status = await input.provider.getStatus(record.row.providerWorkspaceId);
             if (status === 'terminated') {
+              await input.provider.terminateWorkspace(record.row.providerWorkspaceId);
               await input.rows.transition(
                 record.row.id,
                 'terminated',
@@ -228,10 +231,7 @@ const productionFactories: SandboxRuntimeFactories = {
     });
   },
   async loadPricing() {
-    const source = await readFile(
-      new URL('../../../config/pricing.json', import.meta.url),
-      'utf8',
-    );
+    const source = await readFile(new URL('../../../config/pricing.json', import.meta.url), 'utf8');
     return RuntimePricingSchema.parse(JSON.parse(source) as unknown);
   },
   composeApp: composeSandboxApp,
@@ -243,19 +243,10 @@ async function terminateCandidate(
   provider: WorkspaceAgentProvider,
   candidate: GovernorTerminationCandidate,
 ): Promise<void> {
-  const row = await rows.get(
-    candidate.workspaceId,
-    candidate.organizationId,
-    candidate.projectId,
-  );
+  const row = await rows.get(candidate.workspaceId, candidate.organizationId, candidate.projectId);
   if (row === undefined || row.providerWorkspaceId === null || row.status === 'terminated') return;
   await provider.terminateWorkspace(row.providerWorkspaceId);
-  await rows.transition(
-    row.id,
-    'terminated',
-    { terminatedAt: new Date() },
-    row.status,
-  );
+  await rows.transition(row.id, 'terminated', { terminatedAt: new Date() }, row.status);
 }
 
 export async function composeSandboxRuntime(
@@ -270,15 +261,11 @@ export async function composeSandboxRuntime(
   const lock = ImageLockSelectionSchema.parse(imageLock);
   const lockedEnvironment = lock.environments[env.modal.environment];
   if (lockedEnvironment === undefined) {
-    throw new Error(
-      `No immutable Modal image lock exists for ${env.modal.environment}`,
-    );
+    throw new Error(`No immutable Modal image lock exists for ${env.modal.environment}`);
   }
   const expectedModalEnvironment = `zapp-${env.modal.environment}`;
   if (lockedEnvironment.modalEnvironment !== expectedModalEnvironment) {
-    throw new Error(
-      `Immutable Modal image environment does not match ${env.modal.environment}`,
-    );
+    throw new Error(`Immutable Modal image environment does not match ${env.modal.environment}`);
   }
 
   const databaseHandle = factories.openDatabase(env.databaseUrl);
@@ -349,8 +336,7 @@ export async function composeSandboxRuntime(
           },
         },
         scheduler: {
-          setInterval: (callback, milliseconds) =>
-            setInterval(() => void callback(), milliseconds),
+          setInterval: (callback, milliseconds) => setInterval(() => void callback(), milliseconds),
           clearInterval: (handle) => {
             clearInterval(handle as ReturnType<typeof setInterval>);
           },

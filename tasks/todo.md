@@ -315,6 +315,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-18-FIX-18 Source-aware preview wake and file recovery
 - [x] WEB-18-FIX-19 Isolate the live local web cache from browser-test output
 - [x] WEB-18-FIX-20 Recover legacy and revisionless project previews
+- [x] WEB-18-FIX-21 Recover exited local preview workspaces
 - [x] CP-28 Durable project conversations and public history
 - [x] AR-25 Safe queued-message application
 - [x] WEB-19 Project conversation history and new threads

@@ -608,6 +608,147 @@ test('rehydrates an expired run workspace from the project branch and opens its 
   await expect(page.getByText('Opening preview')).toHaveCount(0);
 });
 
+test('replaces a workspace that disappears while preview boot logs are loading', async ({
+  page,
+}) => {
+  const recoveredWorkspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FS';
+  let workspaceLists = 0;
+  let workspaceCreates = 0;
+  let restartRequests = 0;
+  await installBuilder(page, () =>
+    runFrame(1, 'preview.starting', { action: 'start', workspaceId }),
+  );
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    if (route.request().method() === 'POST') {
+      workspaceCreates += 1;
+      await route.fulfill({
+        body: JSON.stringify({
+          workspace: {
+            branchId,
+            createdAt: '2026-08-10T12:01:00.000Z',
+            id: recoveredWorkspaceId,
+            lastActiveAt: '2026-08-10T12:01:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: 'provider-recovered-after-exit',
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: 'ready',
+            terminatedAt: null,
+          },
+        }),
+        headers: corsHeaders(),
+        status: 201,
+      });
+      return;
+    }
+    workspaceLists += 1;
+    const terminated = workspaceLists > 1;
+    await route.fulfill({
+      body: JSON.stringify({
+        workspaces: [
+          {
+            branchId,
+            createdAt: '2026-08-10T12:00:00.000Z',
+            id: workspaceId,
+            lastActiveAt: '2026-08-10T12:00:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: terminated ? null : 'provider-preview-fixture',
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: terminated ? 'terminated' : 'ready',
+            terminatedAt: terminated ? '2026-08-10T12:00:01.000Z' : null,
+          },
+        ],
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ code: 'sandbox_service_failed', message: 'Sandbox unavailable.' }),
+      headers: corsHeaders(),
+      status: 502,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/dev-server/restart`,
+    async (route) => {
+      restartRequests += 1;
+      await route.fulfill({
+        body: JSON.stringify({
+          ownership: 'process_group',
+          pid: 42,
+          port: 3000,
+          supervisorId: 'recovered-after-exit-fixture',
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/dev-server/logs*`,
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          entries: [],
+          failureId: null,
+          nextCursor: 0,
+          state: 'ready',
+          truncated: false,
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/preview/shares`,
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          share: {
+            expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1_000).toISOString(),
+            id: '01j00000000000000000000000',
+            policy: 'org',
+            url: shareUrl,
+          },
+        }),
+        headers: corsHeaders(),
+        status: 201,
+      });
+    },
+  );
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/preview/events`,
+    async (route) => {
+      await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+    },
+  );
+  await page.route(
+    `${appBaseUrl}/preview/org_01K27Q9C2W85CMN1V9S6Q3D4FD/01j00000000000000000000000*`,
+    async (route) => {
+      await route.fulfill({
+        body: '<!doctype html><title>Recovered preview</title>',
+        contentType: 'text/html',
+        status: 200,
+      });
+    },
+  );
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect.poll(() => workspaceCreates, { timeout: 10_000 }).toBe(1);
+  await expect.poll(() => restartRequests).toBe(1);
+  await expect(page.getByTitle('Application preview')).toBeVisible();
+});
+
 test('creates the authenticated share before opening the long-lived capture stream', async ({
   page,
 }) => {

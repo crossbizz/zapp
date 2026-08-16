@@ -514,6 +514,16 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - [x] Keep other cards usable, clean only the deleted project's thumbnail/state, and abort timers/requests plus clear stale state on organization changes.
 - [x] Prove permission visibility, headers/idempotency, confirmation, bounded polling, retry-key rotation, multi-card isolation, and organization fencing in focused and full web suites. Commit: `feat(web): add project-card deletion`
 
+### Task WEB-18-FIX-21 [M6]: Recover exited local preview workspaces
+
+**Files:** Modify `apps/web/src/components/preview/PreviewFrame.tsx`, `apps/web/e2e/preview-panel.spec.ts`, `services/sandbox-service/src/provider/{docker,modal}.ts`, `services/sandbox-service/src/runtime.ts`, focused sandbox tests, this plan, and `tasks/todo.md`.
+**Effort:** S.
+
+- [x] Reproduce the boot-log failure from a durable ready attachment whose Docker container has exited.
+- [x] Treat stopped Docker containers as unavailable for normal workspace lookup while retaining a cleanup-only termination path.
+- [x] Reconcile stale provider resources before the durable attachment transition and let Preview recover or create the active branch after boot-log failure.
+- [x] Prove stopped-container lookup, cleanup, background reconciliation, and browser recovery in focused tests, then pass affected package and complete repository gates. Commit: `fix(preview): recover exited local workspaces`
+
 ### Task WEB-21 [M6]: Lovable-parity tabbed code editor
 
 **Files:** Modify the existing code surface, web dependencies, focused Node/Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-lovable-code-editor.md`.
@@ -537,6 +547,7 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 ## Execution log
 
+- 2026-08-16 WEB-18-FIX-21 done — Stopped Docker containers no longer masquerade as live workspaces, provider resources are cleaned before durable attachment reconciliation, and Preview recovers from boot-log failure through the current branch; 13/13 focused sandbox tests, the preview-disappearance browser regression, affected lint/typecheck, and the complete 94/94-task repository gate passed.
 - 2026-08-16 WEB-21 done — Replaced the plain source view with a read-only CodeMirror 6 editor, Lovable-density tabs and darker compact semantic file icons, reference-in-chat context, polished conversation typography and localized timestamps, and removed the non-actionable builder Compatible badge; Builder/Viewer read-only checks, one-copy context handoff, 45/45 web Node tests, 160/160 browser tests, the production build, and the complete 94/94-task repository gate passed, while live-provider checks skipped visibly without credentials.
 - 2026-08-16 WEB-19-FIX-1 done — Forwarded the selected run's merged durable and live events to Preview so terminal projects recover their workspace after reload; the TDD regression failed before and passed after, and the complete web and repository gates passed.
 - 2026-08-16 WEB-20 done — Added Owner-only exact-name project-card deletion, truthful queued/running/unknown/failed states with automatic recovery reconciliation, bounded tenant-fenced polling, isolated cleanup, accessible disclosure behavior, and fresh-key failed-row restart support in the public API; passed 22/22 project browser tests, 7/7 deletion API tests, web/control API gates, and the full repository gate.

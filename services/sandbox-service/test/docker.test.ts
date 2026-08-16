@@ -56,11 +56,11 @@ function createInput(): ModalWorkspaceCreateOptions {
   };
 }
 
-function inspected(input = createInput(), connected = true): string {
+function inspected(input = createInput(), connected = true, running = true): string {
   return JSON.stringify([
     {
       Id: CONTAINER_ID,
-      State: { Running: true },
+      State: { Running: running },
       Config: {
         Labels: {
           ...Object.fromEntries(
@@ -92,6 +92,34 @@ describe('local Docker workspace adapter', () => {
     });
 
     expect(provider.networkPolicyEnforcement).toBe('connectivity_only');
+  });
+
+  it('treats an exited container as a terminated workspace', async () => {
+    const calls: string[][] = [];
+    const command: DockerCommandPort = {
+      async run(args) {
+        await Promise.resolve();
+        calls.push([...args]);
+        if (args[0] === 'container' && args[1] === 'inspect') {
+          return { exitCode: 0, stdout: inspected(createInput(), true, false), stderr: '' };
+        }
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+    };
+    const imageLock = JSON.parse(
+      readFileSync(new URL('../../../infra/modal/images.lock.json', import.meta.url), 'utf8'),
+    ) as unknown;
+    const provider = createDockerSandboxProvider({
+      agentToken: 'agent-token',
+      command,
+      environment: 'dev',
+      imageLock,
+    });
+
+    await expect(provider.getStatus(CONTAINER_ID)).resolves.toBe('terminated');
+    await provider.terminateWorkspace(CONTAINER_ID);
+    expect(calls).toContainEqual(['rm', '--force', CONTAINER_ID]);
+    expect(calls).toContainEqual(['network', 'rm', createInput().sandboxName + '-net']);
   });
 
   it('creates one isolated branch container with loopback-only agent and preview ports', async () => {
@@ -257,12 +285,7 @@ describe('local Docker workspace adapter', () => {
       `${input.sandboxName}-net`,
       CONTAINER_ID,
     ]);
-    expect(calls).toContainEqual([
-      'network',
-      'connect',
-      `${input.sandboxName}-net`,
-      CONTAINER_ID,
-    ]);
+    expect(calls).toContainEqual(['network', 'connect', `${input.sandboxName}-net`, CONTAINER_ID]);
     expect(calls).toContainEqual(['rm', '--force', CONTAINER_ID]);
     expect(calls).toContainEqual(['network', 'rm', `${input.sandboxName}-net`]);
   });
