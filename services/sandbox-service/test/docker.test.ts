@@ -188,14 +188,19 @@ describe('local Docker workspace adapter', () => {
     expect(sandbox).toBeDefined();
 
     await expect(sandbox?.agentHealth('agent-token')).resolves.toMatchObject({ ok: true });
+    const timeoutSignal = new AbortController().signal;
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeoutSignal);
     const response = await sandbox?.agentRequest({
       method: 'POST',
       path: '/exec',
       headers: { authorization: 'Bearer agent-token' },
       body: Buffer.from('{}'),
+      timeoutMs: 130_000,
     });
     expect(response).toMatchObject({ statusCode: 201, contentType: 'text/plain' });
     expect(Buffer.from(response?.body ?? []).toString()).toBe('response-body');
+    expect(timeoutSpy).toHaveBeenLastCalledWith(130_000);
+    timeoutSpy.mockRestore();
 
     const stream = await sandbox?.agentStream({
       method: 'POST',

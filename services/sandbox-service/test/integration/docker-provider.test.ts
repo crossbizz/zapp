@@ -1,6 +1,7 @@
+import { Buffer } from 'node:buffer';
 import { readFile } from 'node:fs/promises';
 
-import type { CreateWorkspaceInput } from '@zapp/contracts';
+import type { CreateWorkspaceInput, ExecutionContract } from '@zapp/contracts';
 import { describe, expect, it } from 'vitest';
 
 import { createDockerSandboxProvider } from '../../src/provider/docker.js';
@@ -56,11 +57,64 @@ describe('live local Docker provider', () => {
         expect(node).toMatchObject({ exitCode: 0, truncated: false });
         expect(node.stdout.trim()).toMatch(/^v22\./u);
 
+        await provider.exec({
+          providerWorkspaceId,
+          command: 'sh',
+          args: ['-lc', 'find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +'],
+          cwd: '.',
+          timeoutMs: 10_000,
+        });
+        await provider.writeFile(
+          providerWorkspaceId,
+          'package.json',
+          Buffer.from(
+            JSON.stringify({
+              name: 'dependency-install-preview-proof',
+              private: true,
+              scripts: { dev: 'vite --host 0.0.0.0 --port 5173' },
+              devDependencies: { vite: '5.4.21' },
+            }),
+          ),
+        );
+        await provider.writeFile(
+          providerWorkspaceId,
+          'index.html',
+          Buffer.from('<h1>Dependency install preview ready</h1>'),
+        );
+        const contract: ExecutionContract = {
+          version: 1,
+          package_manager: 'pnpm',
+          workspace_root: '.',
+          install: { command: 'pnpm install', timeout_seconds: 90 },
+          develop: { command: 'pnpm dev', port: 5173 },
+        };
+        try {
+          await expect(provider.startDevServer(providerWorkspaceId, contract)).resolves.toMatchObject({
+            port: 5173,
+            ownership: 'process_group',
+          });
+        } catch (error: unknown) {
+          const logs = await provider.readDevServerLogs(providerWorkspaceId, {
+            after: 0,
+            limit: 100,
+          });
+          throw new Error(
+            `Live preview startup failed: ${logs.entries.map((entry) => entry.message).join('')}`,
+            { cause: error },
+          );
+        }
+        await expect(
+          provider.statFile(providerWorkspaceId, 'node_modules/.bin/vite'),
+        ).resolves.toMatchObject({ path: 'node_modules/.bin/vite' });
+
         const preview = await provider.resolvePreviewTunnel(providerWorkspaceId);
         expect(preview.protocol).toBe('http:');
         expect(preview.hostname).toBe('127.0.0.1');
         const health = await fetch(new URL('/__zapp/healthz', preview));
         expect(health.status).toBe(200);
+        const document = await fetch(preview);
+        expect(document.status).toBe(200);
+        await expect(document.text()).resolves.toContain('Dependency install preview ready');
       } finally {
         if (providerWorkspaceId !== undefined) {
           await provider.terminateWorkspace(providerWorkspaceId);

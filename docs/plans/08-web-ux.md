@@ -391,6 +391,17 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Restart the real local supervisor, prove the app still responds while `packages/ui/dist` is absent, and run affected web lint/typecheck/tests.
 - [x] Commit: `fix(web): keep local dev independent of package builds`
 
+#### WEB-18-FIX-12 - dependency-safe preview startup
+
+**Root cause:** the workspace execution contract requires an install command, but both dev-server start paths bypassed it and launched the development command immediately. Because dependency directories are intentionally absent from Git, every branch-restored workspace—and any new workspace whose earlier agent install failed—could reach `vite: not found` even while its source and contract were valid.
+**Files:** Modify `services/sandbox-service/src/provider/modal.ts`, `services/sandbox-service/src/provider/docker.ts`, their focused and live Docker provider tests, `services/control-api/src/sandbox/client.ts`, `services/control-api/test/sandbox-preview-client.test.ts`, this plan, and `tasks/todo.md`. No immutable image rebuild, contract shape, network profile, generated application source, or UI redesign is in scope.
+
+- [x] Add failing shared-provider coverage proving a fresh/restored workspace installs its contracted dependencies before starting the development command and reports install failures truthfully.
+- [x] Make install success a serialized provider prerequisite for start/restart against both current immutable and future workspace-agent images, and bound it by the contracted install timeout.
+- [x] Extend only the internal preview-start request deadlines through the control and sandbox provider layers so a legitimate fresh install is not aborted by the old 10/30-second transport limits.
+- [x] Prove the focused provider/control suites, package lint/typecheck, and a real Docker workspace whose dependency directory is absent.
+- [x] Commit: `fix(preview): install dependencies before dev startup`
+
 ---
 
 ## Testing strategy
@@ -404,6 +415,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-12 done — Serialized the execution-contract install command before every Docker/Modal dev-server start and restart, extended only preview startup deadlines, rejected install failures before launch, and proved the current locked Docker image installs missing Vite and serves the generated document through the real preview proxy; sandbox 209 passed with 19 provider-gated skips, focused control 7/7, affected lint/typecheck, and the dependency-empty live Docker acceptance passed 1/1.
 - 2026-08-15 WEB-18-FIX-11 done — Resolved `@zapp/ui` and its token stylesheet from source during Next development so cold verification cannot strand the live app after deleting package build output; the focused configuration regression passed 4/4, web lint/typecheck passed with one pre-existing image warning, and the real supervisor served the login page with `packages/ui/dist` absent.
 - 2026-08-15 WEB-18-FIX-10 done — Preserved local branch workspaces on the per-project Docker volume, pushed clean model-created heads, retained Vite HMR text frames, and proved a real TypeScript build plus stop/recreate recovery with the same Forgejo SHA, 12 source files, 9/9 generated tests, a restored file API, and a zero-page-error embedded preview; affected suites, lint/typecheck, all 135 browser tests, missing-credential skips, isolation/GATE-5, and the 94/94-task cold repository gate passed.
 - 2026-08-15 WEB-18-FIX-9 done — Recovered expired workspaces from their durable branch, automatically restarted sleeping previews without duplicate calls, persisted generated branch heads, made terminal agent failures explanatory, and stopped Next from watching its own output; focused API/worker suites and all 135 browser tests passed, with a live Docker preview returning the generated app through share, exchange, redemption, and proxy delivery.

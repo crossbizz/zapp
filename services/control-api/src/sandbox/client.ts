@@ -30,7 +30,21 @@ import {
 } from './port.js';
 
 const REQUEST_DEADLINE_MS = 10_000;
+const DEFAULT_PREVIEW_INSTALL_TIMEOUT_MS = 120_000;
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+export function previewStartupDeadlineMs(contract: {
+  readonly install: {
+    readonly command: string;
+    readonly timeout_seconds?: number | undefined;
+  };
+}): number {
+  const installTimeoutMs =
+    contract.install.timeout_seconds === undefined
+      ? DEFAULT_PREVIEW_INSTALL_TIMEOUT_MS
+      : contract.install.timeout_seconds * 1_000;
+  return installTimeoutMs + REQUEST_DEADLINE_MS;
+}
 
 function lifecycleId(prefix: 'run' | 'task', value: string): string {
   const bytes = createHash('sha256').update(value).digest();
@@ -271,7 +285,7 @@ export function createBuilderPreviewSandboxClient(
             'x-zapp-run-id': input.workspace.runId,
           },
           body: JSON.stringify({ contract: input.contract }),
-          signal: AbortSignal.timeout(REQUEST_DEADLINE_MS),
+          signal: AbortSignal.timeout(previewStartupDeadlineMs(input.contract)),
         },
       );
       return BuilderPreviewDevServerResponseSchema.parse(await readableJson(response));

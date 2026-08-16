@@ -375,6 +375,7 @@ interface AgentRequest {
   readonly query?: Readonly<Record<string, string>>;
   readonly headers: Readonly<Record<string, string>>;
   readonly body?: Uint8Array;
+  readonly timeoutMs?: number;
 }
 
 interface AgentResponse {
@@ -3673,9 +3674,63 @@ describe('agent proxy and unguarded conformance', () => {
     const devRequest = sdk.sandbox.agentRequests.find(
       (request) => request.method === 'POST' && request.path === '/dev-server/start',
     );
-    expect(JSON.parse(Buffer.from(devRequest?.body ?? []).toString('utf8'))).toEqual({
+    const installRequest = sdk.sandbox.agentRequests.find((request) => {
+      if (request.method !== 'POST' || request.path !== '/exec') return false;
+      const body = JSON.parse(Buffer.from(request.body ?? []).toString('utf8')) as {
+        cmd?: string;
+        args?: string[];
+      };
+      return body.cmd === 'sh' && body.args?.at(-1) === EXECUTION_CONTRACT.install.command;
+    });
+    if (installRequest === undefined || devRequest === undefined) {
+      throw new Error('Expected dependency installation before dev-server start');
+    }
+    expect(installRequest.timeoutMs).toBe(130_000);
+    expect(JSON.parse(Buffer.from(installRequest.body ?? []).toString('utf8'))).toEqual({
+      cmd: 'sh',
+      args: ['-lc', EXECUTION_CONTRACT.install.command],
+      cwd: EXECUTION_CONTRACT.workspace_root,
+      timeoutMs: 120_000,
+    });
+    expect(sdk.sandbox.agentRequests.indexOf(installRequest)).toBeLessThan(
+      sdk.sandbox.agentRequests.indexOf(devRequest),
+    );
+    expect(devRequest.timeoutMs).toBe(130_000);
+    expect(JSON.parse(Buffer.from(devRequest.body ?? []).toString('utf8'))).toEqual({
       contract: EXECUTION_CONTRACT,
     });
+  });
+
+  it('does not start a dev server when dependency installation fails', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    sdk.sandbox.agentResponder = (request) => {
+      if (request.method === 'POST' && request.path === '/exec') {
+        return jsonResponse({
+          exitCode: 7,
+          stdout: '',
+          stderr: 'dependency installation failed',
+          durationMs: 1,
+          truncated: false,
+        });
+      }
+      return strictAgentResponse(request);
+    };
+    const provider = createModalSandboxProvider({
+      environment: 'dev',
+      imageLock: IMAGE_LOCK,
+      agentToken: AGENT_TOKEN,
+      sdkFactory: () => sdk,
+    }) as unknown as AgentProxyProvider;
+
+    await expect(
+      provider.startDevServer(sdk.sandbox.providerWorkspaceId, EXECUTION_CONTRACT),
+    ).rejects.toThrow('Dependency installation failed with exit code 7');
+    expect(
+      sdk.sandbox.agentRequests.some(
+        (request) => request.method === 'POST' && request.path === '/dev-server/start',
+      ),
+    ).toBe(false);
   });
 
   it('kills a cancelled stream and rejects malformed responses and extra inputs', async () => {

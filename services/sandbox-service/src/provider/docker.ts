@@ -358,7 +358,7 @@ export function createDockerWorkspaceSdk(options: DockerWorkspaceSdkOptions): Mo
           fetcher,
           await current(),
           request,
-          AbortSignal.timeout(AGENT_REQUEST_TIMEOUT_MS),
+          AbortSignal.timeout(request.timeoutMs ?? AGENT_REQUEST_TIMEOUT_MS),
         );
         const contentType = response.headers.get('content-type') ?? undefined;
         return {

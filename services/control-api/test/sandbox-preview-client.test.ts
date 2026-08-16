@@ -12,6 +12,7 @@ import {
   createSandboxServiceClient,
   createSandboxStorageMeasurementClient,
   createSupportSandboxClient,
+  previewStartupDeadlineMs,
 } from '../src/sandbox/client.js';
 import type { SandboxWorkspace } from '../src/sandbox/port.js';
 import { TEST_SERVICE_TOKEN_SECRET } from './support/service-tokens.js';
@@ -253,6 +254,13 @@ describe('builder preview sandbox client', () => {
     expect(typeof requestBody).toBe('string');
     if (typeof requestBody !== 'string') throw new Error('restart request body must be JSON');
     expect(JSON.parse(requestBody)).toEqual({ contract });
+    expect(previewStartupDeadlineMs(contract)).toBe(130_000);
+    expect(
+      previewStartupDeadlineMs({
+        ...contract,
+        install: { ...contract.install, timeout_seconds: 300 },
+      }),
+    ).toBe(310_000);
   });
 
   it('binds staff termination to the service-authenticated WS-15 kill boundaries', async () => {

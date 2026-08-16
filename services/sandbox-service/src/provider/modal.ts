@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import process from 'node:process';
 import { posix } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -947,6 +947,7 @@ export interface AgentHttpRequest {
   readonly query?: Readonly<Record<string, string>>;
   readonly headers: Readonly<Record<string, string>>;
   readonly body?: Uint8Array;
+  readonly timeoutMs?: number;
 }
 
 export interface AgentHttpResponse {
@@ -1016,6 +1017,8 @@ export const ModalWorkspaceAttachmentSchema = z
 export type ModalWorkspaceAttachment = z.infer<typeof ModalWorkspaceAttachmentSchema>;
 
 const WORKSPACE_TIMEOUT_MS = 4 * 60 * 60 * 1_000;
+const DEFAULT_PREVIEW_INSTALL_TIMEOUT_MS = 120_000;
+const PREVIEW_START_GRACE_MS = 10_000;
 const WORKSPACE_ENV_ALLOWLIST = new Set([
   'PLAYWRIGHT_BROWSERS_PATH',
   'PNPM_STORE_DIR',
@@ -1193,6 +1196,23 @@ const DevServerResponseSchema = z
     ownership: z.enum(['process', 'process_group']),
   })
   .strict();
+
+function previewInstallTimeoutMs(contract: ExecutionContract): number {
+  return (
+    contract.install.timeout_seconds === undefined
+      ? DEFAULT_PREVIEW_INSTALL_TIMEOUT_MS
+      : contract.install.timeout_seconds * 1_000
+  );
+}
+
+function previewAgentRequestTimeoutMs(contract: ExecutionContract): number {
+  return previewInstallTimeoutMs(contract) + PREVIEW_START_GRACE_MS;
+}
+
+function derivedInstallIdempotencyKey(idempotencyKey: string): string {
+  const digest = createHash('sha256').update(`preview-install:${idempotencyKey}`).digest('hex');
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
 const DevServerLogsQuerySchema = z
   .object({
     after: z.number().int().nonnegative(),
@@ -1364,7 +1384,7 @@ function createModalWorkspaceSdk(
         ].join('\n');
         const process = await sandbox.exec(['node', '--input-type=module', '-e', script], {
           mode: 'text',
-          timeoutMs: 30_000,
+          timeoutMs: request.timeoutMs ?? 30_000,
         });
         const writer = process.stdin.getWriter();
         try {
@@ -2001,6 +2021,7 @@ export class ModalSandboxProvider {
             : { 'idempotency-key': request.idempotencyKey }),
         },
         ...(request.body === undefined ? {} : { body: request.body }),
+        ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
       });
     } finally {
       sdk.close();
@@ -2009,7 +2030,7 @@ export class ModalSandboxProvider {
 
   async exec(
     untrustedInput: ExecInput,
-    idempotencyKey = randomUUID(),
+    idempotencyKey: string = randomUUID(),
   ): Promise<WorkspaceAgentExecResult> {
     const input = ExecInputSchema.strict().parse(untrustedInput);
     const body = z
@@ -2036,6 +2057,7 @@ export class ModalSandboxProvider {
       idempotencyKey,
       contentType: 'application/json',
       body: Buffer.from(JSON.stringify(body)),
+      timeoutMs: input.timeoutMs + PREVIEW_START_GRACE_MS,
     });
     return WorkspaceAgentExecResultSchema.parse(jsonAgentBody(response));
   }
@@ -2385,12 +2407,26 @@ export class ModalSandboxProvider {
     idempotencyKey: string,
   ) {
     const contract = ExecutionContractSchema.parse(untrustedContract);
+    const install = await this.exec(
+      {
+        providerWorkspaceId,
+        command: 'sh',
+        args: ['-lc', contract.install.command],
+        cwd: contract.workspace_root,
+        timeoutMs: previewInstallTimeoutMs(contract),
+      },
+      derivedInstallIdempotencyKey(idempotencyKey),
+    );
+    if (install.exitCode !== 0) {
+      throw new Error(`Dependency installation failed with exit code ${String(install.exitCode)}`);
+    }
     const response = await this.requestAgent(providerWorkspaceId, {
       method: 'POST',
       path: `/dev-server/${action}`,
       idempotencyKey,
       contentType: 'application/json',
       body: Buffer.from(JSON.stringify({ contract })),
+      timeoutMs: previewAgentRequestTimeoutMs(contract),
     });
     const started = DevServerResponseSchema.parse(jsonAgentBody(response));
     const health = await this.health(providerWorkspaceId);
