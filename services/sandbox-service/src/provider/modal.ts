@@ -2413,6 +2413,7 @@ export class ModalSandboxProvider {
         command: 'sh',
         args: ['-lc', contract.install.command],
         cwd: contract.workspace_root,
+        env: { CI: '1', NODE_ENV: 'development' },
         timeoutMs: previewInstallTimeoutMs(contract),
       },
       derivedInstallIdempotencyKey(idempotencyKey),

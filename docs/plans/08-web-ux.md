@@ -432,6 +432,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Verify the focused browser acceptance at desktop and mobile widths, web lint/typecheck, and the complete web suite.
 - [x] Commit: `fix(web): match Lovable builder surface hierarchy`
 
+#### WEB-18-FIX-16 - non-interactive development dependency recovery
+
+**Root cause:** Preview startup now runs the execution contract's install command, but restored Docker workspaces can contain a dependency directory produced by a different pnpm environment. In that state pnpm asks permission to recreate `node_modules` and the headless install waits until its timeout. The workspace image also exports `NODE_ENV=production`, so an install that does complete omits Vite and other development dependencies required by the contracted development command. Both paths surface as `vite: not found` or an unavailable workspace even though the project source and contract are valid.
+**Files:** Modify `services/sandbox-service/src/provider/modal.ts`, `services/sandbox-service/test/integration/modal-provider.test.ts`, this plan, and `tasks/todo.md`. No execution-contract shape, immutable image, generated project source, dependency version, public API, or UI redesign is in scope.
+
+- [x] Add a failing shared-provider regression proving preview dependency installation is non-interactive and includes development dependencies for both start and restart.
+- [x] Run preview installs with the minimum explicit environment needed to recreate stale dependency directories and install the development toolchain before launching the contracted command.
+- [x] Prove the focused provider suite, sandbox lint/typecheck, and a real restored Docker workspace through the signed-in preview UI.
+- [x] Commit: `fix(preview): restore development dependencies noninteractively`
+
 ---
 
 ## Testing strategy
@@ -445,6 +455,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-16 done — Forced preview dependency recovery into non-interactive development mode for both start and restart; the focused and full sandbox suites, full repository gate, and signed-in restored Docker preview/source flow passed.
 - 2026-08-15 WEB-18-FIX-15 done — Replaced placeholder More navigation with compact semantic icons, labeled the active surface, added Lovable-style nested Cloud navigation with truthful API-backed content, and passed 25/25 builder shell plus 136/136 browser tests, 37/37 web unit tests, lint/typecheck, desktop and 680px acceptance.
 - 2026-08-15 WEB-18-FIX-14 done — Isolated long-running Next development in ignored `.next-dev` output while preserving explicit E2E directories and the production `.next` contract; the focused configuration suite passed 4/4, web lint passed with one pre-existing image warning, typecheck and production build passed, and eight concurrent plus one post-build port-3000 probes all returned HTTP 200 while `.next` was deleted and rebuilt.
 - 2026-08-15 WEB-18-FIX-13 done — Confirmed the affected durable Docker volume still held its branch, source tree, dependencies, and uncommitted work but retained an obsolete development-tunnel Git origin; reattach now validates the scoped organization/project repository path independently of the rotating host, rejects foreign paths, and scrubs the origin to the current credential-free URL. The focused Git bootstrap suite passed 7 tests with 1 live-environment skip, sandbox lint/typecheck passed, and the full sandbox suite passed 210 tests with 19 provider-gated skips.

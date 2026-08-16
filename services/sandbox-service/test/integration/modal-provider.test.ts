@@ -3674,7 +3674,7 @@ describe('agent proxy and unguarded conformance', () => {
     const devRequest = sdk.sandbox.agentRequests.find(
       (request) => request.method === 'POST' && request.path === '/dev-server/start',
     );
-    const installRequest = sdk.sandbox.agentRequests.find((request) => {
+    const installRequests = sdk.sandbox.agentRequests.filter((request) => {
       if (request.method !== 'POST' || request.path !== '/exec') return false;
       const body = JSON.parse(Buffer.from(request.body ?? []).toString('utf8')) as {
         cmd?: string;
@@ -3682,16 +3682,21 @@ describe('agent proxy and unguarded conformance', () => {
       };
       return body.cmd === 'sh' && body.args?.at(-1) === EXECUTION_CONTRACT.install.command;
     });
+    const installRequest = installRequests[0];
     if (installRequest === undefined || devRequest === undefined) {
-      throw new Error('Expected dependency installation before dev-server start');
+      throw new Error('Expected dependency installation before each dev-server operation');
     }
+    expect(installRequests).toHaveLength(2);
     expect(installRequest.timeoutMs).toBe(130_000);
-    expect(JSON.parse(Buffer.from(installRequest.body ?? []).toString('utf8'))).toEqual({
-      cmd: 'sh',
-      args: ['-lc', EXECUTION_CONTRACT.install.command],
-      cwd: EXECUTION_CONTRACT.workspace_root,
-      timeoutMs: 120_000,
-    });
+    for (const request of installRequests) {
+      expect(JSON.parse(Buffer.from(request.body ?? []).toString('utf8'))).toEqual({
+        cmd: 'sh',
+        args: ['-lc', EXECUTION_CONTRACT.install.command],
+        cwd: EXECUTION_CONTRACT.workspace_root,
+        env: { CI: '1', NODE_ENV: 'development' },
+        timeoutMs: 120_000,
+      });
+    }
     expect(sdk.sandbox.agentRequests.indexOf(installRequest)).toBeLessThan(
       sdk.sandbox.agentRequests.indexOf(devRequest),
     );
