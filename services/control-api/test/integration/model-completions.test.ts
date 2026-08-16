@@ -74,9 +74,11 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
       await tx`insert into organizations (id, name, slug) values (${organizationId}, 'Usage', ${organizationId})`;
       await tx`insert into projects (id, organization_id, name, slug, source_type, support_level, created_by)
                values (${projectId}, ${organizationId}, 'Usage', ${projectId}, 'prompt', 'compatible', ${userId})`;
+      await tx`insert into conversations (id, organization_id, project_id, created_by, title)
+               values (${`conv_${runId.slice(4)}`}, ${organizationId}, ${projectId}, ${userId}, 'Usage run')`;
       await tx`insert into agent_runs
-               (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, budget_json, plan_max_credits)
-               values (${runId}, ${organizationId}, ${projectId}, 'build', 'web', ${'f'.repeat(64)}, 'running', ${userId}, ${JSON.stringify({ maxCredits: 10 })}::jsonb, 10)`;
+               (id, organization_id, project_id, conversation_id, conversation_run_number, mode, app_type, request_fingerprint, status, started_by, budget_json, plan_max_credits)
+               values (${runId}, ${organizationId}, ${projectId}, ${`conv_${runId.slice(4)}`}, 1, 'build', 'web', ${'f'.repeat(64)}, 'running', ${userId}, ${JSON.stringify({ maxCredits: 10 })}::jsonb, 10)`;
       await tx`insert into agent_phases
                (id, organization_id, run_id, sequence, title, status, acceptance_criteria_json)
                values (${phaseId}, ${organizationId}, ${runId}, 1, 'Build', 'running', '[]'::jsonb)`;
@@ -178,9 +180,11 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
       await tx`insert into organizations (id, name, slug) values (${otherOrganizationId}, 'Other', ${otherOrganizationId})`;
       await tx`insert into projects (id, organization_id, name, slug, source_type, support_level, created_by)
                values (${otherProjectId}, ${otherOrganizationId}, 'Other', ${otherProjectId}, 'prompt', 'compatible', ${userId})`;
+      await tx`insert into conversations (id, organization_id, project_id, created_by, title)
+               values (${`conv_${otherRunId.slice(4)}`}, ${otherOrganizationId}, ${otherProjectId}, ${userId}, 'Other run')`;
       await tx`insert into agent_runs
-               (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, budget_json, plan_max_credits)
-               values (${otherRunId}, ${otherOrganizationId}, ${otherProjectId}, 'build', 'web', ${'e'.repeat(64)}, 'running', ${userId}, ${JSON.stringify({ maxCredits: 10 })}::jsonb, 10)`;
+               (id, organization_id, project_id, conversation_id, conversation_run_number, mode, app_type, request_fingerprint, status, started_by, budget_json, plan_max_credits)
+               values (${otherRunId}, ${otherOrganizationId}, ${otherProjectId}, ${`conv_${otherRunId.slice(4)}`}, 1, 'build', 'web', ${'e'.repeat(64)}, 'running', ${userId}, ${JSON.stringify({ maxCredits: 10 })}::jsonb, 10)`;
       await tx`insert into agent_phases
                (id, organization_id, run_id, sequence, title, status, acceptance_criteria_json)
                values (${otherPhaseId}, ${otherOrganizationId}, ${otherRunId}, 1, 'Other', 'running', '[]'::jsonb)`;
@@ -385,11 +389,17 @@ describe.skipIf(!hasDatabase)('OPS-1A completion accounting repository', () => {
     const activeRunIds = [runId, newId('run'), newId('run')];
     for (const [index, activeRunId] of activeRunIds.slice(1).entries()) {
       await database.sql`
+        insert into conversations (id, organization_id, project_id, created_by, title)
+        values (${`conv_${activeRunId.slice(4)}`}, ${organizationId}, ${projectId}, ${userId}, ${`Active run ${String(index + 1)}`})
+      `;
+      await database.sql`
         insert into agent_runs
-          (id, organization_id, project_id, mode, app_type, request_fingerprint, status,
+          (id, organization_id, project_id, conversation_id, conversation_run_number,
+           mode, app_type, request_fingerprint, status,
            started_by, budget_json, plan_max_credits)
         values
-          (${activeRunId}, ${organizationId}, ${projectId}, 'build', 'web',
+          (${activeRunId}, ${organizationId}, ${projectId}, ${`conv_${activeRunId.slice(4)}`}, 1,
+           'build', 'web',
            ${String(index + 1).repeat(64)}, 'running', ${userId},
            ${JSON.stringify({ maxCredits: 10 })}::jsonb, 10)
       `;

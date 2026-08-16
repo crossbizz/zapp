@@ -7,6 +7,52 @@ void client.request('/v1/runs/{runId}', {
   path: { runId: 'run_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
 });
 
+void client.request('/v1/projects/{projectId}/conversations', {
+  method: 'GET',
+  path: { projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+  query: { limit: 25, cursor: 'opaque-cursor' },
+});
+
+void client.request('/v1/conversations/{conversationId}/events', {
+  method: 'GET',
+  path: { conversationId: 'conv_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+  query: { limit: 100 },
+});
+
+void client.request('/v1/projects/{projectId}/runs', {
+  method: 'POST',
+  path: { projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC' },
+  headers: { 'idempotency-key': 'successor-run-types-01' },
+  body: {
+    mode: 'build',
+    prompt: 'Continue this conversation',
+    conversationId: 'conv_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+  },
+});
+
+void client.listProjectConversations('proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC', {
+  organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+  limit: 25,
+});
+
+void client.listConversationEvents('conv_01J8ME7YQZJ2V9Q0X3T5B6K7NC', {
+  organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+  cursor: 'opaque-cursor',
+});
+
+void client.createProjectRun(
+  'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+  {
+    mode: 'build',
+    prompt: 'Continue this conversation',
+    conversationId: 'conv_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+  },
+  {
+    organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NC',
+    idempotencyKey: 'successor-run-method-01',
+  },
+);
+
 void client.request('/v1/auth/device/token', {
   method: 'POST',
   body: { deviceCode: 'device-code' },

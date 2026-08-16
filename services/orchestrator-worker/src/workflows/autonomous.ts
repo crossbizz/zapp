@@ -50,6 +50,10 @@ import {
   skipOptionalPhaseEligibility,
   skipOptionalPhaseSignal,
 } from './builder-control.js';
+import {
+  MODEL_FACING_PROMPT_MAX_CHARS,
+  modelPromptWithPriorConversationContext,
+} from './conversation-context.js';
 
 const idSchema = (
   prefix: 'run' | 'org' | 'proj' | 'art' | 'rel' | 'phase' | 'task' | 'vr' | 'appr',
@@ -280,7 +284,10 @@ const ConductInterviewIdentity = {
     idempotencyKey: ActivityKeySchema,
 } as const;
 export const ConductInterviewInputSchema = z.union([
-  z.object({ ...ConductInterviewIdentity, prompt: z.string().trim().min(1).max(20_000) }).strict(),
+  z.object({
+    ...ConductInterviewIdentity,
+    prompt: z.string().trim().min(1).max(MODEL_FACING_PROMPT_MAX_CHARS),
+  }).strict(),
   z.object({ ...ConductInterviewIdentity, interviewState: InterviewStateSchema }).strict(),
 ]);
 export const ConductInterviewResultSchema = z
@@ -330,7 +337,7 @@ export const ProducePlanInputSchema = z
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
     specificationVersionId: ArtifactReferenceSchema,
-    prompt: z.string().trim().min(1).max(20_000),
+    prompt: z.string().trim().min(1).max(MODEL_FACING_PROMPT_MAX_CHARS),
     idempotencyKey: ActivityKeySchema,
   })
   .strict();
@@ -1020,7 +1027,7 @@ async function prepareExecution(
       runId: input.runId,
       organizationId: input.organizationId,
       projectId: input.projectId,
-      prompt: input.prompt,
+      prompt: modelPromptWithPriorConversationContext(input),
       idempotencyKey: activityKey(input, 'interview'),
     });
   }
@@ -1169,7 +1176,7 @@ async function prepareExecution(
         organizationId: input.organizationId,
         projectId: input.projectId,
         specificationVersionId: approvedSpecification.specificationVersionId,
-        prompt: input.prompt,
+        prompt: modelPromptWithPriorConversationContext(input),
         idempotencyKey: activityKey(input, 'plan-produce'),
       }),
     ),

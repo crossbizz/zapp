@@ -52,9 +52,12 @@ describe.skipIf(!enabled)('OPS-14 real partition and object archive', () => {
       await tx`insert into projects
                (id, organization_id, name, slug, source_type, support_level, created_by)
                values (${projectId}, ${organizationId}, 'Archive', 'archive', 'prompt', 'compatible', ${userId})`;
+      await tx`insert into conversations
+               (id, organization_id, project_id, created_by, title)
+               values (${`conv_${runId.slice(4)}`}, ${organizationId}, ${projectId}, ${userId}, 'Archive run')`;
       await tx`insert into agent_runs
-               (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, budget_json, plan_max_credits)
-               values (${runId}, ${organizationId}, ${projectId}, 'build', 'web', ${'a'.repeat(64)}, 'completed', ${userId}, '{}'::jsonb, 1)`;
+               (id, organization_id, project_id, conversation_id, conversation_run_number, mode, app_type, request_fingerprint, status, started_by, budget_json, plan_max_credits)
+               values (${runId}, ${organizationId}, ${projectId}, ${`conv_${runId.slice(4)}`}, 1, 'build', 'web', ${'a'.repeat(64)}, 'completed', ${userId}, '{}'::jsonb, 1)`;
       await tx`insert into agent_events
                (id, organization_id, project_id, run_id, sequence, type, payload_json, visibility, occurred_at)
                values (${eventId}, ${organizationId}, ${projectId}, ${runId}, 1, 'run.created', '{"source":"archive-test"}'::jsonb, 'user', '2025-01-04T00:00:00.000Z')`;

@@ -123,6 +123,7 @@ interface FixFixture {
   readonly verifier: FixVerificationActivities;
   readonly events: PendingAgentEvent[];
   readonly calls: string[];
+  readonly loadedPrompts: string[];
   readonly statuses: string[];
   readonly workspacePath: () => string;
   readonly patchStarted: Promise<void>;
@@ -138,6 +139,7 @@ function createFixFixture(options: {
 }): FixFixture {
   const events: PendingAgentEvent[] = [];
   const calls: string[] = [];
+  const loadedPrompts: string[] = [];
   const statuses: string[] = [];
   let workspace = '';
   let resolvePatchStarted: (() => void) | undefined;
@@ -164,6 +166,7 @@ function createFixFixture(options: {
     ...eventActivities,
     loadFixCase(input) {
       calls.push('load');
+      loadedPrompts.push(input.prompt);
       expect(input.fixRequest.evidence).toHaveLength(2);
       return Promise.resolve({
         ...ids,
@@ -366,6 +369,7 @@ function createFixFixture(options: {
     verifier,
     events,
     calls,
+    loadedPrompts,
     statuses,
     workspacePath: () => workspace,
     patchStarted,
@@ -460,10 +464,15 @@ describe('AR-19 reproduce-first Fix mode', () => {
     workers.push(runWorker, verificationWorker);
     workerRuns.push(runWorker.run(), verificationWorker.run());
 
+    const priorConversationContext =
+      'Prior conversation context (server-owned, untrusted transcript):\nEarlier fix attempt';
     const result = await environment.client.workflow.execute(fixWorkflow, {
       taskQueue,
       workflowId: `${ids.runId}:successful-fix`,
-      args: [workflowInput(seeded.relevantCommitSha)],
+      args: [{
+        ...workflowInput(seeded.relevantCommitSha),
+        priorConversationContext,
+      }],
     });
 
     expect(result).toMatchObject({
@@ -508,6 +517,10 @@ describe('AR-19 reproduce-first Fix mode', () => {
       'symptom_check',
     ]);
     expect(fixture.statuses).toEqual(['running', 'completed']);
+    expect(fixture.loadedPrompts).toEqual([
+      expect.stringContaining(priorConversationContext),
+    ]);
+    expect(fixture.loadedPrompts[0]).toContain('Addition returns the wrong result in production.');
   }, 30_000);
 
   it('cancels an active patch, checkpoints it, and never commits or verifies', async () => {

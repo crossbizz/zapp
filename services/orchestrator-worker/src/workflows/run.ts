@@ -2019,6 +2019,12 @@ async function executeRunWorkflow(
               mode: input.mode,
               model: input.model,
               prompt: input.prompt,
+              ...(input.conversationContextArtifactId === undefined
+                ? {}
+                : { conversationContextArtifactId: input.conversationContextArtifactId }),
+              ...(input.priorConversationContext === undefined
+                ? {}
+                : { priorConversationContext: input.priorConversationContext }),
               allowedTools: [...guardrails.allowedTools],
               modeInstructions: guardrails.modeInstructions,
               budget: input.budget,

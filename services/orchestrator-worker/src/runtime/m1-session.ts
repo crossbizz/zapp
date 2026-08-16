@@ -248,7 +248,11 @@ function approximateTokens(value: string): number {
 }
 
 function contextFor(input: RunBuilderSessionInput): AssembledContext {
-  const tokenCount = approximateTokens(input.prompt);
+  const currentTaskTokenCount = approximateTokens(input.prompt);
+  const priorContextTokenCount =
+    input.priorConversationContext === undefined
+      ? 0
+      : approximateTokens(input.priorConversationContext);
   return AssembledContextSchema.parse({
     role: 'builder',
     scope: {
@@ -258,12 +262,26 @@ function contextFor(input: RunBuilderSessionInput): AssembledContext {
     },
     taskId: M1_TASK_ID,
     tokenBudget: M1_CONTEXT_TOKEN_BUDGET,
-    tokenCount,
+    tokenCount: currentTaskTokenCount + priorContextTokenCount,
     sections: [
+      ...(input.priorConversationContext === undefined
+        ? []
+        : [
+            {
+              kind: 'taskTranscript' as const,
+              content: input.priorConversationContext,
+              tokenCount: priorContextTokenCount,
+              sourceArtifactIds:
+                input.conversationContextArtifactId === undefined
+                  ? []
+                  : [input.conversationContextArtifactId],
+              sourceEventIds: [],
+            },
+          ]),
       {
         kind: 'currentTask',
         content: input.prompt,
-        tokenCount,
+        tokenCount: currentTaskTokenCount,
         sourceArtifactIds: [],
         sourceEventIds: [],
       },

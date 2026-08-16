@@ -5,6 +5,7 @@ import type { ServiceAudience } from '@zapp/config';
 import { AgentEventObjectSchema, newId } from '@zapp/contracts';
 import {
   agentRuns,
+  conversations,
   organizations,
   projects,
   users,
@@ -883,10 +884,20 @@ describe.skipIf(!hasDatabase || !hasRedis)('PostgreSQL NOTIFY to Redis fanout', 
       supportLevel: 'compatible',
       createdBy: userId,
     });
+    const conversationId = newId('conv');
+    await database.db.insert(conversations).values({
+      id: conversationId,
+      organizationId,
+      projectId,
+      createdBy: userId,
+      title: 'Publisher test run',
+    });
     await database.db.insert(agentRuns).values({
       id: currentRunId,
       organizationId,
       projectId,
+      conversationId,
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       requestFingerprint: `seed:${currentRunId}`,

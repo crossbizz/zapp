@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SignalRunInputSchema,
+  StartRunInputSchema,
+  projectTemporalRunStart,
   projectTemporalRunSignal,
 } from '../src/temporal-run.js';
 
@@ -12,6 +14,43 @@ const approvalId = 'appr_01J8ME7YQZJ2V9Q0X3T5B6K7NE';
 const artifactId = 'art_01J8ME7YQZJ2V9Q0X3T5B6K7NF';
 const specificationId = 'spec_01J8ME7YQZJ2V9Q0X3T5B6K7NG';
 const operationKey = `op_${'a'.repeat(64)}`;
+
+describe('conversation-aware Temporal starts', () => {
+  it('projects the durable conversation and optional successor context without breaking legacy starts', () => {
+    const conversationId = 'conv_01J8ME7YQZJ2V9Q0X3T5B6K7NH';
+    const priorConversationContext = 'Prior conversation context:\nEarlier request';
+    const input = {
+      runId,
+      workflowId: runId,
+      organizationId: 'org_01J8ME7YQZJ2V9Q0X3T5B6K7NJ',
+      projectId: 'proj_01J8ME7YQZJ2V9Q0X3T5B6K7NK',
+      conversationId,
+      conversationContextArtifactId: artifactId,
+      priorConversationContext,
+      branchId: null,
+      appType: 'web',
+      model: null,
+      prompt: 'Continue the selected conversation',
+      budget: { maxCredits: 100 },
+      planMaxCredits: 1_000,
+      operationKey,
+      mode: 'build',
+    } as const;
+    expect(StartRunInputSchema.parse(input)).toEqual(input);
+    expect(projectTemporalRunStart(input)).toMatchObject({
+      workflowType: 'buildWorkflow',
+      input: { conversationId, conversationContextArtifactId: artifactId, priorConversationContext },
+    });
+    expect(
+      StartRunInputSchema.safeParse({
+        ...input,
+        conversationId: undefined,
+        conversationContextArtifactId: undefined,
+        priorConversationContext: undefined,
+      }).success,
+    ).toBe(true);
+  });
+});
 
 describe('builder control Temporal signals', () => {
   it.each([

@@ -457,6 +457,8 @@ describe('public builder preview bridge', () => {
       id: newId('run'),
       organizationId: wired.organizationId,
       projectId: project.id,
+      conversationId: newId('conv'),
+      conversationRunNumber: 1,
       branchId: workspace.branchId,
       mode: 'build',
       appType: 'web',

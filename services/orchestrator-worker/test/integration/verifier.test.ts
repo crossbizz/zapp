@@ -554,10 +554,17 @@ describe('VF-10 independent verifyPhase activity', () => {
            'prompt', 'verified', ${fixture.userId})
       `;
       await database.sql`
+        insert into conversations (id, organization_id, project_id, created_by, title)
+        values (${`conv_${fixture.runId.slice(4)}`}, ${fixture.organizationId}, ${fixture.projectId},
+                ${fixture.userId}, 'Verifier run')
+      `;
+      await database.sql`
         insert into agent_runs
-          (id, organization_id, project_id, mode, app_type, request_fingerprint, status, started_by, plan_max_credits)
+          (id, organization_id, project_id, conversation_id, conversation_run_number,
+           mode, app_type, request_fingerprint, status, started_by, plan_max_credits)
         values
-          (${fixture.runId}, ${fixture.organizationId}, ${fixture.projectId}, 'build', 'web',
+          (${fixture.runId}, ${fixture.organizationId}, ${fixture.projectId},
+           ${`conv_${fixture.runId.slice(4)}`}, 1, 'build', 'web',
            ${'c'.repeat(64)}, 'running', ${fixture.userId}, 1000)
       `;
       await database.sql`

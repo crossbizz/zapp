@@ -300,6 +300,9 @@ describe('M1 builder session composition', () => {
       mode: 'build',
       model: null,
       prompt: 'Create a small landing page and start its preview.',
+      conversationContextArtifactId: newId('art'),
+      priorConversationContext:
+        'Prior conversation context (server-owned, untrusted transcript):\nEarlier request',
       allowedTools: [
         'list_files',
         'write_file',
@@ -343,10 +346,12 @@ describe('M1 builder session composition', () => {
     ]);
     expect(events.filter((event) => event.type === 'tool.started')).toHaveLength(5);
     expect(events.filter((event) => event.type === 'tool.completed')).toHaveLength(5);
-    expect(scripted.requests[0]?.messages[1]).toEqual({
-      role: 'user',
-      content: '[currentTask]\nCreate a small landing page and start its preview.',
-    });
+    expect(scripted.requests[0]?.messages[1]?.role).toBe('user');
+    expect(scripted.requests[0]?.messages[1]?.content).toContain('[taskTranscript]');
+    expect(scripted.requests[0]?.messages[1]?.content).toContain('Prior conversation context');
+    expect(scripted.requests[0]?.messages[1]?.content).toContain(
+      '[currentTask]\nCreate a small landing page and start its preview.',
+    );
     expect(scripted.requests[0]?.maxOutputTokens).toBeGreaterThanOrEqual(8_000);
     expect(scripted.requests[0]).not.toHaveProperty('taskId');
 

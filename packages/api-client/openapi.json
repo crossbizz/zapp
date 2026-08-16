@@ -8040,6 +8040,15 @@
                           "projectId": {
                             "type": "string"
                           },
+                          "conversationId": {
+                            "type": "string",
+                            "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "conversationRunNumber": {
+                            "type": "integer",
+                            "exclusiveMinimum": true,
+                            "minimum": 0
+                          },
                           "branchId": {
                             "type": "string",
                             "nullable": true
@@ -8092,6 +8101,8 @@
                           "id",
                           "organizationId",
                           "projectId",
+                          "conversationId",
+                          "conversationRunNumber",
                           "branchId",
                           "mode",
                           "appType",
@@ -8221,6 +8232,10 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 20000
+                      },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
                       },
                       "branchId": {
                         "type": "string",
@@ -8418,6 +8433,10 @@
                         "minLength": 1,
                         "maxLength": 20000
                       },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                      },
                       "branchId": {
                         "type": "string",
                         "pattern": "^br_[0-9A-HJKMNP-TV-Z]{26}$"
@@ -8512,6 +8531,15 @@
                         "projectId": {
                           "type": "string"
                         },
+                        "conversationId": {
+                          "type": "string",
+                          "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "conversationRunNumber": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0
+                        },
                         "branchId": {
                           "type": "string",
                           "nullable": true
@@ -8564,6 +8592,8 @@
                         "id",
                         "organizationId",
                         "projectId",
+                        "conversationId",
+                        "conversationRunNumber",
                         "branchId",
                         "mode",
                         "appType",
@@ -8575,10 +8605,55 @@
                         "completedAt"
                       ],
                       "additionalProperties": false
+                    },
+                    "conversation": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "organizationId": {
+                          "type": "string",
+                          "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "projectId": {
+                          "type": "string",
+                          "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "createdBy": {
+                          "type": "string",
+                          "pattern": "^user_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "title": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updatedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "organizationId",
+                        "projectId",
+                        "createdBy",
+                        "title",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
-                    "run"
+                    "run",
+                    "conversation"
                   ],
                   "additionalProperties": false
                 }
@@ -10982,6 +11057,502 @@
         }
       }
     },
+    "/v1/projects/{projectId}/conversations": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "projectId": {
+                            "type": "string",
+                            "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "latestRun": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "status": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "status"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "runCount": {
+                            "type": "integer",
+                            "exclusiveMinimum": true,
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "projectId",
+                          "title",
+                          "createdAt",
+                          "updatedAt",
+                          "latestRun",
+                          "runCount"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{conversationId}/events": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+            },
+            "in": "path",
+            "name": "conversationId",
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "runNumber": {
+                            "type": "integer",
+                            "exclusiveMinimum": true,
+                            "minimum": 0
+                          },
+                          "event": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^evt_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "runId": {
+                                "type": "string",
+                                "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "sequence": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "occurredAt": {
+                                "type": "string",
+                                "format": "date-time"
+                              },
+                              "organizationId": {
+                                "type": "string",
+                                "pattern": "^org_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "projectId": {
+                                "type": "string",
+                                "pattern": "^proj_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "phaseId": {
+                                "type": "string",
+                                "pattern": "^phase_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "taskId": {
+                                "type": "string",
+                                "pattern": "^task_[0-9A-HJKMNP-TV-Z]{26}$"
+                              },
+                              "agentId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "run.created",
+                                  "run.started",
+                                  "run.paused",
+                                  "run.resumed",
+                                  "run.cancelled",
+                                  "run.completed",
+                                  "phase.created",
+                                  "phase.started",
+                                  "phase.completed",
+                                  "task.created",
+                                  "task.started",
+                                  "task.blocked",
+                                  "task.updated",
+                                  "task.completed",
+                                  "task.failed",
+                                  "agent.started",
+                                  "agent.completed",
+                                  "message.user",
+                                  "message.assistant",
+                                  "message.applied",
+                                  "conversation.card",
+                                  "conversation.response",
+                                  "tool.started",
+                                  "tool.output",
+                                  "tool.completed",
+                                  "tool.failed",
+                                  "approval.requested",
+                                  "approval.resolved",
+                                  "artifact.created",
+                                  "commit.created",
+                                  "test.started",
+                                  "test.completed",
+                                  "verification.completed",
+                                  "preview.starting",
+                                  "preview.ready",
+                                  "preview.failed",
+                                  "release.created",
+                                  "deployment.updated",
+                                  "usage.recorded"
+                                ]
+                              },
+                              "visibility": {
+                                "type": "string",
+                                "enum": [
+                                  "user",
+                                  "internal",
+                                  "support"
+                                ]
+                              },
+                              "payload": {
+                                "type": "object",
+                                "additionalProperties": {}
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "runId",
+                              "sequence",
+                              "occurredAt",
+                              "organizationId",
+                              "projectId",
+                              "type",
+                              "visibility",
+                              "payload"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "runNumber",
+                          "event"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "requestId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/runs/{runId}/pause": {
       "post": {
         "parameters": [
@@ -11023,6 +11594,15 @@
                         },
                         "projectId": {
                           "type": "string"
+                        },
+                        "conversationId": {
+                          "type": "string",
+                          "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "conversationRunNumber": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0
                         },
                         "branchId": {
                           "type": "string",
@@ -11076,6 +11656,8 @@
                         "id",
                         "organizationId",
                         "projectId",
+                        "conversationId",
+                        "conversationRunNumber",
                         "branchId",
                         "mode",
                         "appType",
@@ -11228,6 +11810,15 @@
                         "projectId": {
                           "type": "string"
                         },
+                        "conversationId": {
+                          "type": "string",
+                          "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "conversationRunNumber": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0
+                        },
                         "branchId": {
                           "type": "string",
                           "nullable": true
@@ -11280,6 +11871,8 @@
                         "id",
                         "organizationId",
                         "projectId",
+                        "conversationId",
+                        "conversationRunNumber",
                         "branchId",
                         "mode",
                         "appType",
@@ -11432,6 +12025,15 @@
                         "projectId": {
                           "type": "string"
                         },
+                        "conversationId": {
+                          "type": "string",
+                          "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "conversationRunNumber": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0
+                        },
                         "branchId": {
                           "type": "string",
                           "nullable": true
@@ -11484,6 +12086,8 @@
                         "id",
                         "organizationId",
                         "projectId",
+                        "conversationId",
+                        "conversationRunNumber",
                         "branchId",
                         "mode",
                         "appType",
@@ -11657,6 +12261,15 @@
                         "projectId": {
                           "type": "string"
                         },
+                        "conversationId": {
+                          "type": "string",
+                          "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "conversationRunNumber": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0
+                        },
                         "branchId": {
                           "type": "string",
                           "nullable": true
@@ -11709,6 +12322,8 @@
                         "id",
                         "organizationId",
                         "projectId",
+                        "conversationId",
+                        "conversationRunNumber",
                         "branchId",
                         "mode",
                         "appType",
@@ -13690,6 +14305,15 @@
                         "projectId": {
                           "type": "string"
                         },
+                        "conversationId": {
+                          "type": "string",
+                          "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "conversationRunNumber": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0
+                        },
                         "branchId": {
                           "type": "string",
                           "nullable": true
@@ -13742,6 +14366,8 @@
                         "id",
                         "organizationId",
                         "projectId",
+                        "conversationId",
+                        "conversationRunNumber",
                         "branchId",
                         "mode",
                         "appType",
@@ -13947,6 +14573,7 @@
                         "agent.completed",
                         "message.user",
                         "message.assistant",
+                        "message.applied",
                         "conversation.card",
                         "conversation.response",
                         "tool.started",
@@ -14440,6 +15067,15 @@
                         "projectId": {
                           "type": "string"
                         },
+                        "conversationId": {
+                          "type": "string",
+                          "pattern": "^conv_[0-9A-HJKMNP-TV-Z]{26}$"
+                        },
+                        "conversationRunNumber": {
+                          "type": "integer",
+                          "exclusiveMinimum": true,
+                          "minimum": 0
+                        },
                         "branchId": {
                           "type": "string",
                           "nullable": true
@@ -14492,6 +15128,8 @@
                         "id",
                         "organizationId",
                         "projectId",
+                        "conversationId",
+                        "conversationRunNumber",
                         "branchId",
                         "mode",
                         "appType",

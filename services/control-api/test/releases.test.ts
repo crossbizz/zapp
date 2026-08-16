@@ -344,6 +344,8 @@ function seedCompletedRunForCommit(
     id: newId('run'),
     organizationId: wired.organizationId,
     projectId: wired.projectId,
+    conversationId: newId('conv'),
+    conversationRunNumber: 1,
     branchId: null,
     mode,
     appType: 'web',

@@ -364,13 +364,23 @@ describe('INT-3 GitHub synchronization engine', () => {
              ${`github-import:${projectId}`}, null, now(), now())
         `;
         await database.sql`
+          insert into conversations
+            (id, organization_id, project_id, created_by, title)
+          values
+            (${`conv_${runId.slice(4)}`}, ${organizationId}, ${projectId}, ${userId}, 'Sync run'),
+            (${`conv_${otherRunId.slice(4)}`}, ${organizationId}, ${projectId}, ${userId}, 'Other sync run')
+        `;
+        await database.sql`
           insert into agent_runs
-            (id, organization_id, project_id, branch_id, mode, model, request_fingerprint, status,
+            (id, organization_id, project_id, conversation_id, conversation_run_number,
+             branch_id, mode, model, request_fingerprint, status,
              specification_id, temporal_workflow_id, started_by, budget_json, plan_max_credits)
           values
-            (${runId}, ${organizationId}, ${projectId}, ${branchId}, 'build', null,
+            (${runId}, ${organizationId}, ${projectId}, ${`conv_${runId.slice(4)}`}, 1,
+             ${branchId}, 'build', null,
              'sync-db-fingerprint', 'running', null, 'sync-db-workflow', ${userId}, null, 1000),
-            (${otherRunId}, ${organizationId}, ${projectId}, ${otherBranchId}, 'build', null,
+            (${otherRunId}, ${organizationId}, ${projectId}, ${`conv_${otherRunId.slice(4)}`}, 1,
+             ${otherBranchId}, 'build', null,
              'sync-db-other-fingerprint', 'running', null, 'sync-db-other-workflow', ${userId}, null, 1000)
         `;
         await database.sql`

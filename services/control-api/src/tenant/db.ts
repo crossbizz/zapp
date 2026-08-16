@@ -19,6 +19,8 @@ import {
   artifacts,
   auditEvents,
   branches,
+  conversationContextArtifacts,
+  conversations,
   decisions,
   environments,
   forOrg,
@@ -42,6 +44,8 @@ import {
   type AgentEventRow,
   type AuditEvent,
   type Branch,
+  type Conversation,
+  type ConversationContextArtifact,
   type AgentRun,
   type AgentPhase,
   type AgentTask,
@@ -68,9 +72,30 @@ import {
   CapabilityScanArtifactMetadataSchema,
   type CapabilityScanResult,
 } from '@zapp/project-adapters';
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, lte, sql, type Column, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  ne,
+  or,
+  sql,
+  type Column,
+  type SQL,
+} from 'drizzle-orm';
 import { z } from 'zod';
 
+import {
+  ConversationContextValueSchema,
+  conversationContextHash,
+  type ConversationContextValue,
+} from '../conversations/context.js';
 import { isUniqueViolation } from '../db/errors.js';
 import {
   GitHubImportRequestSchema,
@@ -132,6 +157,47 @@ const RunControlAcknowledgementPayloadSchema = z
       .strict(),
   })
   .passthrough();
+
+const MAX_SUCCESSOR_CONTEXT_EVENTS = 200;
+const MAX_SUCCESSOR_CONTEXT_BYTES = 128 * 1024;
+
+interface SuccessorContextRow {
+  readonly runId: string;
+  readonly runNumber: number;
+  readonly sequence: number;
+  readonly type: string;
+  readonly payload: unknown;
+}
+
+function boundedSuccessorContext(input: {
+  readonly conversationId: string;
+  readonly sourceRunId: string;
+  readonly rows: readonly SuccessorContextRow[];
+}): ConversationContextValue {
+  const messages: SuccessorContextRow[] = [];
+  let byteSize = Buffer.byteLength(
+    JSON.stringify({
+      version: 1,
+      conversationId: input.conversationId,
+      sourceRunId: input.sourceRunId,
+      messages: [],
+    }),
+  );
+  for (let index = input.rows.length - 1; index >= 0; index -= 1) {
+    const row = input.rows[index];
+    if (row === undefined) continue;
+    const rowBytes = Buffer.byteLength(JSON.stringify(row)) + 1;
+    if (byteSize + rowBytes > MAX_SUCCESSOR_CONTEXT_BYTES) break;
+    messages.unshift(row);
+    byteSize += rowBytes;
+  }
+  return ConversationContextValueSchema.parse({
+    version: 1,
+    conversationId: input.conversationId,
+    sourceRunId: input.sourceRunId,
+    messages,
+  });
+}
 
 class StalePreviewMonitorError extends Error {}
 class ExpiredControlAcknowledgementError extends Error {}
@@ -403,6 +469,11 @@ export interface NewRunInput {
   /** HMAC of the request digest; the raw body-derived digest must never reach storage. */
   readonly requestFingerprint: string;
   readonly projectId: string;
+  /** Omitted only when this run atomically creates a new conversation. */
+  readonly conversationId?: string;
+  readonly newConversationId: string;
+  readonly conversationTitle: string;
+  readonly contextArtifactId: string;
   readonly branchId: string | null;
   readonly mode: RunMode;
   /** Local plan admission is serialized with this tenant's run creation. */
@@ -424,9 +495,57 @@ export interface NewRunInput {
 }
 
 export type RunCreateResult =
-  | { readonly outcome: 'created'; readonly run: AgentRun }
-  | { readonly outcome: 'recovered'; readonly run: AgentRun }
-  | { readonly outcome: 'conflict'; readonly run: AgentRun };
+  | {
+      readonly outcome: 'created' | 'recovered' | 'conflict';
+      readonly run: AgentRun;
+      readonly contextArtifactId: string | null;
+    }
+  | { readonly outcome: 'conversation_not_found' }
+  | { readonly outcome: 'conversation_run_active'; readonly activeRun: AgentRun };
+
+export interface ConversationListCursor {
+  readonly updatedAt: Date;
+  readonly id: string;
+}
+
+export interface ConversationEventCursor {
+  readonly runNumber: number;
+  readonly sequence: number;
+}
+
+export interface ConversationSummaryRow {
+  readonly conversation: Conversation;
+  readonly latestRun: AgentRun;
+  readonly runCount: number;
+}
+
+export interface ConversationEventRow {
+  readonly runNumber: number;
+  readonly event: AgentEventRow;
+}
+
+export interface ConversationListPage {
+  readonly items: ConversationSummaryRow[];
+  readonly nextCursor: ConversationListCursor | null;
+}
+
+export interface ConversationEventPage {
+  readonly items: ConversationEventRow[];
+  readonly nextCursor: ConversationEventCursor | null;
+}
+
+export interface TenantConversationRepository {
+  getById(conversationId: string): Promise<Conversation | undefined>;
+  listByProject(
+    projectId: string,
+    request: { readonly limit: number; readonly cursor?: ConversationListCursor },
+  ): Promise<ConversationListPage>;
+  listEvents(
+    conversationId: string,
+    request: { readonly limit: number; readonly cursor?: ConversationEventCursor },
+  ): Promise<ConversationEventPage>;
+  contextForRun(runId: string): Promise<ConversationContextArtifact | undefined>;
+}
 
 export interface ReadmitRunDispatchInput {
   readonly runId: string;
@@ -755,6 +874,7 @@ function integrationView(row: IntegrationConnection): IntegrationConnectionView 
 export interface TenantDatabase extends Omit<TenantDb, 'projects' | 'runs' | 'events'> {
   readonly projects: TenantProjectRepository;
   readonly projectSummaries: TenantProjectSummaryRepository;
+  readonly conversations: TenantConversationRepository;
   readonly runs: TenantRunRepository;
   readonly workspaces: TenantWorkspaceRepository;
   readonly repositories: TenantRepositoryRepository;
@@ -1945,6 +2065,149 @@ export function createTenantDbFactory(
         },
       },
 
+      conversations: {
+        async getById(conversationId): Promise<Conversation | undefined> {
+          const [conversation] = await db
+            .select()
+            .from(conversations)
+            .where(
+              scoped(
+                conversations.organizationId,
+                eq(conversations.id, conversationId),
+              ),
+            )
+            .limit(1);
+          return conversation;
+        },
+
+        async listByProject(projectId, request): Promise<ConversationListPage> {
+          const limit = z.number().int().min(1).max(100).parse(request.limit);
+          const cursorPredicate =
+            request.cursor === undefined
+              ? undefined
+              : or(
+                  lt(conversations.updatedAt, request.cursor.updatedAt),
+                  and(
+                    eq(conversations.updatedAt, request.cursor.updatedAt),
+                    lt(conversations.id, request.cursor.id),
+                  ),
+                );
+          const rows = await db
+            .select({
+              conversation: conversations,
+              runCount: sql<number>`count(${agentRuns.id})::int`,
+              latestRunId: sql<string>`(array_agg(${agentRuns.id} order by ${agentRuns.conversationRunNumber} desc))[1]`,
+            })
+            .from(conversations)
+            .innerJoin(
+              agentRuns,
+              and(
+                eq(agentRuns.organizationId, conversations.organizationId),
+                eq(agentRuns.conversationId, conversations.id),
+              ),
+            )
+            .where(
+              scoped(
+                conversations.organizationId,
+                eq(conversations.projectId, projectId),
+                ...(cursorPredicate === undefined ? [] : [cursorPredicate]),
+              ),
+            )
+            .groupBy(conversations.id)
+            .orderBy(desc(conversations.updatedAt), desc(conversations.id))
+            .limit(limit + 1);
+          const visible = rows.slice(0, limit);
+          const latestIds = visible.map((row) => row.latestRunId);
+          const latestRuns =
+            latestIds.length === 0
+              ? []
+              : await db
+                  .select()
+                  .from(agentRuns)
+                  .where(
+                    scoped(agentRuns.organizationId, inArray(agentRuns.id, latestIds)),
+                  );
+          const latestById = new Map(latestRuns.map((run) => [run.id, run]));
+          const items = visible.map((row) => {
+            const latestRun = latestById.get(row.latestRunId);
+            if (latestRun === undefined) {
+              throw new Error('conversation latest run disappeared during list');
+            }
+            return {
+              conversation: row.conversation,
+              latestRun,
+              runCount: row.runCount,
+            };
+          });
+          const last = items.at(-1)?.conversation;
+          return {
+            items,
+            nextCursor:
+              rows.length > limit && last !== undefined
+                ? { updatedAt: last.updatedAt, id: last.id }
+                : null,
+          };
+        },
+
+        async listEvents(conversationId, request): Promise<ConversationEventPage> {
+          const limit = z.number().int().min(1).max(100).parse(request.limit);
+          const cursorPredicate =
+            request.cursor === undefined
+              ? undefined
+              : or(
+                  gt(agentRuns.conversationRunNumber, request.cursor.runNumber),
+                  and(
+                    eq(agentRuns.conversationRunNumber, request.cursor.runNumber),
+                    gt(agentEvents.sequence, request.cursor.sequence),
+                  ),
+                );
+          const rows = await db
+            .select({ runNumber: agentRuns.conversationRunNumber, event: agentEvents })
+            .from(agentRuns)
+            .innerJoin(
+              agentEvents,
+              and(
+                eq(agentEvents.organizationId, agentRuns.organizationId),
+                eq(agentEvents.runId, agentRuns.id),
+              ),
+            )
+            .where(
+              scoped(
+                agentRuns.organizationId,
+                eq(agentRuns.conversationId, conversationId),
+                eq(agentEvents.organizationId, orgId),
+                eq(agentEvents.visibility, 'user'),
+                ...(cursorPredicate === undefined ? [] : [cursorPredicate]),
+              ),
+            )
+            .orderBy(asc(agentRuns.conversationRunNumber), asc(agentEvents.sequence))
+            .limit(limit + 1);
+          const items = rows.slice(0, limit);
+          const last = items.at(-1);
+          return {
+            items,
+            nextCursor:
+              rows.length > limit && last !== undefined
+                ? { runNumber: last.runNumber, sequence: last.event.sequence }
+                : null,
+          };
+        },
+
+        async contextForRun(runId): Promise<ConversationContextArtifact | undefined> {
+          const [artifact] = await db
+            .select()
+            .from(conversationContextArtifacts)
+            .where(
+              scoped(
+                conversationContextArtifacts.organizationId,
+                eq(conversationContextArtifacts.runId, runId),
+              ),
+            )
+            .limit(1);
+          return artifact;
+        },
+      },
+
       runs: {
         ...base.runs,
 
@@ -1992,19 +2255,38 @@ export function createTenantDbFactory(
 
         async create(input: NewRunInput): Promise<RunCreateResult> {
           return await db.transaction(async (tx) => {
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(hashtext(${orgId}), hashtext(${input.id}))`,
+            );
             if (input.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined) {
               await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${orgId}))`);
-              const [replay] = await tx
-                .select()
-                .from(agentRuns)
-                .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.id)))
+            }
+            const [replay] = await tx
+              .select()
+              .from(agentRuns)
+              .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.id)))
+              .limit(1);
+            if (replay !== undefined) {
+              const [artifact] = await tx
+                .select({ id: conversationContextArtifacts.id })
+                .from(conversationContextArtifacts)
+                .where(
+                  scoped(
+                    conversationContextArtifacts.organizationId,
+                    eq(conversationContextArtifacts.runId, replay.id),
+                  ),
+                )
                 .limit(1);
-              if (replay !== undefined) {
-                return {
-                  outcome: replay.requestFingerprint === input.requestFingerprint ? 'recovered' : 'conflict',
-                  run: replay,
-                };
-              }
+              return {
+                outcome:
+                  replay.requestFingerprint === input.requestFingerprint
+                    ? 'recovered'
+                    : 'conflict',
+                run: replay,
+                contextArtifactId: artifact?.id ?? null,
+              };
+            }
+            if (input.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined) {
               const [active] = await tx
                 .select({ count: sql<number>`count(*)::int` })
                 .from(agentRuns)
@@ -2012,12 +2294,88 @@ export function createTenantDbFactory(
               if ((active?.count ?? 0) >= input.concurrentAutonomousLimit)
                 throw new PlanLimitConcurrentRunsError();
             }
+
+            let conversation: Conversation;
+            let runNumber = 1;
+            let sourceRun: AgentRun | undefined;
+            if (input.conversationId === undefined) {
+              const [createdConversation] = await tx
+                .insert(conversations)
+                .values({
+                  id: input.newConversationId,
+                  organizationId: orgId,
+                  projectId: input.projectId,
+                  createdBy: input.startedBy,
+                  title: input.conversationTitle,
+                  createdAt: input.now,
+                  updatedAt: input.now,
+                })
+                .onConflictDoNothing()
+                .returning();
+              if (createdConversation === undefined) {
+                throw new Error('new conversation id collided without a replayable run');
+              }
+              conversation = createdConversation;
+            } else {
+              const [lockedConversation] = await tx
+                .update(conversations)
+                .set({ updatedAt: sql`${conversations.updatedAt}` })
+                .where(
+                  scoped(
+                    conversations.organizationId,
+                    eq(conversations.id, input.conversationId),
+                    eq(conversations.projectId, input.projectId),
+                  ),
+                )
+                .returning();
+              if (lockedConversation === undefined) {
+                return { outcome: 'conversation_not_found' };
+              }
+              conversation = lockedConversation;
+              const [activeRun] = await tx
+                .select()
+                .from(agentRuns)
+                .where(
+                  scoped(
+                    agentRuns.organizationId,
+                    eq(agentRuns.conversationId, conversation.id),
+                    inArray(agentRuns.status, [
+                      'queued',
+                      'running',
+                      'paused',
+                      'waiting_for_approval',
+                    ]),
+                  ),
+                )
+                .limit(1);
+              if (activeRun !== undefined) {
+                return { outcome: 'conversation_run_active', activeRun };
+              }
+              [sourceRun] = await tx
+                .select()
+                .from(agentRuns)
+                .where(
+                  scoped(
+                    agentRuns.organizationId,
+                    eq(agentRuns.conversationId, conversation.id),
+                  ),
+                )
+                .orderBy(desc(agentRuns.conversationRunNumber))
+                .limit(1);
+              if (sourceRun === undefined) {
+                throw new Error('existing conversation has no source run');
+              }
+              runNumber = sourceRun.conversationRunNumber + 1;
+            }
+
             const [inserted] = await tx
               .insert(agentRuns)
               .values({
                 id: input.id,
                 organizationId: orgId,
                 projectId: input.projectId,
+                conversationId: conversation.id,
+                conversationRunNumber: runNumber,
                 branchId: input.branchId,
                 mode: input.mode,
                 appType: input.appType,
@@ -2048,66 +2406,242 @@ export function createTenantDbFactory(
                 version: 0,
                 updatedAt: input.now,
               });
+              let contextArtifactId: string | null = null;
+              if (sourceRun !== undefined) {
+                const messageRows = await tx
+                  .select({
+                    runId: agentRuns.id,
+                    runNumber: agentRuns.conversationRunNumber,
+                    sequence: agentEvents.sequence,
+                    type: agentEvents.type,
+                    payload: agentEvents.payloadJson,
+                  })
+                  .from(agentRuns)
+                  .innerJoin(
+                    agentEvents,
+                    and(
+                      eq(agentEvents.organizationId, agentRuns.organizationId),
+                      eq(agentEvents.runId, agentRuns.id),
+                    ),
+                  )
+                  .where(
+                    scoped(
+                      agentRuns.organizationId,
+                      eq(agentRuns.conversationId, conversation.id),
+                      eq(agentEvents.organizationId, orgId),
+                      eq(agentEvents.visibility, 'user'),
+                      inArray(agentEvents.type, ['message.user', 'message.assistant']),
+                      lte(agentRuns.conversationRunNumber, sourceRun.conversationRunNumber),
+                    ),
+                  )
+                  .orderBy(
+                    desc(agentRuns.conversationRunNumber),
+                    desc(agentEvents.sequence),
+                  )
+                  .limit(MAX_SUCCESSOR_CONTEXT_EVENTS);
+                const context = boundedSuccessorContext({
+                  conversationId: conversation.id,
+                  sourceRunId: sourceRun.id,
+                  rows: [...messageRows].reverse(),
+                });
+                await tx.insert(conversationContextArtifacts).values({
+                  id: input.contextArtifactId,
+                  organizationId: orgId,
+                  projectId: input.projectId,
+                  conversationId: conversation.id,
+                  runId: inserted.id,
+                  sourceRunId: sourceRun.id,
+                  contentHash: conversationContextHash(context),
+                  contextJson: context,
+                  createdAt: input.now,
+                });
+                contextArtifactId = input.contextArtifactId;
+              }
+              await tx
+                .update(conversations)
+                .set({ updatedAt: input.now })
+                .where(
+                  scoped(
+                    conversations.organizationId,
+                    eq(conversations.id, conversation.id),
+                  ),
+                );
               input.authorize(inserted);
               await input.audit(tx, inserted);
-              return { outcome: 'created', run: inserted };
+              return { outcome: 'created', run: inserted, contextArtifactId };
             }
             const [run] = await tx
               .select()
               .from(agentRuns)
               .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.id)))
               .limit(1);
-            if (run === undefined)
+            if (run === undefined) {
+              const [activeRun] = await tx
+                .select()
+                .from(agentRuns)
+                .where(
+                  scoped(
+                    agentRuns.organizationId,
+                    eq(agentRuns.conversationId, conversation.id),
+                    inArray(agentRuns.status, [
+                      'queued',
+                      'running',
+                      'paused',
+                      'waiting_for_approval',
+                    ]),
+                  ),
+                )
+                .limit(1);
+              if (activeRun !== undefined) {
+                return { outcome: 'conversation_run_active', activeRun };
+              }
               throw new Error('run intent was not found after insert conflict');
+            }
+            const [artifact] = await tx
+              .select({ id: conversationContextArtifacts.id })
+              .from(conversationContextArtifacts)
+              .where(
+                scoped(
+                  conversationContextArtifacts.organizationId,
+                  eq(conversationContextArtifacts.runId, run.id),
+                ),
+              )
+              .limit(1);
             return {
               outcome:
                 run.requestFingerprint === input.requestFingerprint ? 'recovered' : 'conflict',
               run,
+              contextArtifactId: artifact?.id ?? null,
             };
           });
         },
 
         async readmitDispatch(input): Promise<RunCreateResult | undefined> {
-          return await db.transaction(async (tx) => {
-            await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${orgId}))`);
-            const [existing] = await tx
+          try {
+            return await db.transaction(async (tx) => {
+              await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${orgId}))`);
+              const [existing] = await tx
+                .select()
+                .from(agentRuns)
+                .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
+                .limit(1);
+              if (existing === undefined) return undefined;
+              const [artifact] = await tx
+                .select({ id: conversationContextArtifacts.id })
+                .from(conversationContextArtifacts)
+                .where(
+                  scoped(
+                    conversationContextArtifacts.organizationId,
+                    eq(conversationContextArtifacts.runId, existing.id),
+                  ),
+                )
+                .limit(1);
+              if (existing.requestFingerprint !== input.requestFingerprint) {
+                return {
+                  outcome: 'conflict',
+                  run: existing,
+                  contextArtifactId: artifact?.id ?? null,
+                };
+              }
+              if (existing.status !== 'dispatch_failed') {
+                return {
+                  outcome: 'recovered',
+                  run: existing,
+                  contextArtifactId: artifact?.id ?? null,
+                };
+              }
+              const [lockedConversation] = await tx
+                .update(conversations)
+                .set({ updatedAt: sql`${conversations.updatedAt}` })
+                .where(
+                  scoped(
+                    conversations.organizationId,
+                    eq(conversations.id, existing.conversationId),
+                    eq(conversations.projectId, existing.projectId),
+                  ),
+                )
+                .returning({ id: conversations.id });
+              if (lockedConversation === undefined) {
+                return { outcome: 'conversation_not_found' };
+              }
+              const [activeRun] = await tx
+                .select()
+                .from(agentRuns)
+                .where(
+                  scoped(
+                    agentRuns.organizationId,
+                    eq(agentRuns.conversationId, existing.conversationId),
+                    ne(agentRuns.id, existing.id),
+                    inArray(agentRuns.status, [
+                      'queued',
+                      'running',
+                      'paused',
+                      'waiting_for_approval',
+                    ]),
+                  ),
+                )
+                .limit(1);
+              if (activeRun !== undefined) {
+                return { outcome: 'conversation_run_active', activeRun };
+              }
+              if (existing.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined) {
+                const [active] = await tx
+                  .select({ count: sql<number>`count(*)::int` })
+                  .from(agentRuns)
+                  .where(and(
+                    eq(agentRuns.organizationId, orgId),
+                    eq(agentRuns.mode, 'autonomous'),
+                    inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
+                  ));
+                if ((active?.count ?? 0) >= input.concurrentAutonomousLimit) {
+                  throw new PlanLimitConcurrentRunsError();
+                }
+              }
+              const [readmitted] = await tx
+                .update(agentRuns)
+                .set({ status: 'queued' })
+                .where(scoped(
+                  agentRuns.organizationId,
+                  eq(agentRuns.id, input.runId),
+                  eq(agentRuns.status, 'dispatch_failed'),
+                ))
+                .returning();
+              if (readmitted === undefined) return undefined;
+              await input.audit(tx, readmitted);
+              return {
+                outcome: 'recovered',
+                run: readmitted,
+                contextArtifactId: artifact?.id ?? null,
+              };
+            });
+          } catch (error) {
+            if (!isUniqueViolation(error, ['agent_runs_conversation_active_idx'])) throw error;
+            const [failedRun] = await db
               .select()
               .from(agentRuns)
               .where(scoped(agentRuns.organizationId, eq(agentRuns.id, input.runId)))
               .limit(1);
-            if (existing === undefined) return undefined;
-            if (existing.requestFingerprint !== input.requestFingerprint) {
-              return { outcome: 'conflict', run: existing };
-            }
-            if (existing.status !== 'dispatch_failed') {
-              return { outcome: 'recovered', run: existing };
-            }
-            if (existing.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined) {
-              const [active] = await tx
-                .select({ count: sql<number>`count(*)::int` })
-                .from(agentRuns)
-                .where(and(
-                  eq(agentRuns.organizationId, orgId),
-                  eq(agentRuns.mode, 'autonomous'),
-                  inArray(agentRuns.status, ['queued', 'running', 'paused', 'waiting_for_approval']),
-                ));
-              if ((active?.count ?? 0) >= input.concurrentAutonomousLimit) {
-                throw new PlanLimitConcurrentRunsError();
-              }
-            }
-            const [readmitted] = await tx
-              .update(agentRuns)
-              .set({ status: 'queued' })
-              .where(scoped(
-                agentRuns.organizationId,
-                eq(agentRuns.id, input.runId),
-                eq(agentRuns.status, 'dispatch_failed'),
-              ))
-              .returning();
-            if (readmitted === undefined) return undefined;
-            await input.audit(tx, readmitted);
-            return { outcome: 'recovered', run: readmitted };
-          });
+            if (failedRun === undefined) return undefined;
+            const [activeRun] = await db
+              .select()
+              .from(agentRuns)
+              .where(
+                scoped(
+                  agentRuns.organizationId,
+                  eq(agentRuns.conversationId, failedRun.conversationId),
+                  ne(agentRuns.id, failedRun.id),
+                  inArray(agentRuns.status, [
+                    'queued',
+                    'running',
+                    'paused',
+                    'waiting_for_approval',
+                  ]),
+                ),
+              )
+              .limit(1);
+            if (activeRun === undefined) throw error;
+            return { outcome: 'conversation_run_active', activeRun };
+          }
         },
 
         async markDispatchFailed(input): Promise<AgentRun | undefined> {

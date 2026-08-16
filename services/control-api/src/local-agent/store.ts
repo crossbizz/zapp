@@ -5,6 +5,7 @@ import {
   agentPhases,
   agentRuns,
   agentTasks,
+  conversations,
   desktopLocalAgentSessions,
   organizations,
   projects,
@@ -94,6 +95,7 @@ export function createLocalAgentSessionRepository(
         const planMaxCredits = planLimitsFor(options.plans, organization.plan).maxRunBudgetCredits;
 
         const projectId = newId('proj');
+        const conversationId = newId('conv');
         const runId = newId('run');
         const phaseId = newId('phase');
         const taskId = newId('task');
@@ -113,10 +115,21 @@ export function createLocalAgentSessionRepository(
           createdAt: input.now,
           archivedAt: input.now,
         });
+        await tx.insert(conversations).values({
+          id: conversationId,
+          organizationId: input.organizationId,
+          projectId,
+          createdBy: input.userId,
+          title: 'Desktop local agent',
+          createdAt: input.now,
+          updatedAt: input.now,
+        });
         await tx.insert(agentRuns).values({
           id: runId,
           organizationId: input.organizationId,
           projectId,
+          conversationId,
+          conversationRunNumber: 1,
           branchId: null,
           mode: 'build',
           appType: 'web',

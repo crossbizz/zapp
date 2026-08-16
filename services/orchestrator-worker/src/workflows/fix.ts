@@ -26,6 +26,10 @@ import {
   decodeBudgetApprovalResolution,
   immutableRunCeiling,
 } from './budget-approval.js';
+import {
+  MODEL_FACING_PROMPT_MAX_CHARS,
+  modelPromptWithPriorConversationContext,
+} from './conversation-context.js';
 
 const workflowIdSchema = (
   prefix: 'run' | 'org' | 'proj' | 'br' | 'phase' | 'task' | 'art' | 'vr',
@@ -81,7 +85,7 @@ const LoadFixCaseInputSchema = z
     runId: workflowIdSchema('run'),
     organizationId: workflowIdSchema('org'),
     projectId: workflowIdSchema('proj'),
-    prompt: z.string().trim().min(1).max(20_000),
+    prompt: z.string().trim().min(1).max(MODEL_FACING_PROMPT_MAX_CHARS),
     fixRequest: FixRequestSchema,
   })
   .strict();
@@ -796,7 +800,7 @@ export async function fixWorkflow(inputValue: unknown): Promise<FixWorkflowResul
             runId: input.runId,
             organizationId: input.organizationId,
             projectId: input.projectId,
-            prompt: input.prompt,
+            prompt: modelPromptWithPriorConversationContext(input),
             fixRequest: input.fixRequest,
           }),
         ),

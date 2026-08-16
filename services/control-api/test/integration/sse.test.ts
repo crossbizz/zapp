@@ -1,5 +1,5 @@
 import { AgentEventSchema, newId } from '@zapp/contracts';
-import { agentEvents, agentRuns, organizations, projects, users } from '@zapp/db';
+import { agentEvents, agentRuns, conversations, organizations, projects, users } from '@zapp/db';
 import { OutgoingMessage, ServerResponse } from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -307,10 +307,20 @@ describe.skipIf(!hasDatabase)('resumable run SSE stream', () => {
       supportLevel: 'compatible',
       createdBy: userId,
     });
+    const conversationId = newId('conv');
+    await database.db.insert(conversations).values({
+      id: conversationId,
+      organizationId,
+      projectId,
+      createdBy: userId,
+      title: 'SSE test run',
+    });
     await database.db.insert(agentRuns).values({
       id: runId,
       organizationId,
       projectId,
+      conversationId,
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       requestFingerprint: `seed:${runId}`,

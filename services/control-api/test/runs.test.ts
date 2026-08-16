@@ -291,6 +291,9 @@ function newRunInput(id: string) {
     workflowId: id,
     requestFingerprint: 'a'.repeat(64),
     projectId: newId('proj'),
+    newConversationId: newId('conv'),
+    conversationTitle: 'Run create queue test',
+    contextArtifactId: newId('art'),
     branchId: null,
     mode: 'build' as const,
     appType: 'web' as const,
@@ -858,6 +861,8 @@ describe('POST /v1/projects/:projectId/runs', () => {
       id: newId('run'),
       organizationId: wired.organizationId,
       projectId: project.id,
+      conversationId: newId('conv'),
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       appType: 'web',
@@ -1071,6 +1076,59 @@ describe('POST /v1/projects/:projectId/runs', () => {
     expect(organizations.settingsReads).toBe(1);
   });
 
+  it('does not readmit a failed dispatch after its conversation starts a successor', async () => {
+    const wired = await wire();
+    const project = await createProject(wired);
+    wired.orchestrator.failStarts = 1;
+    const originalHeaders = {
+      ...wired.as(wired.owner),
+      'idempotency-key': 'failed-dispatch-with-successor-01',
+    };
+    const originalPayload = {
+      mode: 'build',
+      prompt: 'Create the initial conversation run',
+    } as const;
+
+    const failed = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: originalHeaders,
+      payload: originalPayload,
+    });
+    expect(failed.statusCode, failed.body).toBe(502);
+    const failedRun = wired.data.runs[0];
+    expect(failedRun).toMatchObject({ status: 'dispatch_failed' });
+    if (failedRun === undefined) throw new Error('failed dispatch was not persisted');
+
+    const successor = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: {
+        ...wired.as(wired.owner),
+        'idempotency-key': 'active-successor-before-readmission-01',
+      },
+      payload: {
+        mode: 'build',
+        prompt: 'Continue in the same conversation',
+        conversationId: failedRun.conversationId,
+      },
+    });
+    expect(successor.statusCode, successor.body).toBe(201);
+
+    const retry = await wired.built.app.inject({
+      method: 'POST',
+      url: `/v1/projects/${project.id}/runs`,
+      headers: originalHeaders,
+      payload: originalPayload,
+    });
+    expect(retry.statusCode, retry.body).toBe(409);
+    expect(retry.json<{ error: { code: string } }>().error.code).toBe(
+      'conversation_run_active',
+    );
+    expect(wired.data.runs.map(({ status }) => status)).toEqual(['dispatch_failed', 'queued']);
+    expect(wired.orchestrator.starts).toHaveLength(2);
+  });
+
   it('preserves a persisted studio cap when the plan downgrades before dispatch retry', async () => {
     const wired = await wire({ planLimits: TEST_PLAN_LIMITS });
     const project = await createProject(wired);
@@ -1206,6 +1264,8 @@ describe('POST /v1/projects/:projectId/runs', () => {
       id: newId('run'),
       organizationId: foreignOrganizationId,
       projectId: foreignProjectId,
+      conversationId: newId('conv'),
+      conversationRunNumber: 1,
       branchId: foreignBranch.id,
       mode: 'build',
       appType: 'web',
@@ -1304,6 +1364,8 @@ describe('POST /v1/projects/:projectId/runs', () => {
       id: newId('run'),
       organizationId: newId('org'),
       projectId: newId('proj'),
+      conversationId: newId('conv'),
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       appType: 'web',
@@ -1734,6 +1796,8 @@ describe('workspace passthrough routes', () => {
         id: newId('run'),
         organizationId: wired.organizationId,
         projectId: project.id,
+        conversationId: newId('conv'),
+        conversationRunNumber: 1,
         branchId: null,
         mode: 'build',
         appType: 'web',
@@ -1831,6 +1895,8 @@ describe('workspace passthrough routes', () => {
       id: newId('run'),
       organizationId: foreignOrganizationId,
       projectId: foreignProjectId,
+      conversationId: newId('conv'),
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       appType: 'web',

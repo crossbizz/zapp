@@ -372,12 +372,12 @@ Execution expansion (2026-08-12):
 **ADR:** ADR-0034. **Files:** Modify conversation/event contracts, planning/execution schema and migration, run/conversation routes and tenant repositories, OpenAPI/generated SDK, composition, tests, this plan, Plans 04/08, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-durable-project-conversations.md`.
 **Effort:** XL. **[expand-at-execution]**
 
-- [ ] **28a RED/GREEN — schema foundation:** add strict conversation/history and `message.applied` contracts; add tenant-scoped conversations, ordered run membership, immutable successor-context artifacts, and durable Builder transcripts; migrate every legacy run into a deterministic conversation without changing event or accounting counts.
-- [ ] **28b RED/GREEN — public API:** expose bounded newest-first project conversation summaries and deterministic structured cross-run event history; extend keyed run creation so omission atomically creates a conversation and a terminal conversation creates one successor with bounded server-owned context.
-- [ ] **28c isolation/race proof:** return 404 for foreign projects/conversations/runs/events, reject concurrent successors with `conversation_run_active`, preserve stable idempotent replay, and filter internal events from public history.
-- [ ] **28d SDK/verification:** regenerate OpenAPI and `@zapp/api-client`; run focused contracts, DB, control-api, SDK, integration, lint/typecheck/build and architecture gates; visibly report infrastructure-gated skips.
-- [ ] Binding interfaces: `GET /v1/projects/:projectId/conversations`, `GET /v1/conversations/:conversationId/events`, optional `conversationId` on `POST /v1/projects/:projectId/runs`, `message.applied`, and generated SDK methods. No UI-private route.
-- [ ] Step commits: `feat(db): add durable project conversations`, then `feat(control-api): add public conversation history` with tracker/log completion in the second commit.
+- [x] **28a RED/GREEN — schema foundation:** add strict conversation/history and `message.applied` contracts; add tenant-scoped conversations, ordered run membership, immutable successor-context artifacts, and durable Builder transcripts; migrate every legacy run into a deterministic conversation without changing event or accounting counts.
+- [x] **28b RED/GREEN — public API:** expose bounded newest-first project conversation summaries and deterministic structured cross-run event history; extend keyed run creation so omission atomically creates a conversation and a terminal conversation creates one successor with bounded server-owned context.
+- [x] **28c isolation/race proof:** return 404 for foreign projects/conversations/runs/events, reject concurrent successors with `conversation_run_active`, preserve stable idempotent replay, and filter internal events from public history.
+- [x] **28d SDK/verification:** regenerate OpenAPI and `@zapp/api-client`; run focused contracts, DB, control-api, SDK, integration, lint/typecheck/build and architecture gates; visibly report infrastructure-gated skips.
+- [x] Binding interfaces: `GET /v1/projects/:projectId/conversations`, `GET /v1/conversations/:conversationId/events`, optional `conversationId` on `POST /v1/projects/:projectId/runs`, `message.applied`, and generated SDK methods. No UI-private route.
+- [x] Step commits: `feat(db): add durable project conversations`, then `feat(control-api): add public conversation history` with tracker/log completion in the second commit.
 
 ---
 
@@ -396,6 +396,7 @@ Execution expansion (2026-08-12):
 
 ## Execution log
 - 2026-08-12 CP-26 done — Added public member/pending-invite directory and secret-free integration list/disconnect including Vercel, retained existing settings/archive/deletion timeline, regenerated the SDK, and passed focused 52/52 control, 56/56 SDK, 5/5 Redis invite, lint, and typecheck gates.
+- 2026-08-16 CP-28 done — Added tenant-scoped project conversations, ordered cross-run history, verified successor context, concurrency-safe keyed creation, and named generated SDK methods; PostgreSQL checks skipped visibly because `DATABASE_URL` is unset.
 
 - (empty)
 

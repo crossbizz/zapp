@@ -107,6 +107,7 @@ import {
   type AttachmentStoragePort,
 } from './routes/attachments.js';
 import { registerAuditRoutes } from './routes/audit.js';
+import { registerConversationRoutes } from './routes/conversations.js';
 import { registerAdminRoutes, type AdminRoutesConfig } from './routes/admin.js';
 import { createUnavailableForkActivity, type ForkActivity } from './activities/fork.js';
 import { registerForkRoutes } from './routes/forks.js';
@@ -758,6 +759,7 @@ export function buildApp(deps: AppDeps = {}): AppInstance {
           });
           registerGitHubImportRoutes(app, now);
           registerSpecificationRoutes(app, { now });
+          registerConversationRoutes(app);
           registerRunRoutes(app, {
             now,
             runIntentHmacKey: resolvedRunIntentHmacKey(runIntentHmacKey),

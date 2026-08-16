@@ -596,11 +596,17 @@ describe.skipIf(!hasDatabase)('the project lifecycle, on PostgreSQL', () => {
           '2026-08-13T18:04:00.000Z')
     `;
     await database.sql`
+      insert into conversations (id, organization_id, project_id, created_by, title)
+      values (${`conv_${summaryRunId.slice(4)}`}, ${organizationId}, ${first.project.id}, ${owner.userId}, 'Summary run')
+    `;
+    await database.sql`
       insert into agent_runs (
-        id, organization_id, project_id, mode, app_type, request_fingerprint,
+        id, organization_id, project_id, conversation_id, conversation_run_number,
+        mode, app_type, request_fingerprint,
         status, started_by, budget_json, plan_max_credits
       ) values (
-        ${summaryRunId}, ${organizationId}, ${first.project.id}, 'build', 'web',
+        ${summaryRunId}, ${organizationId}, ${first.project.id},
+        ${`conv_${summaryRunId.slice(4)}`}, 1, 'build', 'web',
         ${'b'.repeat(64)}, 'completed', ${owner.userId}, '{}'::jsonb, 1
       )
     `;

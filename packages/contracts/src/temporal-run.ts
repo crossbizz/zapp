@@ -19,6 +19,12 @@ const StartRunIdentityShape = {
   workflowId: z.string().min(1).max(255),
   organizationId: idSchema('org'),
   projectId: idSchema('proj'),
+  /** Present on every post-ADR-0034 start; optional only for replay-compatible legacy histories. */
+  conversationId: idSchema('conv').optional(),
+  /** Immutable bounded prior-thread context for a successor run. */
+  conversationContextArtifactId: idSchema('art').optional(),
+  /** Hash-verified server projection of the artifact, never supplied by a client. */
+  priorConversationContext: z.string().min(1).max(46_000).optional(),
   branchId: idSchema('br').nullable(),
   appType: AppTypeSchema,
   model: ModelIdentifierSchema.nullable(),
@@ -50,6 +56,9 @@ export const AutonomousWorkflowStartInputSchema = z
     runId: idSchema('run'),
     organizationId: idSchema('org'),
     projectId: idSchema('proj'),
+    conversationId: idSchema('conv').optional(),
+    conversationContextArtifactId: idSchema('art').optional(),
+    priorConversationContext: z.string().min(1).max(46_000).optional(),
     prompt: z.string().trim().min(1).max(20_000),
     model: ModelIdentifierSchema.nullable(),
     budget: RunBudgetSchema.nullable(),
@@ -85,6 +94,15 @@ export function projectTemporalRunStart(value: unknown): TemporalRunStartProject
         runId: input.runId,
         organizationId: input.organizationId,
         projectId: input.projectId,
+        ...(input.conversationId === undefined
+          ? {}
+          : { conversationId: input.conversationId }),
+        ...(input.conversationContextArtifactId === undefined
+          ? {}
+          : { conversationContextArtifactId: input.conversationContextArtifactId }),
+        ...(input.priorConversationContext === undefined
+          ? {}
+          : { priorConversationContext: input.priorConversationContext }),
         prompt: input.prompt,
         model: input.model,
         budget: input.budget,

@@ -7,6 +7,7 @@ import {
   ConversationCardEventPayloadSchema,
   ConversationCardResponseSchema,
   ConversationResponseEventPayloadSchema,
+  ConversationSchema,
   CreditDecimalSchema,
   FixRequestSchema,
   MessageUserPayloadSchema,
@@ -18,6 +19,7 @@ import { z } from 'zod';
 
 import type { AppInstance } from '../app.js';
 import { ApiError } from '../errors.js';
+import { verifiedPriorConversationContext } from '../conversations/context.js';
 import {
   registerRunEventStreamRoute,
   type EventStreamAuthorizationContext,
@@ -62,6 +64,7 @@ const RunBudgetSchema = z
   .strict();
 const CreateRunBodyShape = {
   prompt: z.string().trim().min(1).max(20_000),
+  conversationId: idSchema('conv').optional(),
   branchId: idSchema('br').optional(),
   budget: RunBudgetSchema.optional(),
   appType: AppTypeSchema.default('web'),
@@ -296,7 +299,7 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       schema: {
         params: ProjectParams,
         body: CreateRunBody,
-        response: { 201: z.object({ run: RunSchema }) },
+        response: { 201: z.object({ run: RunSchema, conversation: ConversationSchema }).strict() },
       },
     },
     async (request, reply) => {
@@ -346,7 +349,10 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
       const requestFingerprint = createHmac('sha256', deps.runIntentHmacKey)
         .update(idempotency.fingerprint)
         .digest('hex');
-      const operationKey = creationOperationOf(request);
+      const operationKey = creationOperationOf(request, {
+        organizationId: ctx.organizationId,
+        actorId: actorOf(request),
+      });
       const runId = stableId('run', operationKey);
       const organization =
         deps.planLimits === undefined
@@ -392,6 +398,12 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             workflowId: runId,
             requestFingerprint,
             projectId: project.id,
+            ...(request.body.conversationId === undefined
+              ? {}
+              : { conversationId: request.body.conversationId }),
+            newConversationId: stableId('conv', operationKey),
+            conversationTitle: conversationTitle(request.body.prompt),
+            contextArtifactId: stableId('art', `${operationKey}\nconversation-context`),
             branchId: branch.id,
             mode: request.body.mode,
             ...(request.body.mode === 'autonomous' && limit !== undefined
@@ -444,6 +456,8 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           if (error instanceof PlanLimitConcurrentRunsError) throw planLimitConcurrentRuns();
           throw error;
         }
+        if (created.outcome === 'conversation_not_found') throw conversationNotFound();
+        if (created.outcome === 'conversation_run_active') throw conversationRunActive();
         if (created.outcome === 'conflict') throw idempotencyConflict();
         run = created.run;
       } else if (run.status === 'dispatch_failed') {
@@ -469,9 +483,24 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           throw error;
         }
         if (readmitted === undefined) throw runNotFound();
+        if (readmitted.outcome === 'conversation_not_found') throw conversationNotFound();
+        if (readmitted.outcome === 'conversation_run_active') throw conversationRunActive();
         if (readmitted.outcome === 'conflict') throw idempotencyConflict();
         run = readmitted.run;
       }
+      const conversation = await ctx.db.conversations.getById(run.conversationId);
+      if (conversation === undefined) {
+        throw new Error('Run conversation disappeared before dispatch');
+      }
+      const conversationContextArtifact = await ctx.db.conversations.contextForRun(run.id);
+      const priorConversationContext =
+        conversationContextArtifact === undefined
+          ? undefined
+          : verifiedPriorConversationContext(
+              conversationContextArtifact,
+              run,
+              request.body.prompt,
+            );
       try {
         const started = await deps.orchestrator.startRun(
           StartRunInputSchema.parse({
@@ -479,6 +508,11 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
             workflowId: run.temporalWorkflowId ?? run.id,
             organizationId: run.organizationId,
             projectId: run.projectId,
+            conversationId: run.conversationId,
+            ...(conversationContextArtifact === undefined
+              ? {}
+              : { conversationContextArtifactId: conversationContextArtifact.id }),
+            ...(priorConversationContext === undefined ? {} : { priorConversationContext }),
             branchId: run.branchId,
             mode: run.mode,
             appType: run.appType,
@@ -510,7 +544,18 @@ export function registerRunRoutes(app: AppInstance, deps: RunRoutesDeps): void {
           throw workflowFailed();
         throw error;
       }
-      return await reply.status(201).send({ run: toRun(run) });
+      return await reply.status(201).send({
+        run: toRun(run),
+        conversation: ConversationSchema.parse({
+          id: conversation.id,
+          organizationId: conversation.organizationId,
+          projectId: conversation.projectId,
+          createdBy: conversation.createdBy,
+          title: conversation.title,
+          createdAt: conversation.createdAt.toISOString(),
+          updatedAt: conversation.updatedAt.toISOString(),
+        }),
+      });
     },
   );
 
@@ -1327,11 +1372,14 @@ function operationOf(request: {
     `op_${createHash('sha256').update(`${idempotency.key}\n${idempotency.fingerprint}`).digest('hex')}`,
   );
 }
-function creationOperationOf(request: {
-  idempotency?: { key: string; fingerprint: string };
-}): z.infer<typeof OperationKeySchema> {
+function creationOperationOf(
+  request: { idempotency?: { key: string; fingerprint: string } },
+  scope: { readonly organizationId: string; readonly actorId: string },
+): z.infer<typeof OperationKeySchema> {
   return OperationKeySchema.parse(
-    `op_${createHash('sha256').update(idempotencyOf(request).key).digest('hex')}`,
+    `op_${createHash('sha256')
+      .update(`${scope.organizationId}\n${scope.actorId}\n${idempotencyOf(request).key}`)
+      .digest('hex')}`,
   );
 }
 function idempotencyOf(request: { idempotency?: { key: string; fingerprint: string } }): {
@@ -1342,7 +1390,7 @@ function idempotencyOf(request: { idempotency?: { key: string; fingerprint: stri
     throw new ApiError('idempotency_key_required', 400, 'An Idempotency-Key header is required.');
   return request.idempotency;
 }
-function stableId(prefix: 'run' | 'ws' | 'msg' | 'art', operationKey: string): string {
+function stableId(prefix: 'run' | 'conv' | 'ws' | 'msg' | 'art', operationKey: string): string {
   const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
   const bytes = createHash('sha256').update(operationKey).digest();
   let bits = 0;
@@ -1359,8 +1407,21 @@ function stableId(prefix: 'run' | 'ws' | 'msg' | 'art', operationKey: string): s
   }
   return `${prefix}_${output}`;
 }
+function conversationTitle(prompt: string): string {
+  return prompt.replace(/\s+/gu, ' ').trim().slice(0, 160);
+}
 function runNotFound(): ApiError {
   return new ApiError('run_not_found', 404, 'That run does not exist.');
+}
+function conversationNotFound(): ApiError {
+  return new ApiError('conversation_not_found', 404, 'That conversation does not exist.');
+}
+function conversationRunActive(): ApiError {
+  return new ApiError(
+    'conversation_run_active',
+    409,
+    'That conversation already has an active run.',
+  );
 }
 function referencedArtifactId(value: unknown): string | undefined {
   return z

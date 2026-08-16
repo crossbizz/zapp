@@ -187,6 +187,19 @@ export interface ZappClient {
     path: Path,
     options: RequestOptions<Path, Method>,
   ): Promise<SuccessfulResponse<Operation<Path, Method>>>;
+  listProjectConversations(
+    projectId: string,
+    options: ListProjectConversationsOptions,
+  ): Promise<ListProjectConversationsResponse>;
+  listConversationEvents(
+    conversationId: string,
+    options: ListConversationEventsOptions,
+  ): Promise<ListConversationEventsResponse>;
+  createProjectRun(
+    projectId: string,
+    body: CreateProjectRunRequest,
+    options: CreateProjectRunOptions,
+  ): Promise<CreateProjectRunResponse>;
   subscribeRunEvents(runId: string, options: SubscribeRunEventsOptions): EventSubscription;
   subscribePreviewEvents(
     workspaceId: string,
@@ -206,6 +219,35 @@ export type LocalAgentCompletionEvent =
 
 export interface LocalAgentCompletionOptions {
   readonly organizationId: string;
+  readonly signal?: AbortSignal;
+}
+
+export type ListProjectConversationsResponse =
+  paths['/v1/projects/{projectId}/conversations']['get']['responses'][200]['content']['application/json'];
+export type ListConversationEventsResponse =
+  paths['/v1/conversations/{conversationId}/events']['get']['responses'][200]['content']['application/json'];
+export type CreateProjectRunRequest =
+  paths['/v1/projects/{projectId}/runs']['post']['requestBody']['content']['application/json'];
+export type CreateProjectRunResponse =
+  paths['/v1/projects/{projectId}/runs']['post']['responses'][201]['content']['application/json'];
+
+export interface ListProjectConversationsOptions {
+  readonly organizationId: string;
+  readonly limit?: number;
+  readonly cursor?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface ListConversationEventsOptions {
+  readonly organizationId: string;
+  readonly limit?: number;
+  readonly cursor?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface CreateProjectRunOptions {
+  readonly organizationId: string;
+  readonly idempotencyKey: string;
   readonly signal?: AbortSignal;
 }
 
@@ -279,7 +321,7 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
   const fetch: FetchImplementation =
     options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 
-  return {
+  const client: ZappClient = {
     async request<Path extends PublicApiPath, Method extends PublicApiMethod<Path>>(
       path: Path,
       requestOptions: RequestOptions<Path, Method>,
@@ -358,6 +400,45 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
       return parsed as SuccessfulResponse<Operation<Path, Method>>;
     },
 
+    async listProjectConversations(projectId, listOptions) {
+      return await client.request('/v1/projects/{projectId}/conversations', {
+        method: 'GET',
+        path: { projectId },
+        query: {
+          ...(listOptions.limit === undefined ? {} : { limit: listOptions.limit }),
+          ...(listOptions.cursor === undefined ? {} : { cursor: listOptions.cursor }),
+        },
+        headers: { 'x-organization-id': listOptions.organizationId },
+        ...(listOptions.signal === undefined ? {} : { signal: listOptions.signal }),
+      });
+    },
+
+    async listConversationEvents(conversationId, listOptions) {
+      return await client.request('/v1/conversations/{conversationId}/events', {
+        method: 'GET',
+        path: { conversationId },
+        query: {
+          ...(listOptions.limit === undefined ? {} : { limit: listOptions.limit }),
+          ...(listOptions.cursor === undefined ? {} : { cursor: listOptions.cursor }),
+        },
+        headers: { 'x-organization-id': listOptions.organizationId },
+        ...(listOptions.signal === undefined ? {} : { signal: listOptions.signal }),
+      });
+    },
+
+    async createProjectRun(projectId, body, createOptions) {
+      return await client.request('/v1/projects/{projectId}/runs', {
+        method: 'POST',
+        path: { projectId },
+        headers: {
+          'x-organization-id': createOptions.organizationId,
+          'idempotency-key': createOptions.idempotencyKey,
+        },
+        body,
+        ...(createOptions.signal === undefined ? {} : { signal: createOptions.signal }),
+      });
+    },
+
     subscribeRunEvents(
       runId: string,
       subscribeOptions: SubscribeRunEventsOptions,
@@ -430,6 +511,7 @@ export function createZappClient(options: ZappClientOptions): ZappClient {
       });
     },
   };
+  return client;
 }
 
 interface LocalAgentCompletionStreamInput {

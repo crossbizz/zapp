@@ -37,6 +37,8 @@ export const RunBuilderSessionInputSchema = z
     mode: RunModeSchema,
     model: z.string().min(1).max(160).nullable(),
     prompt: z.string().min(1).max(20_000),
+    conversationContextArtifactId: idSchema('art').optional(),
+    priorConversationContext: z.string().min(1).max(46_000).optional(),
     allowedTools: z.array(z.enum(TOOL_NAMES)).superRefine((tools, validation) => {
       if (new Set(tools).size !== tools.length) {
         validation.addIssue({ code: z.ZodIssueCode.custom, message: 'Allowed tools must be unique' });

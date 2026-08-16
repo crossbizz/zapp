@@ -9,6 +9,8 @@ import type {
   Artifact,
   AuditEvent,
   Branch,
+  Conversation,
+  ConversationContextArtifact,
   Deployment,
   Environment,
   GitHubImport,
@@ -28,6 +30,10 @@ import type {
   Workspace,
 } from '@zapp/db';
 
+import {
+  ConversationContextValueSchema,
+  conversationContextHash,
+} from '../../src/conversations/context.js';
 import { NO_TRANSACTION } from '../../src/plugins/audit.js';
 import {
   GitHubImportRowSchema,
@@ -148,6 +154,8 @@ export class InMemoryTenantData {
   /** Completed PATCH operation keys per tenant-scoped specification. */
   readonly specificationOperations = new Map<string, Set<string>>();
   readonly runs: AgentRun[] = [];
+  readonly conversations: Conversation[] = [];
+  readonly conversationContextArtifacts: ConversationContextArtifact[] = [];
   readonly runAccounting = new Map<string, NewRunInput['accounting']>();
   readonly events: AgentEventRow[] = [];
   readonly phases: AgentPhase[] = [];
@@ -1123,6 +1131,84 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       },
     },
 
+    conversations: {
+      getById(conversationId) {
+        return Promise.resolve(
+          mine(orgId, data.conversations).find((row) => row.id === conversationId),
+        );
+      },
+      listByProject(projectId, request) {
+        const rows = mine(orgId, data.conversations)
+          .filter((row) => row.projectId === projectId)
+          .filter((row) =>
+            request.cursor === undefined
+              ? true
+              : row.updatedAt.getTime() < request.cursor.updatedAt.getTime() ||
+                (row.updatedAt.getTime() === request.cursor.updatedAt.getTime() &&
+                  row.id < request.cursor.id),
+          )
+          .sort(
+            (left, right) =>
+              right.updatedAt.getTime() - left.updatedAt.getTime() ||
+              right.id.localeCompare(left.id),
+          );
+        const visible = rows.slice(0, request.limit);
+        const items = visible.map((conversation) => {
+          const runs = mine(orgId, data.runs)
+            .filter((run) => run.conversationId === conversation.id)
+            .sort((left, right) => right.conversationRunNumber - left.conversationRunNumber);
+          const latestRun = runs[0];
+          if (latestRun === undefined) throw new Error('conversation has no run');
+          return { conversation, latestRun, runCount: runs.length };
+        });
+        const last = visible.at(-1);
+        return Promise.resolve({
+          items,
+          nextCursor:
+            rows.length > request.limit && last !== undefined
+              ? { updatedAt: last.updatedAt, id: last.id }
+              : null,
+        });
+      },
+      listEvents(conversationId, request) {
+        const runNumbers = new Map(
+          mine(orgId, data.runs)
+            .filter((run) => run.conversationId === conversationId)
+            .map((run) => [run.id, run.conversationRunNumber]),
+        );
+        const rows = mine(orgId, data.events)
+          .filter((event) => event.visibility === 'user' && runNumbers.has(event.runId))
+          .map((event) => ({ runNumber: runNumbers.get(event.runId) ?? 0, event }))
+          .filter((row) =>
+            request.cursor === undefined
+              ? true
+              : row.runNumber > request.cursor.runNumber ||
+                (row.runNumber === request.cursor.runNumber &&
+                  row.event.sequence > request.cursor.sequence),
+          )
+          .sort(
+            (left, right) =>
+              left.runNumber - right.runNumber || left.event.sequence - right.event.sequence,
+          );
+        const items = rows.slice(0, request.limit);
+        const last = items.at(-1);
+        return Promise.resolve({
+          items,
+          nextCursor:
+            rows.length > request.limit && last !== undefined
+              ? { runNumber: last.runNumber, sequence: last.event.sequence }
+              : null,
+        });
+      },
+      contextForRun(runId) {
+        return Promise.resolve(
+          mine(orgId, data.conversationContextArtifacts).find(
+            (artifact) => artifact.runId === runId,
+          ),
+        );
+      },
+    },
+
     runs: {
       byProject(projectId, limit): Promise<AgentRun[]> {
         const rows = mine(orgId, data.runs)
@@ -1156,51 +1242,153 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
       async create(input) {
         return await withRunCreateLock(
           data,
-          `${orgId}:${input.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined ? 'autonomous-admission' : input.id}`,
+          `${orgId}:${
+            input.mode === 'autonomous' && input.concurrentAutonomousLimit !== undefined
+              ? 'autonomous-admission'
+              : input.conversationId === undefined
+                ? `run:${input.id}`
+                : `conversation:${input.conversationId}`
+          }`,
           async () => {
-          const existing = mine(orgId, data.runs).find((row) => row.id === input.id);
-          if (existing !== undefined) {
+            const existing = mine(orgId, data.runs).find((row) => row.id === input.id);
+            if (existing !== undefined) {
+              const artifact = mine(orgId, data.conversationContextArtifacts).find(
+                (row) => row.runId === existing.id,
+              );
+              return {
+                outcome:
+                  existing.requestFingerprint === input.requestFingerprint
+                    ? 'recovered'
+                    : 'conflict',
+                run: existing,
+                contextArtifactId: artifact?.id ?? null,
+              } as const;
+            }
+            if (
+              input.mode === 'autonomous' &&
+              input.concurrentAutonomousLimit !== undefined &&
+              mine(orgId, data.runs).filter(
+                (row) =>
+                  row.mode === 'autonomous' &&
+                  ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+              ).length >= input.concurrentAutonomousLimit
+            )
+              throw new PlanLimitConcurrentRunsError();
+
+            const existingConversation =
+              input.conversationId === undefined
+                ? undefined
+                : mine(orgId, data.conversations).find(
+                    (row) =>
+                      row.id === input.conversationId && row.projectId === input.projectId,
+                  );
+            if (input.conversationId !== undefined && existingConversation === undefined) {
+              return { outcome: 'conversation_not_found' } as const;
+            }
+            const conversation: Conversation =
+              existingConversation ?? {
+                id: input.newConversationId,
+                organizationId: orgId,
+                projectId: input.projectId,
+                createdBy: input.startedBy,
+                title: input.conversationTitle,
+                createdAt: input.now,
+                updatedAt: input.now,
+              };
+            const conversationRuns = mine(orgId, data.runs)
+              .filter((row) => row.conversationId === conversation.id)
+              .sort(
+                (left, right) => right.conversationRunNumber - left.conversationRunNumber,
+              );
+            const activeRun = conversationRuns.find((row) =>
+              ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+            );
+            if (activeRun !== undefined) {
+              return { outcome: 'conversation_run_active', activeRun } as const;
+            }
+            const sourceRun = conversationRuns[0];
+            const run: AgentRun = {
+              id: input.id,
+              organizationId: orgId,
+              projectId: input.projectId,
+              conversationId: conversation.id,
+              conversationRunNumber: (sourceRun?.conversationRunNumber ?? 0) + 1,
+              branchId: input.branchId,
+              mode: input.mode,
+              appType: input.appType,
+              model: input.model,
+              requestFingerprint: input.requestFingerprint,
+              status: 'queued',
+              specificationId: null,
+              temporalWorkflowId: input.workflowId,
+              startedBy: input.startedBy,
+              budgetJson: input.budget,
+              planMaxCredits: input.planMaxCredits,
+              startedAt: input.now,
+              completedAt: null,
+            };
+            let contextArtifact: ConversationContextArtifact | undefined;
+            if (sourceRun !== undefined) {
+              const messages = mine(orgId, data.events)
+                .filter(
+                  (event) =>
+                    event.visibility === 'user' &&
+                    (event.type === 'message.user' || event.type === 'message.assistant') &&
+                    conversationRuns.some((candidate) => candidate.id === event.runId),
+                )
+                .map((event) => {
+                  const source = conversationRuns.find(
+                    (candidate) => candidate.id === event.runId,
+                  );
+                  return {
+                    runId: event.runId,
+                    runNumber: source?.conversationRunNumber ?? 0,
+                    sequence: event.sequence,
+                    type: event.type,
+                    payload: event.payloadJson,
+                  };
+                })
+                .sort(
+                  (left, right) =>
+                    left.runNumber - right.runNumber || left.sequence - right.sequence,
+                );
+              const contextJson = ConversationContextValueSchema.parse({
+                version: 1,
+                conversationId: conversation.id,
+                sourceRunId: sourceRun.id,
+                messages: messages.slice(-200),
+              });
+              contextArtifact = {
+                id: input.contextArtifactId,
+                organizationId: orgId,
+                projectId: input.projectId,
+                conversationId: conversation.id,
+                runId: run.id,
+                sourceRunId: sourceRun.id,
+                contentHash: conversationContextHash(contextJson),
+                contextJson,
+                createdAt: input.now,
+              };
+            }
+            input.authorize(run);
+            await input.audit(NO_TRANSACTION, run);
+            if (existingConversation === undefined) data.conversations.push(conversation);
+            else {
+              data.conversations.splice(data.conversations.indexOf(existingConversation), 1, {
+                ...existingConversation,
+                updatedAt: input.now,
+              });
+            }
+            data.runs.push(run);
+            if (contextArtifact !== undefined) {
+              data.conversationContextArtifacts.push(contextArtifact);
+            }
+            data.runAccounting.set(run.id, input.accounting);
             return {
-              outcome:
-                existing.requestFingerprint === input.requestFingerprint
-                  ? 'recovered'
-                  : 'conflict',
-              run: existing,
+              outcome: 'created',
+              run,
+              contextArtifactId: contextArtifact?.id ?? null,
             } as const;
-          }
-          if (
-            input.mode === 'autonomous' &&
-            input.concurrentAutonomousLimit !== undefined &&
-            mine(orgId, data.runs).filter(
-              (row) =>
-                row.mode === 'autonomous' &&
-                ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
-            ).length >= input.concurrentAutonomousLimit
-          )
-            throw new PlanLimitConcurrentRunsError();
-          const run: AgentRun = {
-            id: input.id,
-            organizationId: orgId,
-            projectId: input.projectId,
-            branchId: input.branchId,
-            mode: input.mode,
-            appType: input.appType,
-            model: input.model,
-            requestFingerprint: input.requestFingerprint,
-            status: 'queued',
-            specificationId: null,
-            temporalWorkflowId: input.workflowId,
-            startedBy: input.startedBy,
-            budgetJson: input.budget,
-            planMaxCredits: input.planMaxCredits,
-            startedAt: input.now,
-            completedAt: null,
-          };
-          input.authorize(run);
-          await input.audit(NO_TRANSACTION, run);
-          data.runs.push(run);
-          data.runAccounting.set(run.id, input.accounting);
-          return { outcome: 'created', run } as const;
           },
         );
       },
@@ -1208,11 +1396,31 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
         return await withRunCreateLock(data, `${orgId}:dispatch-readmission`, async () => {
           const existing = mine(orgId, data.runs).find((row) => row.id === input.runId);
           if (existing === undefined) return undefined;
+          const artifact = mine(orgId, data.conversationContextArtifacts).find(
+            (row) => row.runId === existing.id,
+          );
           if (existing.requestFingerprint !== input.requestFingerprint) {
-            return { outcome: 'conflict', run: existing } as const;
+            return {
+              outcome: 'conflict',
+              run: existing,
+              contextArtifactId: artifact?.id ?? null,
+            } as const;
           }
           if (existing.status !== 'dispatch_failed') {
-            return { outcome: 'recovered', run: existing } as const;
+            return {
+              outcome: 'recovered',
+              run: existing,
+              contextArtifactId: artifact?.id ?? null,
+            } as const;
+          }
+          const activeRun = mine(orgId, data.runs).find(
+            (row) =>
+              row.id !== existing.id &&
+              row.conversationId === existing.conversationId &&
+              ['queued', 'running', 'paused', 'waiting_for_approval'].includes(row.status),
+          );
+          if (activeRun !== undefined) {
+            return { outcome: 'conversation_run_active', activeRun } as const;
           }
           if (
             existing.mode === 'autonomous' &&
@@ -1226,7 +1434,11 @@ function handleFor(data: InMemoryTenantData, orgId: string): TenantDatabase {
           const readmitted = { ...existing, status: 'queued' };
           await input.audit(NO_TRANSACTION, readmitted);
           data.runs.splice(data.runs.indexOf(existing), 1, readmitted);
-          return { outcome: 'recovered', run: readmitted } as const;
+          return {
+            outcome: 'recovered',
+            run: readmitted,
+            contextArtifactId: artifact?.id ?? null,
+          } as const;
         });
       },
       async markDispatchFailed(input) {

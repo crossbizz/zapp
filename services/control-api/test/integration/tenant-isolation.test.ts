@@ -5,6 +5,7 @@ import {
   agentEvents,
   agentRuns,
   branches,
+  conversations,
   nextEventSequence,
   projectContracts,
   projects,
@@ -467,10 +468,20 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
       });
 
       const runId = newId('run');
+      const conversationId = newId('conv');
+      await database.db.insert(conversations).values({
+        id: conversationId,
+        organizationId,
+        projectId,
+        createdBy: owner.userId,
+        title: `${slug} ${name}`,
+      });
       await database.db.insert(agentRuns).values({
         id: runId,
         organizationId,
         projectId,
+        conversationId,
+        conversationRunNumber: 1,
         branchId,
         mode: 'build',
         requestFingerprint: `seed:${runId}`,
@@ -919,6 +930,9 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
             id,
             workflowId: id,
             projectId: a.projectIds[0] ?? '',
+            newConversationId: newId('conv'),
+            conversationTitle: 'Concurrent run create',
+            contextArtifactId: newId('art'),
             branchId: null,
             mode: 'build',
             appType: 'web',
@@ -971,6 +985,9 @@ describe.skipIf(!hasDatabase)('tenant isolation', () => {
             id,
             workflowId: id,
             projectId: a.projectIds[0] ?? '',
+            newConversationId: newId('conv'),
+            conversationTitle: 'Conflicting run create',
+            contextArtifactId: newId('art'),
             branchId: null,
             mode: 'build',
             appType: 'mobile',

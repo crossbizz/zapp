@@ -8,6 +8,13 @@ export {
   type FetchImplementation,
   type FetchResponse,
   type ClientHeaders,
+  type CreateProjectRunOptions,
+  type CreateProjectRunRequest,
+  type CreateProjectRunResponse,
+  type ListConversationEventsOptions,
+  type ListConversationEventsResponse,
+  type ListProjectConversationsOptions,
+  type ListProjectConversationsResponse,
   type PublicApiMethod,
   type PublicApiPath,
   type QueryValue,
@@ -20,4 +27,9 @@ export {
   type ZappClientOptions,
 } from './client.js';
 export type { components, operations, paths, webhooks } from './generated.js';
-export type { BuilderPreviewEvent, ConversationCard } from '@zapp/contracts';
+export type {
+  BuilderPreviewEvent,
+  ConversationCard,
+  ConversationEvent,
+  ConversationSummary,
+} from '@zapp/contracts';

@@ -141,6 +141,8 @@ describe('CP-24 public builder artifact surfaces', () => {
       id: runId,
       organizationId,
       projectId,
+      conversationId: newId('conv'),
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       appType: 'web',

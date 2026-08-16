@@ -103,6 +103,8 @@ async function wire(options: { readonly enabled?: boolean } = {}): Promise<Wired
     id: newId('run'),
     organizationId,
     projectId,
+    conversationId: newId('conv'),
+    conversationRunNumber: 1,
     branchId: null,
     mode: 'build',
     appType: 'web',

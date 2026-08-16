@@ -51,7 +51,7 @@
 - Consumes: existing `idSchema`, `AgentEventObjectSchema`, `agentRuns`, `agentEvents`, tenant composite project foreign keys.
 - Produces: `ConversationSchema`, `ConversationSummarySchema`, `ConversationEventSchema`, `ConversationPageSchema`, `ConversationEventPageSchema`, `MessageAppliedPayloadSchema`, `conversations`, immutable run-linked `conversationContextArtifacts`, `builderSessionTranscripts`, and required `agentRuns.conversationId` / `agentRuns.conversationRunNumber` fields.
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 ```ts
 it('validates durable conversation summaries and cross-run event identities', () => {
@@ -78,13 +78,13 @@ it('accepts only structured message.applied payloads', () => {
 });
 ```
 
-- [ ] **Step 2: Run contract tests to verify RED**
+- [x] **Step 2: Run contract tests to verify RED**
 
 Run: `pnpm --filter @zapp/contracts test -- conversations.test.ts events.test.ts`
 
 Expected: FAIL because `conv`, conversation schemas, and `message.applied` do not exist.
 
-- [ ] **Step 3: Implement the conversation and event schemas**
+- [x] **Step 3: Implement the conversation and event schemas**
 
 ```ts
 export const ConversationSummarySchema = z.object({
@@ -110,7 +110,7 @@ export const MessageAppliedPayloadSchema = z.object({
 
 Add `conv` to the closed ID prefix union, add `message.applied` to `AGENT_EVENT_TYPES`, validate its payload in the event discriminant/refinement, and export all new schemas from `@zapp/contracts`.
 
-- [ ] **Step 4: Write failing database schema and migration tests**
+- [x] **Step 4: Write failing database schema and migration tests**
 
 ```ts
 it('defines one ordered conversation and durable transcript per scoped run task', () => {
@@ -123,13 +123,13 @@ it('defines one ordered conversation and durable transcript per scoped run task'
 
 Extend the migration integration fixture with two legacy runs and assert after migration that each has a distinct `conv_*` id and run number `1`, while event and run-credit-account counts are unchanged.
 
-- [ ] **Step 5: Run database tests to verify RED**
+- [x] **Step 5: Run database tests to verify RED**
 
 Run: `pnpm --filter @zapp/db test -- schema-planning.test.ts schema-execution.test.ts`
 
 Expected: FAIL because the tables and run columns do not exist.
 
-- [ ] **Step 6: Implement Drizzle schema and generate migration 0036**
+- [x] **Step 6: Implement Drizzle schema and generate migration 0036**
 
 ```ts
 export const conversations = pgTable('conversations', {
@@ -176,13 +176,13 @@ export const conversationContextArtifacts = pgTable('conversation_context_artifa
 
 Add `conversationId` and `conversationRunNumber` to `agentRuns`, the unique run-order index, and the partial unique active-run index. A successor's immutable context row links both the new run and its terminal source run without creating a circular schema dependency. Generate the migration with `pnpm --filter @zapp/db db:generate`, then edit only the generated migration so it creates deterministic legacy conversation IDs from each legacy run, backfills the two required run columns, makes them non-null, and leaves all existing dependent rows unchanged.
 
-- [ ] **Step 7: Run schema and migration tests to verify GREEN**
+- [x] **Step 7: Run schema and migration tests to verify GREEN**
 
 Run: `pnpm --filter @zapp/contracts test && pnpm --filter @zapp/db test && pnpm --filter @zapp/db test:integration`
 
 Expected: all contract, schema, and migration tests pass; credential-gated tests skip visibly if PostgreSQL is unavailable.
 
-- [ ] **Step 8: Record the accepted ADR and official task contracts**
+- [x] **Step 8: Record the accepted ADR and official task contracts**
 
 ```markdown
 # ADR-0034: Durable project conversations
@@ -196,7 +196,7 @@ Conversation is a tenant-scoped durable aggregate above immutable runs. Public h
 
 Add CP-28, AR-25, WEB-19, and WEB-20 task blocks with binding Files/Interfaces/Acceptance criteria to their owning plan files and unchecked tracker entries under M6 product corrections.
 
-- [ ] **Step 9: Verify and commit CP-28 schema foundation**
+- [x] **Step 9: Verify and commit CP-28 schema foundation**
 
 Run: `pnpm --filter @zapp/contracts lint && pnpm --filter @zapp/contracts typecheck && pnpm --filter @zapp/db lint && pnpm --filter @zapp/db typecheck && git diff --check`
 
@@ -230,7 +230,7 @@ git commit -m "feat(db): add durable project conversations"
 - Consumes: Task 1 schemas/tables and existing keyed run creation, event ingestion, RBAC, tenant request context, audit hooks, pagination envelope.
 - Produces: generated `listProjectConversations`, `listConversationEvents`, and optional `conversationId` on `createProjectRun`; atomic `TenantConversationRepository` methods.
 
-- [ ] **Step 1: Write failing route tests for list, history, creation, races, and 404s**
+- [x] **Step 1: Write failing route tests for list, history, creation, races, and 404s**
 
 ```ts
 it('lists tenant conversations and ordered events across successor runs', async () => {
@@ -252,13 +252,13 @@ it('returns conversation_run_active for a concurrent successor', async () => {
 });
 ```
 
-- [ ] **Step 2: Run focused control-api tests to verify RED**
+- [x] **Step 2: Run focused control-api tests to verify RED**
 
 Run: `pnpm --filter @zapp/control-api test -- conversations.test.ts runs.test.ts`
 
 Expected: FAIL with missing routes and `conversationId` rejected by the strict body schema.
 
-- [ ] **Step 3: Implement atomic tenant repositories**
+- [x] **Step 3: Implement atomic tenant repositories**
 
 ```ts
 export interface TenantConversationRepository {
@@ -271,7 +271,7 @@ export interface TenantConversationRepository {
 
 Use a transaction and a conversation row lock for create/new-successor. Omitted `conversationId` inserts `stableId('conv', operationKey)` and run number `1`; supplied `conversationId` verifies project ownership, rejects an active run, and inserts `max(run_number)+1`. For a successor, select only prior structured `message.user`/`message.assistant` events in run order, bound them to the existing context token ceiling, insert one immutable `conversationContextArtifacts` row with a deterministic `art_*` id and SHA-256 hash, and link it to the new run through its unique `runId`. Update `conversations.updated_at` in the same transaction. Derive the title from the first 160 normalized characters of the first user prompt.
 
-- [ ] **Step 4: Implement public routes and extend create-run dispatch**
+- [x] **Step 4: Implement public routes and extend create-run dispatch**
 
 ```ts
 const CreateRunBodyShape = {
@@ -286,13 +286,13 @@ const CreateRunBodyShape = {
 
 Register both GET routes with session+tenant middleware, authorize project access, and return 404 for foreign/missing resources. Return 201 `{ run, conversation }` from run creation. For successor runs, load and hash-check the linked immutable context artifact and include its bounded projection in the workflow prompt under a structurally delimited `Prior conversation context` section; do not accept context text from the browser. If artifact creation or validation fails, the transaction creates neither run nor conversation mutation.
 
-- [ ] **Step 5: Run route and tenant integration tests to verify GREEN**
+- [x] **Step 5: Run route and tenant integration tests to verify GREEN**
 
 Run: `pnpm --filter @zapp/control-api test -- conversations.test.ts runs.test.ts && pnpm --filter @zapp/control-api test:integration -- conversations.test.ts`
 
 Expected: focused unit tests and PostgreSQL ordering/race/isolation tests pass.
 
-- [ ] **Step 6: Regenerate OpenAPI and SDK, then verify contract inventory**
+- [x] **Step 6: Regenerate OpenAPI and SDK, then verify contract inventory**
 
 Run: `pnpm openapi:generate`
 
@@ -302,7 +302,7 @@ Run: `pnpm --filter @zapp/control-api test -- openapi.test.ts openapi-contract.t
 
 Expected: public inventory and generated client tests pass.
 
-- [ ] **Step 7: Verify and commit CP-28 API**
+- [x] **Step 7: Verify and commit CP-28 API**
 
 Run: `pnpm --filter @zapp/control-api lint && pnpm --filter @zapp/control-api typecheck && pnpm --filter @zapp/control-api build && pnpm --filter @zapp/api-client lint && pnpm --filter @zapp/api-client typecheck && pnpm --filter @zapp/api-client build && git diff --check`
 

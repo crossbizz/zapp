@@ -9,6 +9,7 @@ import {
   agentPhases,
   agentRuns,
   agentTasks,
+  conversations,
   createDb,
   decisions,
   organizations,
@@ -126,10 +127,20 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       supportLevel: 'compatible',
       createdBy: userId,
     });
+    const conversationId = newId('conv');
+    await database.db.insert(conversations).values({
+      id: conversationId,
+      organizationId,
+      projectId,
+      createdBy: userId,
+      title: 'Events test run',
+    });
     await database.db.insert(agentRuns).values({
       id: runId,
       organizationId,
       projectId,
+      conversationId,
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       requestFingerprint: `seed:${runId}`,
@@ -769,6 +780,9 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
     const foreignOrganizationId = newId('org');
     const foreignProjectId = newId('proj');
     const foreignRunId = newId('run');
+    const foreignConversationId = newId('conv');
+    const foreignOwnerId =
+      (await database.sql<{ id: string }[]>`select id from users limit 1`)[0]?.id ?? '';
     await database.db.insert(organizations).values({
       id: foreignOrganizationId,
       name: 'Foreign Org',
@@ -784,19 +798,28 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
       description: null,
       sourceType: 'prompt',
       supportLevel: 'compatible',
-      createdBy: (await database.sql<{ id: string }[]>`select id from users limit 1`)[0]?.id ?? '',
+      createdBy: foreignOwnerId,
+    });
+    await database.db.insert(conversations).values({
+      id: foreignConversationId,
+      organizationId: foreignOrganizationId,
+      projectId: foreignProjectId,
+      createdBy: foreignOwnerId,
+      title: 'Foreign events test run',
     });
     await database.db.insert(agentRuns).values({
       id: foreignRunId,
       organizationId: foreignOrganizationId,
       projectId: foreignProjectId,
+      conversationId: foreignConversationId,
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       requestFingerprint: `seed:${foreignRunId}`,
       status: 'running',
       specificationId: null,
       temporalWorkflowId: foreignRunId,
-      startedBy: (await database.sql<{ id: string }[]>`select id from users limit 1`)[0]?.id ?? '',
+      startedBy: foreignOwnerId,
       budgetJson: null,
       planMaxCredits: '1000.0000',
     });
@@ -841,13 +864,23 @@ describe.skipIf(!hasDatabase)('POST /internal/runs/:runId/events', () => {
     // Break caught: removing the task-phase-to-run predicate permits a task
     // from a different run while the event claims this path run.
     const otherRunId = newId('run');
+    const otherConversationId = newId('conv');
     const otherPhaseId = newId('phase');
     const otherTaskId = newId('task');
     const [owner] = await database.sql<{ id: string }[]>`select id from users limit 1`;
+    await database.db.insert(conversations).values({
+      id: otherConversationId,
+      organizationId,
+      projectId,
+      createdBy: owner?.id ?? '',
+      title: 'Other task event run',
+    });
     await database.db.insert(agentRuns).values({
       id: otherRunId,
       organizationId,
       projectId,
+      conversationId: otherConversationId,
+      conversationRunNumber: 1,
       branchId: null,
       mode: 'build',
       requestFingerprint: `seed:${otherRunId}`,

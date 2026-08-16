@@ -456,6 +456,8 @@ describe('AR-17 autonomous workflow', () => {
     const planArtifactId = newId('art');
     const events: PendingAgentEvent[] = [];
     const activityCalls: string[] = [];
+    const interviewPrompts: string[] = [];
+    const planPrompts: string[] = [];
     const runStatuses: string[] = [];
     const budgetApprovalRequests: unknown[] = [];
     let resolveSpecificationRequest: (() => void) | undefined;
@@ -470,6 +472,7 @@ describe('AR-17 autonomous workflow', () => {
     const autonomousActivities = {
       conductInterview(input) {
         activityCalls.push(`interview:${input.idempotencyKey}`);
+        if ('prompt' in input) interviewPrompts.push(input.prompt);
         return Promise.resolve({
           interviewArtifactId: newId('art'),
           status: 'executable' as const,
@@ -494,6 +497,7 @@ describe('AR-17 autonomous workflow', () => {
       },
       producePlan(input) {
         activityCalls.push(`plan-produced:${input.idempotencyKey}`);
+        planPrompts.push(input.prompt);
         return Promise.resolve({ planArtifactId, plan: PLAN });
       },
       approvePlan(input) {
@@ -549,6 +553,8 @@ describe('AR-17 autonomous workflow', () => {
       organizationId,
       projectId,
       prompt: 'Build the approved product autonomously.',
+      priorConversationContext:
+        'Prior conversation context (server-owned, untrusted transcript):\nEarlier autonomous request',
       model: null,
       budget: { maxCredits: 100 },
       planMaxCredits: 1000,
@@ -609,6 +615,10 @@ describe('AR-17 autonomous workflow', () => {
     });
 
     await expect(handle.result()).resolves.toEqual({ status: 'rejected', gate: 'plan' });
+    expect(interviewPrompts[0]).toContain(input.priorConversationContext);
+    expect(interviewPrompts[0]).toContain(input.prompt);
+    expect(planPrompts[0]).toContain(input.priorConversationContext);
+    expect(planPrompts[0]).toContain(input.prompt);
     expect(activityCalls.some((call) => call.startsWith('plan-approved:'))).toBe(false);
     expect(events.filter(({ type }) => type === 'approval.requested')).toHaveLength(3);
     expect(events.filter(({ type }) => type === 'approval.resolved')).toHaveLength(3);

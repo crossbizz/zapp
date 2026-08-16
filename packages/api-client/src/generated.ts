@@ -1870,6 +1870,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/conversations/{conversationId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    conversationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                event: {
+                                    agentId?: string;
+                                    id: string;
+                                    /** Format: date-time */
+                                    occurredAt: string;
+                                    organizationId: string;
+                                    payload: {
+                                        [key: string]: unknown;
+                                    };
+                                    phaseId?: string;
+                                    projectId: string;
+                                    runId: string;
+                                    sequence: number;
+                                    taskId?: string;
+                                    /** @enum {string} */
+                                    type: "run.created" | "run.started" | "run.paused" | "run.resumed" | "run.cancelled" | "run.completed" | "phase.created" | "phase.started" | "phase.completed" | "task.created" | "task.started" | "task.blocked" | "task.updated" | "task.completed" | "task.failed" | "agent.started" | "agent.completed" | "message.user" | "message.assistant" | "message.applied" | "conversation.card" | "conversation.response" | "tool.started" | "tool.output" | "tool.completed" | "tool.failed" | "approval.requested" | "approval.resolved" | "artifact.created" | "commit.created" | "test.started" | "test.completed" | "verification.completed" | "preview.starting" | "preview.ready" | "preview.failed" | "release.created" | "deployment.updated" | "usage.recorded";
+                                    /** @enum {string} */
+                                    visibility: "user" | "internal" | "support";
+                                };
+                                runNumber: number;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/deployments/{deploymentId}": {
         parameters: {
             query?: never;
@@ -6246,6 +6346,98 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    projectId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                "4XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                "5XX": {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            error: {
+                                code: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                                message: string;
+                                requestId: string;
+                            };
+                        };
+                    };
+                };
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                /** Format: date-time */
+                                createdAt: string;
+                                id: string;
+                                latestRun: {
+                                    id: string;
+                                    status: string;
+                                };
+                                projectId: string;
+                                runCount: number;
+                                title: string;
+                                /** Format: date-time */
+                                updatedAt: string;
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/deletion": {
         parameters: {
             query?: never;
@@ -8186,6 +8378,8 @@ export interface paths {
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
+                                conversationId: string;
+                                conversationRunNumber: number;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
@@ -8226,6 +8420,7 @@ export interface paths {
                         budget?: {
                             maxCredits: number;
                         };
+                        conversationId?: string;
                         fixRequest: {
                             errorPayload?: string;
                             evidence: ({
@@ -8267,6 +8462,7 @@ export interface paths {
                         budget?: {
                             maxCredits: number;
                         };
+                        conversationId?: string;
                         /** @enum {string} */
                         mode: "ask" | "prototype" | "build" | "autonomous";
                         model?: string;
@@ -8318,12 +8514,25 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
+                            conversation: {
+                                /** Format: date-time */
+                                createdAt: string;
+                                createdBy: string;
+                                id: string;
+                                organizationId: string;
+                                projectId: string;
+                                title: string;
+                                /** Format: date-time */
+                                updatedAt: string;
+                            };
                             run: {
                                 /** @enum {string} */
                                 appType: "web" | "mobile";
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
+                                conversationId: string;
+                                conversationRunNumber: number;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
@@ -10626,6 +10835,8 @@ export interface paths {
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
+                                conversationId: string;
+                                conversationRunNumber: number;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
@@ -10915,6 +11126,8 @@ export interface paths {
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
+                                conversationId: string;
+                                conversationRunNumber: number;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
@@ -11104,7 +11317,7 @@ export interface paths {
                             sequence: number;
                             taskId?: string;
                             /** @enum {string} */
-                            type: "run.created" | "run.started" | "run.paused" | "run.resumed" | "run.cancelled" | "run.completed" | "phase.created" | "phase.started" | "phase.completed" | "task.created" | "task.started" | "task.blocked" | "task.updated" | "task.completed" | "task.failed" | "agent.started" | "agent.completed" | "message.user" | "message.assistant" | "conversation.card" | "conversation.response" | "tool.started" | "tool.output" | "tool.completed" | "tool.failed" | "approval.requested" | "approval.resolved" | "artifact.created" | "commit.created" | "test.started" | "test.completed" | "verification.completed" | "preview.starting" | "preview.ready" | "preview.failed" | "release.created" | "deployment.updated" | "usage.recorded";
+                            type: "run.created" | "run.started" | "run.paused" | "run.resumed" | "run.cancelled" | "run.completed" | "phase.created" | "phase.started" | "phase.completed" | "task.created" | "task.started" | "task.blocked" | "task.updated" | "task.completed" | "task.failed" | "agent.started" | "agent.completed" | "message.user" | "message.assistant" | "message.applied" | "conversation.card" | "conversation.response" | "tool.started" | "tool.output" | "tool.completed" | "tool.failed" | "approval.requested" | "approval.resolved" | "artifact.created" | "commit.created" | "test.started" | "test.completed" | "verification.completed" | "preview.starting" | "preview.ready" | "preview.failed" | "release.created" | "deployment.updated" | "usage.recorded";
                             /** @enum {string} */
                             visibility: "user" | "internal" | "support";
                         };
@@ -11468,6 +11681,8 @@ export interface paths {
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
+                                conversationId: string;
+                                conversationRunNumber: number;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
@@ -11773,6 +11988,8 @@ export interface paths {
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
+                                conversationId: string;
+                                conversationRunNumber: number;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
@@ -12050,6 +12267,8 @@ export interface paths {
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
+                                conversationId: string;
+                                conversationRunNumber: number;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
@@ -12142,6 +12361,8 @@ export interface paths {
                                 branchId: string | null;
                                 /** Format: date-time */
                                 completedAt: string | null;
+                                conversationId: string;
+                                conversationRunNumber: number;
                                 id: string;
                                 /** @enum {string} */
                                 mode: "ask" | "prototype" | "build" | "fix" | "autonomous";
