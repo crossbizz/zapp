@@ -1197,9 +1197,14 @@ test('reconnects after a dropped stream and deduplicates replayed sequences', as
   await openBuilder(page);
 
   await expect(page.getByText('Reconnecting to the run…')).toBeVisible();
-  await expect(page.getByText('Ran project checks ✓')).toBeVisible({ timeout: 5_000 });
+  await expect
+    .poll(() => streamAttempt, {
+      message: 'the run event stream should reconnect after the retry delay',
+      timeout: 10_000,
+    })
+    .toBeGreaterThanOrEqual(2);
+  await expect(page.getByText('Ran project checks ✓')).toBeVisible();
   await expect(page.getByText('One durable answer')).toHaveCount(1);
-  expect(streamAttempt).toBeGreaterThanOrEqual(2);
 });
 
 test('does not report a completed run as reconnecting when its event stream closes', async ({

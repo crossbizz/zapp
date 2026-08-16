@@ -565,6 +565,15 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - [x] Give every E2E server process a unique ignored Next output directory while retaining run-owned cleanup.
 - [x] Prove same-port output names cannot collide, rerun the previously failing accessibility flow, and pass the complete repository gate. Commit: `fix(web): isolate e2e output per run`
 
+### Task WEB-19-FIX-2 [M6]: Stabilize dropped-stream recovery coverage
+
+**Files:** Modify `apps/web/e2e/conversation.spec.ts`, this plan, and `tasks/todo.md`.
+**Effort:** XS.
+
+- [x] Preserve the production reconnect policy and reproduce the overloaded pre-push failure where the browser assertion exhausted its arbitrary five-second budget.
+- [x] Assert the transport reconnect explicitly with a bounded ten-second recovery window, then independently verify that the replayed event renders once.
+- [x] Stress the exact dropped-stream scenario and pass the complete repository gate. Commit: `test(web): stabilize conversation reconnect coverage`
+
 ---
 
 ## Testing strategy
@@ -578,6 +587,7 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 ## Execution log
 
+- 2026-08-16 WEB-19-FIX-2 done — Kept the production one-second reconnect policy unchanged, replaced an overloaded five-second presentation race with explicit bounded transport and rendering assertions, passed the scenario 20/20 under isolated stress, and passed the complete repository gate.
 - 2026-08-16 WEB-6-FIX-1 done — Collapsed noisy tool lifecycle rows into truthful structured activity batches with exact ordered details on demand, failed closed on missing outcomes and inexact file metadata, and kept active work visible; TDD regressions passed 12/12 focused presentation tests and 26/26 conversation browser tests, web lint/typecheck and the production build passed, with the one pre-existing image warning unchanged and no port behavior changed.
 - 2026-08-16 WEB-22-FIX-1 done — Replaced the shared per-port E2E Next output directory with a unique run-owned directory so delayed shutdown cleanup cannot corrupt a successor server; the focused regression, three repeated accessibility passes, 52/52 web Node tests, 163/163 browser tests, all integration/isolation suites, Gate 5, and the complete 94/94-task repository gate passed, while credential-dependent cases skipped visibly as designed.
 - 2026-08-16 WEB-22 done — Added deterministic three-to-four-word project titles while preserving the full builder prompt, made `/dashboard` the canonical creation route, removed non-actionable support badges, matched the Lovable-style neutral composer rhythm, and passed 51/51 web Node tests, 163/163 browser tests, the production build, and the complete 94/94-task repository gate; credential-dependent integration cases skipped visibly as designed.
