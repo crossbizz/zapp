@@ -58,7 +58,7 @@ const LOCK = {
   },
 };
 
-async function configFixture(env = COMPLETE_ENV, argv = []) {
+async function configFixture(env = COMPLETE_ENV, argv = [], processEnv = {}) {
   const cwd = await mkdtemp(join(tmpdir(), 'zapp-local-config-'));
   await writeFile(
     join(cwd, '.env'),
@@ -76,13 +76,21 @@ async function configFixture(env = COMPLETE_ENV, argv = []) {
   );
   return loadLocalConfig({
     cwd,
-    env: {},
+    env: processEnv,
     argv,
     envPath: join(cwd, '.env'),
     packagePath: join(cwd, 'package.json'),
     imageLockPath: join(cwd, 'infra.json'),
   });
 }
+
+test('isolates the canonical local web cache from inherited browser-test output', async () => {
+  const config = await configFixture(COMPLETE_ENV, [], {
+    ZAPP_WEB_NEXT_DIST_DIR: '.next-e2e-3100',
+  });
+
+  assert.equal(config.env.ZAPP_WEB_NEXT_DIST_DIR, '.next-dev');
+});
 
 test('loads one canonical loopback origin for browser auth, APIs, and --no-open', async () => {
   const config = await configFixture(COMPLETE_ENV, ['--no-open']);

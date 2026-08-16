@@ -312,6 +312,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-18-FIX-16 Non-interactive development dependency recovery
 - [x] WEB-18-FIX-17 Run-owned initial workspace provisioning
 - [x] WEB-18-FIX-18 Source-aware preview wake and file recovery
+- [ ] WEB-18-FIX-19 Isolate the live local web cache from browser-test output
 - [ ] CP-28 Durable project conversations and public history
 - [ ] AR-25 Safe queued-message application
 - [ ] WEB-19 Project conversation history and new threads

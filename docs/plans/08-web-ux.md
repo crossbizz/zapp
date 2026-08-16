@@ -463,6 +463,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Prove the focused and full affected suites, package lint/typecheck, all 12 preview browser flows, the real source tree, and an authenticated Docker container-restart-to-render recovery.
 - [x] Commit: `fix(preview): make workspace recovery reliable`
 
+#### WEB-18-FIX-19 - isolate the live local web cache from browser-test output
+
+**Root cause:** The canonical local supervisor inherited `ZAPP_WEB_NEXT_DIST_DIR` from its caller. After a focused Playwright run exported `.next-e2e-3100`, port 3000 and the browser-test server shared one Next.js output directory. Either process could then clean or rewrite the other's manifests, producing intermittent 500s, blank pages, preview flicker, unrelated test timeouts, and `require is not defined` errors.
+**Files:** Modify `scripts/local/config.mjs`, `scripts/local.test.mjs`, this plan, and `tasks/todo.md`. No public API, generated application source, or test-server output ownership change is in scope.
+
+- [ ] Add a failing local-supervisor regression proving a caller-provided browser-test output directory cannot reach the port 3000 web process.
+- [ ] Pin the canonical local web process to its dedicated `.next-dev` directory at the structural environment boundary.
+- [ ] Prove the focused local supervisor suite, clean port 3000 startup, full web browser suite, and cold repository gate.
+- [ ] Commit: `fix(web): isolate local and browser-test build output`
+
 ### Task WEB-19 [M6]: Project conversation history and new threads
 
 **ADR:** ADR-0034. **Files:** Modify builder thread/header/API/SSE composition and styles, add conversation hooks/history drawer, Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-durable-project-conversations.md`.
