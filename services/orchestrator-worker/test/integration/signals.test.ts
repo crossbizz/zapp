@@ -222,6 +222,11 @@ describe('AR-10 durable run control signals', () => {
       content: 'The model provider request failed after its retries.',
       model: 'policy/default',
     });
+    expect(published.find(({ type }) => type === 'run.completed')?.payload).toEqual({
+      status: 'failed',
+      code: 'provider_error',
+      summary: 'The model provider request failed after its retries.',
+    });
   }, 30_000);
 
   it('finishes the active turn, checkpoints, pauses, reports status, and resumes once', async () => {

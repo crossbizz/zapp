@@ -71,7 +71,7 @@ const ExecutionLeaseSchema = z
 export const InFlightCompletionSchema = z
   .object({
     completionId: z.string().regex(/^cmp_[a-f0-9]{64}$/u),
-    requestVersion: z.union([z.literal(1), z.literal(2)]).default(1),
+    requestVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]).default(1),
     requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
     requestTokens: z.number().int().nonnegative().safe(),
     reservedTokens: z.number().int().positive().safe(),

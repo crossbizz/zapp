@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createModelGatewaySessionGateway,
+  ModelGatewayRequestError,
   ModelGatewayStreamError,
 } from '../src/runtime/model-gateway-client.js';
+import { SessionCompletionRetryableError } from '../src/session/loop.js';
 
 const SERVICE_TOKENS = { secret: 'g'.repeat(32) };
 
@@ -143,4 +145,34 @@ describe('model-gateway session client', () => {
     await expect(reading).rejects.toMatchObject({ name: 'ModelGatewayCancelledError' });
     expect(forwarded.aborted).toBe(true);
   });
+
+  it.each([404, 408, 425, 429, 500, 502, 503, 504])(
+    'keeps the durable completion retryable when the gateway returns transient HTTP %s',
+    async (status) => {
+      const gateway = createModelGatewaySessionGateway({
+        baseUrl: 'http://model-gateway.test',
+        serviceTokens: SERVICE_TOKENS,
+        fetch: vi.fn(() => Promise.resolve(new Response(null, { status }))),
+      });
+
+      await expect(
+        collect(gateway.stream(request(), new AbortController().signal)),
+      ).rejects.toBeInstanceOf(SessionCompletionRetryableError);
+    },
+  );
+
+  it.each([400, 401, 403, 422])(
+    'fails closed without retrying a permanent gateway HTTP %s response',
+    async (status) => {
+      const gateway = createModelGatewaySessionGateway({
+        baseUrl: 'http://model-gateway.test',
+        serviceTokens: SERVICE_TOKENS,
+        fetch: vi.fn(() => Promise.resolve(new Response(null, { status }))),
+      });
+
+      await expect(
+        collect(gateway.stream(request(), new AbortController().signal)),
+      ).rejects.toBeInstanceOf(ModelGatewayRequestError);
+    },
+  );
 });

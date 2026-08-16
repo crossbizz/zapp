@@ -7,7 +7,10 @@ import {
 } from '@zapp/model-gateway';
 import { z } from 'zod';
 
-import type { SessionGateway } from '../session/loop.js';
+import {
+  SessionCompletionRetryableError,
+  type SessionGateway,
+} from '../session/loop.js';
 
 export interface ModelGatewaySessionClientOptions {
   readonly baseUrl: string;
@@ -34,6 +37,16 @@ export class ModelGatewayCancelledError extends Error {
     super('Model gateway request was cancelled');
     this.name = 'ModelGatewayCancelledError';
   }
+}
+
+function isRetryableGatewayStatus(statusCode: number): boolean {
+  return (
+    statusCode === 404 ||
+    statusCode === 408 ||
+    statusCode === 425 ||
+    statusCode === 429 ||
+    statusCode >= 500
+  );
 }
 
 function parseSseEvent(frame: string): GatewayStreamEvent | undefined {
@@ -118,7 +131,12 @@ export function createModelGatewaySessionGateway(
           body: JSON.stringify(request),
           signal,
         });
-        if (!response.ok) throw new ModelGatewayRequestError(response.status);
+        if (!response.ok) {
+          if (isRetryableGatewayStatus(response.status)) {
+            throw new SessionCompletionRetryableError('gateway_unavailable');
+          }
+          throw new ModelGatewayRequestError(response.status);
+        }
         if (!response.headers.get('content-type')?.startsWith('text/event-stream')) {
           throw new ModelGatewayStreamError();
         }

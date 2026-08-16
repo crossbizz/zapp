@@ -22,6 +22,7 @@ import {
 import { ConsoleDrawer } from './ConsoleDrawer';
 import { PreviewToolbar, type PreviewDevice } from './PreviewToolbar';
 import { SelectMode, type SelectedPreviewElement } from './SelectMode';
+import { runCompletedSuccessfully } from '../run-outcome';
 
 const previewWidths: Readonly<Record<PreviewDevice, string>> = {
   desktop: '100%',
@@ -98,7 +99,10 @@ function previewLifecycle(events: readonly RunEvent[]): {
     .find((candidate) => candidate.type === 'commit.created');
   const latestCompletedRun = [...events]
     .reverse()
-    .find((candidate) => candidate.type === 'run.completed');
+    .find(
+      (candidate) =>
+        candidate.type === 'run.completed' && candidate.data.payload['status'] !== 'failed',
+    );
   return {
     ...(event === undefined ? {} : { event }),
     stale:
@@ -459,8 +463,7 @@ export function PreviewFrame({
   const workspaceScopeRef = useRef<string | undefined>(undefined);
   const lifecycle = useMemo(() => previewLifecycle(events), [events]);
   const eventWorkspace = eventWorkspaceId(lifecycle.event);
-  const runCompletedObserved =
-    runStatus === 'completed' || events.some((event) => event.type === 'run.completed');
+  const runCompletedObserved = runStatus === 'completed' || runCompletedSuccessfully(events);
   const runTerminalObserved =
     runCompletedObserved ||
     runStatus === 'failed' ||

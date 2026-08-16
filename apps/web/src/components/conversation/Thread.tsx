@@ -28,6 +28,7 @@ import { QuestionCard } from './QuestionCard';
 import { SpecSummaryCard } from './SpecSummaryCard';
 import { PlanReviewCard } from './PlanReviewCard';
 import { ApprovalCard } from './ApprovalCard';
+import { failedRunOutcome, runCompletedSuccessfully } from '../run-outcome';
 
 const activeRunStatuses = new Set(['paused', 'queued', 'running', 'waiting_for_approval']);
 
@@ -598,6 +599,25 @@ function ThreadStyles(): ReactElement {
         border: 0;
         padding: 0;
       }
+      .zapp-conversation-failure {
+        display: grid;
+        gap: 0.3rem;
+        margin: 0.75rem 1rem 0;
+        border: 1px solid color-mix(in srgb, var(--zapp-status-danger) 28%, var(--zapp-border));
+        border-radius: var(--zapp-radius-panel);
+        padding: 0.7rem 0.8rem;
+        background: var(--zapp-danger-surface);
+        color: var(--zapp-text-primary);
+        font-size: var(--zapp-text-12);
+        line-height: 1.45;
+      }
+      .zapp-conversation-failure strong {
+        font-size: 0.8125rem;
+      }
+      .zapp-conversation-failure p {
+        margin: 0;
+        color: var(--zapp-text-secondary);
+      }
     `}</style>
   );
 }
@@ -649,7 +669,8 @@ export function Thread({
     [events, selectedRun?.id],
   );
   const cancelled = currentRunEvents.some((event) => event.type === 'run.cancelled');
-  const completed = currentRunEvents.some((event) => event.type === 'run.completed');
+  const completed = runCompletedSuccessfully(currentRunEvents);
+  const failure = failedRunOutcome(currentRunEvents);
   const active =
     selectedRun !== undefined &&
     activeRunStatuses.has(selectedRun.status) &&
@@ -965,7 +986,7 @@ export function Thread({
   return (
     <div className="zapp-conversation-thread">
       <ThreadStyles />
-      {connection === 'reconnecting' ? (
+      {connection === 'reconnecting' && active ? (
         <p className="zapp-conversation-banner" role="status">
           Reconnecting to the run…
         </p>
@@ -1013,6 +1034,13 @@ export function Thread({
                         : 'Agent is running'}
           </span>
         </div>
+      )}
+      {failure === undefined ? null : (
+        <article className="zapp-conversation-failure" role="alert">
+          <strong>Build stopped</strong>
+          <p>{failure.summary}</p>
+          <p>Send another message to retry. Your project files and completed work are preserved.</p>
+        </article>
       )}
       <div className="zapp-conversation-items">
         {conversationListError === undefined && (loading || eventsLoading) && items.length === 0 ? (

@@ -24,6 +24,7 @@ import {
   DatabaseTranscriptStore,
   MemoryTranscriptStore,
   ReplicatedTranscriptStore,
+  SessionTranscriptSchema,
   type SessionTranscript,
   type TranscriptStore,
 } from '../src/session/transcript.js';
@@ -461,6 +462,70 @@ describe('agent session loop', () => {
     const saved = await transcripts.load({ runId: 'run-test', taskId: 'task-test' });
     expect(saved?.terminalStatus).toBeNull();
     expect(saved?.inFlightCompletion).not.toBeNull();
+  });
+
+  it('replays a durable completion after JSONB reorders its request object keys', async () => {
+    const { registry } = await memoryRegistry();
+    const durable = new MemoryTranscriptStore();
+    const jsonbRoundTrip = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(jsonbRoundTrip);
+      if (value === null || typeof value !== 'object') return value;
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([left], [right]) => left.length - right.length || left.localeCompare(right))
+          .map(([key, child]) => [key, jsonbRoundTrip(child)]),
+      );
+    };
+    const transcripts: TranscriptStore = {
+      async load(key) {
+        const loaded = await durable.load(key);
+        return loaded === undefined
+          ? undefined
+          : SessionTranscriptSchema.parse(jsonbRoundTrip(loaded));
+      },
+      save: (expectedVersion, transcript) => durable.save(expectedVersion, transcript),
+    };
+    let gatewayCalls = 0;
+    const session = createSessionLoop({
+      gateway: {
+        async *stream(): AsyncIterable<GatewayStreamEvent> {
+          gatewayCalls += 1;
+          await Promise.resolve();
+          if (gatewayCalls === 1) {
+            yield {
+              type: 'error',
+              code: 'completion_leased',
+              message: 'The completion is owned by another live gateway.',
+            };
+            return;
+          }
+          yield { type: 'text-delta', text: 'Recovered after retry.' };
+          yield { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 2 };
+          yield { type: 'done' };
+        },
+      },
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder prompt',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    await expect(session.run(input(['list_files']))).rejects.toMatchObject({
+      name: 'SessionCompletionRetryableError',
+    });
+    await expect(session.run(input(['list_files']))).resolves.toMatchObject({
+      status: 'completed',
+      summary: 'Recovered after retry.',
+    });
+    expect(gatewayCalls).toBe(2);
   });
 
   it('durably emits usage.recorded before mapping an accounting cutoff to budget_exhausted', async () => {
@@ -1845,14 +1910,14 @@ describe('agent session loop', () => {
     expect(checkpoint.inFlightCompletion).not.toBeNull();
     const firstCompletion = structuredClone(checkpoint.inFlightCompletion);
     if (firstCompletion === null) throw new Error('Expected durable completion reservation');
-    expect(firstCompletion.requestVersion).toBe(2);
+    expect(firstCompletion.requestVersion).toBe(3);
     const legacyRequest = structuredClone(firstCompletion.request);
     legacyRequest.messages[0] = {
       role: 'system',
       content: 'legacy durable transcript registered-secret',
     };
     const { requestVersion, ...legacyCompletion } = firstCompletion;
-    expect(requestVersion).toBe(2);
+    expect(requestVersion).toBe(3);
     const { version: checkpointVersion, ...checkpointDraft } = checkpoint;
     await durable.save(checkpointVersion, {
       ...checkpointDraft,

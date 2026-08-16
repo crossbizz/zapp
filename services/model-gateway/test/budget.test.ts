@@ -144,6 +144,50 @@ function trackedBackend(events: readonly BackendStreamEvent[]) {
 }
 
 describe('durable completion accounting', () => {
+  it('uses one request fingerprint when JSONB reorders nested schema keys', async () => {
+    const fingerprints: string[] = [];
+    const accounted = createUsageAccountedCompletion({
+      backend: backend([]),
+      accounting: {
+        claim(input) {
+          fingerprints.push(input.requestFingerprint);
+          return Promise.reject(new Error('stop after fingerprint'));
+        },
+        commit: () => Promise.reject(new Error('commit must not run')),
+      },
+      claimOwner: 'gateway-one',
+    });
+    const schemaProperties = {
+      path: { type: 'string' as const },
+      glob: { type: 'string' as const },
+      maxDepth: { type: 'number' as const },
+    };
+    const reorderedProperties = {
+      glob: schemaProperties.glob,
+      path: schemaProperties.path,
+      maxDepth: schemaProperties.maxDepth,
+    };
+    const requestWithProperties = (properties: typeof schemaProperties): CompleteRequest => ({
+      ...request,
+      tools: [
+        {
+          name: 'list_files',
+          description: 'List files.',
+          inputJsonSchema: { type: 'object', properties, additionalProperties: false },
+        },
+      ],
+    });
+
+    await expect(collect(accounted, requestWithProperties(schemaProperties))).rejects.toThrow(
+      'stop after fingerprint',
+    );
+    await expect(collect(accounted, requestWithProperties(reorderedProperties))).rejects.toThrow(
+      'stop after fingerprint',
+    );
+    expect(fingerprints).toHaveLength(2);
+    expect(fingerprints[1]).toBe(fingerprints[0]);
+  });
+
   it('accepts a structurally identical committed tool input after JSONB key reordering', async () => {
     const providerEvents = [
       {

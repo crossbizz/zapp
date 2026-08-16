@@ -1008,6 +1008,31 @@ test('reconnects after a dropped stream and deduplicates replayed sequences', as
   expect(streamAttempt).toBeGreaterThanOrEqual(2);
 });
 
+test('does not report a completed run as reconnecting when its event stream closes', async ({
+  page,
+}) => {
+  const completedRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:10:00.000Z',
+    status: 'completed' as const,
+  };
+  let streamAttempt = 0;
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    streamAttempt += 1;
+    await route.fulfill({
+      body: JSON.stringify({ error: { code: 'fixture_closed' } }),
+      headers: corsHeaders(),
+      status: 503,
+    });
+  });
+
+  await openBuilder(page, [completedRun]);
+
+  await expect.poll(() => streamAttempt).toBeGreaterThan(0);
+  await expect(page.getByText('Reconnecting to the run…')).toHaveCount(0);
+  await expect(page.getByRole('status', { name: 'Build status' })).toContainText('Build complete');
+});
+
 test('stops the active run and reflects the cancellation event within five seconds', async ({
   page,
 }) => {

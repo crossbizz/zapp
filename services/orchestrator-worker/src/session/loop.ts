@@ -55,8 +55,17 @@ function completionIdFor(runId: string, taskId: string, turn: number): string {
   return `cmp_${sha256(JSON.stringify([runId, taskId, turn]))}`;
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+  return `{${Object.entries(value)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+    .join(',')}}`;
+}
+
 function requestFingerprint(request: CompleteRequest): string {
-  return sha256(JSON.stringify(request));
+  return sha256(canonicalJson(request));
 }
 
 const BudgetsSchema = z
@@ -259,7 +268,9 @@ export class SessionLeaseBusyError extends Error {
 }
 
 export class SessionCompletionRetryableError extends Error {
-  constructor(readonly code: 'completion_leased' | 'completion_retryable') {
+  constructor(
+    readonly code: 'completion_leased' | 'completion_retryable' | 'gateway_unavailable',
+  ) {
     super('The durable model completion must be retried.');
     this.name = 'SessionCompletionRetryableError';
   }
@@ -893,7 +904,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               transcript.tokensUsed += reservedTurnTokens;
               transcript.inFlightCompletion = {
                 completionId,
-                requestVersion: 2,
+                requestVersion: 3,
                 requestFingerprint: requestFingerprint(request),
                 requestTokens,
                 reservedTokens: reservedTurnTokens,
@@ -908,6 +919,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
               requestTokens = transcript.inFlightCompletion.requestTokens;
               reservedTurnTokens = transcript.inFlightCompletion.reservedTokens;
               if (
+                transcript.inFlightCompletion.requestVersion === 3 &&
                 requestFingerprint(request) !== transcript.inFlightCompletion.requestFingerprint
               ) {
                 throw new Error('Durable completion request fingerprint does not match');
@@ -927,7 +939,7 @@ export function createSessionLoop(dependencies: SessionLoopDependencies) {
             });
             try {
               const outboundRequest =
-                transcript.inFlightCompletion.requestVersion === 1
+                transcript.inFlightCompletion.requestVersion < 3
                   ? {
                       ...redactOutboundRequest(request, dependencies.redact),
                       accountingReplay: {

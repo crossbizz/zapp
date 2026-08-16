@@ -127,8 +127,17 @@ export function createControlPlaneUsageClient(
   };
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+  return `{${Object.entries(value)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+    .join(',')}}`;
+}
+
 function requestFingerprint(request: CompleteRequest): string {
-  return createHash('sha256').update(JSON.stringify(request)).digest('hex');
+  return createHash('sha256').update(canonicalJson(request)).digest('hex');
 }
 
 function identity(request: CompleteRequest, accountingReplay?: AccountingReplay) {

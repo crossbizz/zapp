@@ -2058,6 +2058,9 @@ async function executeRunWorkflow(
     const sessionWorkspaceId = input.continuation.workspaceId;
     let approvedMaxCredits: number | undefined;
     let continueSession = false;
+    let terminalFailureCode = 'builder_run_failed';
+    let terminalFailureSummary =
+      'The builder could not complete this run. Send another message to retry safely.';
     try {
       const guardrails = runModeGuardrails(input.mode);
       await events.emitEvents({
@@ -2279,11 +2282,17 @@ async function executeRunWorkflow(
           break;
         }
         case 'needs_approval':
-        case 'failed':
         case 'cancelled':
           throw ApplicationFailure.nonRetryable(
             `Builder session ended with terminal status: ${sessionResult.status}`,
             `builder_session_${sessionResult.status}`,
+          );
+        case 'failed':
+          terminalFailureCode = sessionResult.errorCode ?? 'builder_session_failed';
+          terminalFailureSummary = sessionResult.summary;
+          throw ApplicationFailure.nonRetryable(
+            'Builder session ended with terminal status: failed',
+            'builder_session_failed',
           );
       }
       if (pendingRedirects.length > 0) {
@@ -2347,6 +2356,15 @@ async function executeRunWorkflow(
       }
     } catch (error: unknown) {
       closeMessageAdmission();
+      await events.emitEvents({
+        events: [
+          event(input, 'run.completed', 'run-failed', {
+            status: 'failed',
+            code: terminalFailureCode,
+            summary: terminalFailureSummary,
+          }),
+        ],
+      });
       await events.transitionRunStatus({
         runId: input.runId,
         status: 'failed',
