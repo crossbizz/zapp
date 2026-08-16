@@ -18,13 +18,16 @@ import {
 import {
   createControlPlaneClient,
   type BuilderRun,
+  type CreatedConversation,
   type MissionControlData,
   type ResolveApprovalInput,
 } from '../../lib/api';
 import { readFirstPrompt } from '../../lib/prompt-handoff';
 import { useAppSession } from '../../hooks/useAppSession';
+import { useProjectConversations } from '../../hooks/useProjectConversations';
 import { Thread } from '../conversation/Thread';
 import type { ConversationImageInput } from '../conversation/Composer';
+import { ConversationHistoryDrawer } from '../conversation/ConversationHistoryDrawer';
 import { WorkingSurface } from './WorkingSurface';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
 import { TopBar } from './TopBar';
@@ -56,6 +59,16 @@ const minimumConversationPixels = 400;
 
 interface ShellProps {
   readonly projectId: string;
+}
+
+type ConversationSelection =
+  | { readonly kind: 'conversation'; readonly id: string }
+  | { readonly kind: 'new' };
+
+function parseConversationSelection(search: URLSearchParams): ConversationSelection | undefined {
+  const value = search.get('conversation');
+  if (value === null) return undefined;
+  return value === 'new' ? { kind: 'new' } : { id: value, kind: 'conversation' };
 }
 
 function controlPlaneUrl(): string {
@@ -732,6 +745,8 @@ function MissionControlPanel({
 export function Shell({ projectId }: ShellProps): ReactElement {
   const session = useAppSession();
   const [activeRun, setActiveRun] = useState<BuilderRun>();
+  const [conversationSelection, setConversationSelection] =
+    useState<ConversationSelection>();
   const [runEventSnapshot, setRunEventSnapshot] = useState<{
     readonly events: readonly RunEvent[];
     readonly runId: string | undefined;
@@ -770,6 +785,13 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   );
   const organizationId = readySession?.membership.organization.id;
   const allowedModels = readySession?.membership.allowedModels ?? [];
+  const projectConversations = useProjectConversations(projectId, organizationId);
+  const selectedConversation =
+    conversationSelection?.kind === 'conversation'
+      ? projectConversations.conversations.find(
+          (conversation) => conversation.id === conversationSelection.id,
+        )
+      : undefined;
 
   useEffect(() => {
     const media = window.matchMedia('(min-width: 1024px)');
@@ -785,7 +807,9 @@ export function Shell({ projectId }: ShellProps): ReactElement {
 
   useEffect(() => {
     const restore = (): void => {
-      setNavigation(parseBuilderNavigation(new URLSearchParams(window.location.search)));
+      const search = new URLSearchParams(window.location.search);
+      setConversationSelection(parseConversationSelection(search));
+      setNavigation(parseBuilderNavigation(search));
       setNavigationReady(true);
     };
     restore();
@@ -794,6 +818,94 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       window.removeEventListener('popstate', restore);
     };
   }, []);
+
+  const setConversationUrl = useCallback(
+    (selection: ConversationSelection, behavior: 'push' | 'replace'): void => {
+      const search = new URLSearchParams(window.location.search);
+      search.set(
+        'conversation',
+        selection.kind === 'conversation' ? selection.id : 'new',
+      );
+      const query = search.toString();
+      window.history[behavior === 'push' ? 'pushState' : 'replaceState'](
+        window.history.state,
+        '',
+        `${window.location.pathname}?${query}${window.location.hash}`,
+      );
+      setActiveRun(undefined);
+      setRunEventSnapshot({ events: [], runId: undefined });
+      setConversationSelection(selection);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (
+      !navigationReady ||
+      projectConversations.loading ||
+      projectConversations.error !== undefined
+    ) {
+      return;
+    }
+    if (conversationSelection === undefined) {
+      const newest = projectConversations.conversations[0];
+      setActiveRun(undefined);
+      setRunEventSnapshot({ events: [], runId: undefined });
+      setConversationSelection(
+        newest === undefined ? { kind: 'new' } : { id: newest.id, kind: 'conversation' },
+      );
+      return;
+    }
+    if (
+      conversationSelection.kind === 'conversation' &&
+      !projectConversations.conversations.some(
+        (conversation) => conversation.id === conversationSelection.id,
+      )
+    ) {
+      setConversationUrl({ kind: 'new' }, 'replace');
+    }
+  }, [
+    conversationSelection,
+    navigationReady,
+    projectConversations.conversations,
+    projectConversations.error,
+    projectConversations.loading,
+    setConversationUrl,
+  ]);
+
+  const selectConversation = useCallback(
+    (conversationId: string): void => {
+      setConversationUrl({ id: conversationId, kind: 'conversation' }, 'push');
+    },
+    [setConversationUrl],
+  );
+
+  const startNewConversation = useCallback((): void => {
+    if (conversationSelection?.kind === 'new') return;
+    setConversationUrl({ kind: 'new' }, 'push');
+  }, [conversationSelection?.kind, setConversationUrl]);
+
+  const recordCreatedConversation = useCallback(
+    (conversation: CreatedConversation, run: BuilderRun): void => {
+      projectConversations.recordConversation(conversation, run);
+      if (
+        conversationSelection?.kind !== 'conversation' ||
+        conversationSelection.id !== conversation.id
+      ) {
+        setConversationUrl({ id: conversation.id, kind: 'conversation' }, 'replace');
+      }
+      setActiveRun(run);
+    },
+    [conversationSelection, projectConversations, setConversationUrl],
+  );
+
+  const adoptCreatedRun = useCallback(
+    (run: BuilderRun): void => {
+      projectConversations.recordRun(run);
+      setActiveRun(run);
+    },
+    [projectConversations],
+  );
 
   useEffect(() => {
     if (!navigationReady) return;
@@ -1141,6 +1253,17 @@ export function Shell({ projectId }: ShellProps): ReactElement {
       >
         <div className="zapp-builder-shell">
           <TopBar
+            conversationActions={
+              <ConversationHistoryDrawer
+                conversations={projectConversations.conversations}
+                error={projectConversations.error}
+                loading={projectConversations.loading}
+                onNewThread={startNewConversation}
+                onRetry={projectConversations.refresh}
+                onSelect={selectConversation}
+                selectedConversationId={selectedConversation?.id}
+              />
+            }
             deploy={<BuilderDeploy organizationId={organizationId} projectId={projectId} />}
             missionControl={missionControl}
             mode={navigation.mode}
@@ -1161,7 +1284,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
             </p>
           ) : null}
           <IncidentBanner
-            onRunCreated={setActiveRun}
+            onRunCreated={adoptCreatedRun}
             organizationId={organizationId}
             projectId={projectId}
           />
@@ -1181,9 +1304,17 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                   {...(activeRun === undefined ? {} : { adoptedRun: activeRun })}
                   allowedModels={allowedModels}
                   branches={project.branches}
+                  {...(selectedConversation === undefined
+                    ? {}
+                    : { conversation: selectedConversation })}
+                  conversationLoading={projectConversations.loading}
+                  conversationListError={projectConversations.error}
                   incomingImages={previewAttachments}
                   {...(firstPrompt === undefined ? {} : { initialPrompt: firstPrompt })}
+                  newThread={conversationSelection?.kind === 'new'}
+                  onConversationCreated={recordCreatedConversation}
                   onOpenCommit={openCommit}
+                  onRetryConversationList={projectConversations.refresh}
                   onEventsChange={captureRunEvents}
                   onRunChange={setActiveRun}
                   organizationId={organizationId}
@@ -1260,7 +1391,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                       ]);
                     });
                   }}
-                  onRunCreated={setActiveRun}
+                  onRunCreated={adoptCreatedRun}
                   manageSection={navigation.manage}
                   mode={navigation.mode}
                   onManageSectionChange={selectManageSection}

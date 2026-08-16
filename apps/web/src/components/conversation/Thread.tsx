@@ -4,11 +4,16 @@ import { ZappApiError, type ConversationCard, type RunEvent } from '@zapp/api-cl
 import { EmptyState } from '@zapp/ui';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 
-import { useRunEvents } from '../../hooks/useRunEvents';
+import {
+  useConversationEvents,
+  type ConversationRunEvent,
+} from '../../hooks/useConversationEvents';
 import {
   createControlPlaneClient,
   type BuilderRun,
   type CreateRunMessageInput,
+  type CreatedConversation,
+  type ProjectConversation,
 } from '../../lib/api';
 import { Composer, type ConversationImageInput, type ConversationSubmission } from './Composer';
 import { MessageBubble } from './MessageBubble';
@@ -29,7 +34,13 @@ interface ThreadProps {
   readonly branches: readonly { readonly id: string; readonly name: string }[];
   readonly incomingImages?: readonly ConversationImageInput[];
   readonly initialPrompt?: string;
+  readonly conversation?: ProjectConversation;
+  readonly conversationListError: string | undefined;
+  readonly conversationLoading: boolean;
+  readonly newThread: boolean;
+  readonly onConversationCreated: (conversation: CreatedConversation, run: BuilderRun) => void;
   readonly onOpenCommit: (commitSha: string) => void;
+  readonly onRetryConversationList: () => void;
   readonly onEventsChange: (runId: string | undefined, events: readonly RunEvent[]) => void;
   readonly onRunChange: (run: BuilderRun | undefined) => void;
   readonly organizationId: string;
@@ -41,7 +52,9 @@ interface MessageItem {
   readonly content: string;
   readonly key: string;
   readonly kind: 'message';
+  readonly messageId: string | undefined;
   readonly role: 'assistant' | 'user';
+  readonly runId: string;
   readonly sequence: number;
 }
 
@@ -57,6 +70,7 @@ interface PhaseItem {
   readonly key: string;
   readonly kind: 'phase';
   readonly name: string;
+  readonly runId: string;
   readonly sequence: number;
   readonly startedAt?: string;
   readonly state: 'complete' | 'pending' | 'running';
@@ -74,6 +88,7 @@ interface CardItem {
   readonly card: ConversationCard;
   readonly key: string;
   readonly kind: 'card';
+  readonly runId: string;
   readonly sequence: number;
 }
 
@@ -93,6 +108,7 @@ interface OptimisticMessage {
   readonly content: string;
   readonly expectedOrdinal: number;
   readonly id: string;
+  readonly messageId: string | undefined;
   readonly runId: string;
 }
 
@@ -127,17 +143,18 @@ function phaseName(event: RunEvent): string {
     .join(' ');
 }
 
-function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
+function threadItems(events: readonly ConversationRunEvent[]): readonly ThreadItem[] {
   const items: ThreadItem[] = [];
   const phases = new Map<string, number>();
   let activities: ToolActivity[] = [];
+  let activityRunId = '';
 
   const flushActivities = (): void => {
     const first = activities[0];
     if (first === undefined) return;
     items.push({
       activities,
-      key: `activity-${String(first.sequence)}`,
+      key: `activity-${activityRunId}-${String(first.sequence)}`,
       kind: 'activity',
       sequence: first.sequence,
     });
@@ -150,8 +167,10 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
       event.type === 'tool.completed' ||
       event.type === 'tool.failed'
     ) {
+      if (activities.length > 0 && activityRunId !== event.data.runId) flushActivities();
       const summary = payloadString(event, 'userSummary');
       if (summary !== undefined) {
+        if (activities.length === 0) activityRunId = event.data.runId;
         activities.push({
           sequence: event.data.sequence,
           state:
@@ -169,7 +188,13 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
 
     if (event.type === 'conversation.card') {
       const card = event.data.payload['card'] as ConversationCard;
-      items.push({ card, key: card.cardId, kind: 'card', sequence: event.data.sequence });
+      items.push({
+        card,
+        key: `${event.data.runId}:${card.cardId}`,
+        kind: 'card',
+        runId: event.data.runId,
+        sequence: event.data.sequence,
+      });
       continue;
     }
 
@@ -181,9 +206,11 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
           items.push({
             attachments: [],
             content: `Long assistant response saved as artifact ${artifactId}.`,
-            key: payloadString(event, 'messageId') ?? event.id,
+            key: `${event.data.runId}:${payloadString(event, 'messageId') ?? event.id}`,
             kind: 'message',
+            messageId: payloadString(event, 'messageId'),
             role: 'assistant',
+            runId: event.data.runId,
             sequence: event.data.sequence,
           });
         }
@@ -191,9 +218,11 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
         items.push({
           attachments: event.type === 'message.user' ? attachmentNames(event) : [],
           content,
-          key: payloadString(event, 'messageId') ?? event.id,
+          key: `${event.data.runId}:${payloadString(event, 'messageId') ?? event.id}`,
           kind: 'message',
+          messageId: payloadString(event, 'messageId'),
           role: event.type === 'message.user' ? 'user' : 'assistant',
+          runId: event.data.runId,
           sequence: event.data.sequence,
         });
       }
@@ -205,7 +234,7 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
       event.type === 'phase.started' ||
       event.type === 'phase.completed'
     ) {
-      const key = phaseKey(event);
+      const key = `${event.data.runId}:${phaseKey(event)}`;
       const existingIndex = phases.get(key);
       const existing = existingIndex === undefined ? undefined : items[existingIndex];
       const phase: PhaseItem = {
@@ -216,6 +245,7 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
         name:
           payloadString(event, 'name') ??
           (existing?.kind === 'phase' ? existing.name : phaseName(event)),
+        runId: event.data.runId,
         sequence: existing?.sequence ?? event.data.sequence,
         ...(event.type === 'phase.started'
           ? { startedAt: event.data.occurredAt }
@@ -242,7 +272,7 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
       const sha = payloadString(event, 'commitSha') ?? payloadString(event, 'sha');
       if (sha !== undefined) {
         items.push({
-          key: `commit-${sha}`,
+          key: `commit-${event.data.runId}-${sha}`,
           kind: 'commit',
           message: payloadString(event, 'message') ?? 'Created commit',
           sequence: event.data.sequence,
@@ -252,7 +282,7 @@ function threadItems(events: readonly RunEvent[]): readonly ThreadItem[] {
     }
   }
   flushActivities();
-  return items.sort((left, right) => left.sequence - right.sequence);
+  return items;
 }
 
 function submissionFingerprint(submission: ConversationSubmission): string {
@@ -279,6 +309,27 @@ function userMessageCount(events: readonly RunEvent[], content: string): number 
   return events.filter(
     (event) => event.type === 'message.user' && payloadString(event, 'content') === content,
   ).length;
+}
+
+function optimisticDeliveryStatus(
+  message: OptimisticMessage,
+  events: readonly ConversationRunEvent[],
+): 'Applied' | 'Queued' | undefined {
+  if (message.messageId === undefined) return undefined;
+  const applied = events.find(
+    (event) =>
+      event.data.runId === message.runId &&
+      event.type === 'message.applied' &&
+      payloadString(event, 'messageId') === message.messageId,
+  );
+  if (applied === undefined) return 'Queued';
+  const answered = events.some(
+    (event) =>
+      event.data.runId === message.runId &&
+      event.type === 'message.assistant' &&
+      event.data.sequence > applied.data.sequence,
+  );
+  return answered ? undefined : 'Applied';
 }
 
 function newRunAttachmentContent(submission: ConversationSubmission): string {
@@ -339,6 +390,13 @@ function ThreadStyles(): ReactElement {
         padding-left: 1.25rem;
         color: var(--zapp-text-muted);
         font-size: var(--zapp-text-12);
+      }
+      .zapp-conversation-message-delivery {
+        display: block;
+        margin-top: 0.35rem;
+        color: var(--zapp-text-muted);
+        font-size: var(--zapp-text-12);
+        font-weight: 650;
       }
       .zapp-conversation-activity {
         color: var(--zapp-text-muted);
@@ -514,6 +572,12 @@ function ThreadStyles(): ReactElement {
         border-radius: var(--zapp-radius-panel);
         padding: 0.65rem;
       }
+      .zapp-conversation-composer-guard {
+        min-width: 0;
+        margin: 0;
+        border: 0;
+        padding: 0;
+      }
     `}</style>
   );
 }
@@ -522,9 +586,15 @@ export function Thread({
   adoptedRun,
   allowedModels,
   branches,
+  conversation,
+  conversationListError,
+  conversationLoading,
   incomingImages = [],
   initialPrompt,
+  newThread,
+  onConversationCreated,
   onOpenCommit,
+  onRetryConversationList,
   onEventsChange,
   onRunChange,
   organizationId,
@@ -536,35 +606,94 @@ export function Thread({
   const [optimisticMessages, setOptimisticMessages] = useState<readonly OptimisticMessage[]>([]);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const currentRunRef = useRef<BuilderRun | undefined>(currentRun);
+  currentRunRef.current = currentRun;
   const pendingSendRef = useRef<PendingSend | undefined>(undefined);
-  const { connection, events } = useRunEvents(currentRun?.id, organizationId);
+  const selectedRun =
+    conversation !== undefined &&
+    currentRun?.conversationId === conversation.id &&
+    currentRun.id === conversation.latestRun.id
+      ? currentRun
+      : undefined;
+  const {
+    connection,
+    error: conversationError,
+    events,
+    liveEvents,
+    loading: eventsLoading,
+    refresh: retryConversationEvents,
+  } = useConversationEvents(conversation?.id, selectedRun, organizationId);
   const items = useMemo(() => threadItems(events), [events]);
-  const cancelled = events.some((event) => event.type === 'run.cancelled');
-  const completed = events.some((event) => event.type === 'run.completed');
+  const currentRunEvents = events.filter((event) => event.data.runId === selectedRun?.id);
+  const cancelled = currentRunEvents.some((event) => event.type === 'run.cancelled');
+  const completed = currentRunEvents.some((event) => event.type === 'run.completed');
   const active =
-    currentRun !== undefined &&
-    activeRunStatuses.has(currentRun.status) &&
+    selectedRun !== undefined &&
+    activeRunStatuses.has(selectedRun.status) &&
     !cancelled &&
     !completed;
   const visibleOptimisticMessages = optimisticMessages.filter(
-    (message) =>
-      message.runId === currentRun?.id &&
-      userMessageCount(events, message.content) < message.expectedOrdinal,
+    (message) => {
+      if (message.runId !== selectedRun?.id) return false;
+      if (message.messageId !== undefined) {
+        return !items.some(
+          (item) =>
+            item.kind === 'message' &&
+            item.runId === message.runId &&
+            item.messageId === message.messageId,
+        );
+      }
+      return userMessageCount(currentRunEvents, message.content) < message.expectedOrdinal;
+    },
   );
 
   useEffect(() => {
-    onEventsChange(currentRun?.id, events);
-  }, [currentRun?.id, events, onEventsChange]);
+    onEventsChange(selectedRun?.id, liveEvents);
+  }, [liveEvents, onEventsChange, selectedRun?.id]);
 
   useEffect(() => {
+    if (newThread) {
+      setLoading(false);
+      setCurrentRun(undefined);
+      setOptimisticMessages([]);
+      onRunChange(undefined);
+      setOperationError(undefined);
+      return;
+    }
+    if (conversationListError !== undefined) {
+      setLoading(false);
+      return;
+    }
+    if (conversationLoading || conversation === undefined) {
+      setLoading(true);
+      return;
+    }
+    const retainedRun = currentRunRef.current;
+    if (
+      retainedRun?.id === conversation.latestRun.id &&
+      retainedRun.conversationId === conversation.id
+    ) {
+      setLoading(false);
+      setOperationError(undefined);
+      return;
+    }
     const controller = new AbortController();
     setLoading(true);
     createControlPlaneClient(organizationId)
       .listRuns(projectId, controller.signal)
       .then((response) => {
         if (controller.signal.aborted) return;
-        const run = response.items[0];
-        setOptimisticMessages([]);
+        const run = response.items.find(
+          (candidate) =>
+            candidate.id === conversation.latestRun.id &&
+            candidate.conversationId === conversation.id,
+        );
+        if (run === undefined) {
+          throw new Error('Selected conversation run is unavailable.');
+        }
+        if (currentRunRef.current?.conversationId !== conversation.id) {
+          setOptimisticMessages([]);
+        }
         setCurrentRun(run);
         onRunChange(run);
         setOperationError(undefined);
@@ -580,17 +709,31 @@ export function Thread({
     return () => {
       controller.abort();
     };
-  }, [onRunChange, organizationId, projectId]);
-
-  useEffect(() => {
-    if (adoptedRun === undefined || adoptedRun.id === currentRun?.id) return;
-    setCurrentRun(adoptedRun);
-  }, [adoptedRun, currentRun?.id]);
+  }, [
+    conversation,
+    conversationListError,
+    conversationLoading,
+    newThread,
+    onRunChange,
+    organizationId,
+    projectId,
+  ]);
 
   useEffect(() => {
     if (
-      currentRun === undefined ||
-      !activeRunStatuses.has(currentRun.status) ||
+      adoptedRun === undefined ||
+      adoptedRun.id === currentRun?.id ||
+      adoptedRun.conversationId !== conversation?.id
+    ) {
+      return;
+    }
+    setCurrentRun(adoptedRun);
+  }, [adoptedRun, conversation?.id, currentRun?.id]);
+
+  useEffect(() => {
+    if (
+      selectedRun === undefined ||
+      !activeRunStatuses.has(selectedRun.status) ||
       cancelled ||
       completed
     ) {
@@ -604,8 +747,8 @@ export function Thread({
           projectId,
           controller.signal,
         );
-        const refreshed = response.items.find((run) => run.id === currentRun.id);
-        if (refreshed !== undefined && refreshed.status !== currentRun.status) {
+        const refreshed = response.items.find((run) => run.id === selectedRun.id);
+        if (refreshed !== undefined && refreshed.status !== selectedRun.status) {
           setCurrentRun(refreshed);
           onRunChange(refreshed);
         }
@@ -621,7 +764,7 @@ export function Thread({
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [cancelled, completed, currentRun, onRunChange, organizationId, projectId]);
+  }, [cancelled, completed, onRunChange, organizationId, projectId, selectedRun]);
 
   const pendingSend = (submission: ConversationSubmission): PendingSend => {
     const fingerprint = submissionFingerprint(submission);
@@ -672,13 +815,14 @@ export function Thread({
     attachments: readonly Attachment[],
   ): Promise<BuilderRun> => {
     const client = createControlPlaneClient(organizationId);
-    const branchId = submission.branchId ?? currentRun?.branchId ?? branches[0]?.id;
+    const branchId = submission.branchId ?? selectedRun?.branchId ?? branches[0]?.id;
     const created = await client.createRun(
       projectId,
       {
         appType: 'web',
         ...(branchId === undefined ? {} : { branchId }),
         ...(submission.budget === undefined ? {} : { budget: submission.budget }),
+        ...(conversation === undefined ? {} : { conversationId: conversation.id }),
         mode: submission.mode === 'auto' ? recommendedMode(submission.content) : submission.mode,
         ...(submission.model === undefined ? {} : { model: submission.model }),
         prompt: submission.content,
@@ -693,13 +837,19 @@ export function Thread({
       );
     }
     setCurrentRun(created.run);
+    onConversationCreated(created.conversation, created.run);
     onRunChange(created.run);
     return created.run;
   };
 
-  const appendOptimisticMessage = (run: BuilderRun, content: string): void => {
+  const appendOptimisticMessage = (
+    run: BuilderRun,
+    content: string,
+    messageId?: string,
+  ): void => {
     setOptimisticMessages((current) => {
-      const durableCount = currentRun?.id === run.id ? userMessageCount(events, content) : 0;
+      const durableCount =
+        selectedRun?.id === run.id ? userMessageCount(currentRunEvents, content) : 0;
       const pendingCount = current.filter(
         (message) => message.runId === run.id && message.content === content,
       ).length;
@@ -709,6 +859,7 @@ export function Thread({
           content,
           expectedOrdinal: durableCount + pendingCount + 1,
           id: crypto.randomUUID(),
+          messageId,
           runId: run.id,
         },
       ];
@@ -716,21 +867,29 @@ export function Thread({
   };
 
   const send = async (submission: ConversationSubmission): Promise<boolean> => {
-    if (sending) return false;
+    const selectionReady =
+      conversationListError === undefined &&
+      conversationError === undefined &&
+      !conversationLoading &&
+      !eventsLoading &&
+      (newThread || (conversation !== undefined && selectedRun !== undefined && !loading));
+    if (sending || !selectionReady) return false;
     setSending(true);
     setOperationError(undefined);
     const pending = pendingSend(submission);
     try {
       const attachments = await uploadImages(submission, pending);
       let acceptedRun: BuilderRun;
+      let acceptedMessageId: string | undefined;
       if (active) {
         try {
-          await createControlPlaneClient(organizationId).sendRunMessage(
-            currentRun.id,
+          const acceptedMessage = await createControlPlaneClient(organizationId).sendRunMessage(
+            selectedRun.id,
             { attachments: [...attachments], content: messageContent(submission) },
             pending.messageKey,
           );
-          acceptedRun = currentRun;
+          acceptedMessageId = acceptedMessage.messageId;
+          acceptedRun = selectedRun;
         } catch (error) {
           if (!(
             error instanceof ZappApiError &&
@@ -739,12 +898,18 @@ export function Thread({
           )) {
             throw error;
           }
-          acceptedRun = await createRun(submission, pending, attachments);
+          const response = await createControlPlaneClient(organizationId).listRuns(projectId);
+          const refreshed = response.items.find((run) => run.id === selectedRun.id);
+          if (refreshed !== undefined) {
+            setCurrentRun(refreshed);
+            onRunChange(refreshed);
+          }
+          throw error;
         }
       } else {
         acceptedRun = await createRun(submission, pending, attachments);
       }
-      appendOptimisticMessage(acceptedRun, submission.content);
+      appendOptimisticMessage(acceptedRun, submission.content, acceptedMessageId);
       pendingSendRef.current = undefined;
       return true;
     } catch {
@@ -758,11 +923,11 @@ export function Thread({
   };
 
   const stop = async (): Promise<void> => {
-    if (currentRun === undefined || stopping) return;
+    if (selectedRun === undefined || stopping) return;
     setStopping(true);
     setOperationError(undefined);
     try {
-      await createControlPlaneClient(organizationId).cancelRun(currentRun.id, crypto.randomUUID());
+      await createControlPlaneClient(organizationId).cancelRun(selectedRun.id, crypto.randomUUID());
     } catch {
       setOperationError('The run could not be stopped. Retry the stop request.');
     } finally {
@@ -771,6 +936,13 @@ export function Thread({
   };
 
   const hasUserMessage = items.some((item) => item.kind === 'message' && item.role === 'user');
+  const selectionReady =
+    conversationListError === undefined &&
+    conversationError === undefined &&
+    !conversationLoading &&
+    !eventsLoading &&
+    (newThread || (conversation !== undefined && selectedRun !== undefined && !loading));
+  const historyError = conversationListError ?? conversationError;
 
   return (
     <div className="zapp-conversation-thread">
@@ -780,42 +952,64 @@ export function Thread({
           Reconnecting to the run…
         </p>
       ) : null}
-      {operationError === undefined ? null : (
+      {operationError === undefined &&
+      conversationListError === undefined &&
+      conversationError === undefined ? null : (
         <p className="zapp-conversation-error" role="alert">
-          {operationError}
+          {operationError ?? conversationListError ?? conversationError}
         </p>
+      )}
+      {historyError === undefined ? null : (
+        <button
+          aria-label="Reload thread"
+          className="zapp-conversation-commit"
+          onClick={
+            conversationListError === undefined
+              ? retryConversationEvents
+              : onRetryConversationList
+          }
+          type="button"
+        >
+          Retry history
+        </button>
       )}
       {cancelled ? (
         <p className="zapp-conversation-cancelled" role="status">
           Run cancelled
         </p>
       ) : null}
-      {currentRun === undefined ? null : (
+      {selectedRun === undefined ? null : (
         <div aria-label="Build status" className="zapp-conversation-run-status" role="status">
           <span aria-hidden="true" className="zapp-conversation-run-status-dot" />
           <span>
-            {cancelled || currentRun.status === 'cancelled'
+            {cancelled || selectedRun.status === 'cancelled'
               ? 'Build cancelled'
-              : completed || currentRun.status === 'completed'
+              : completed || selectedRun.status === 'completed'
                 ? 'Build complete'
-                : currentRun.status === 'failed'
+                : selectedRun.status === 'failed'
                   ? 'Build failed'
-                  : currentRun.status === 'queued'
+                  : selectedRun.status === 'queued'
                     ? 'Build queued'
-                    : currentRun.status === 'paused'
+                    : selectedRun.status === 'paused'
                       ? 'Build paused'
-                      : currentRun.status === 'waiting_for_approval'
+                      : selectedRun.status === 'waiting_for_approval'
                         ? 'Waiting for approval'
                         : 'Agent is running'}
           </span>
         </div>
       )}
       <div className="zapp-conversation-items">
-        {loading && items.length === 0 ? <p role="status">Loading conversation…</p> : null}
+        {conversationListError === undefined && (loading || eventsLoading) && items.length === 0 ? (
+          <p aria-live="polite">Loading conversation…</p>
+        ) : null}
         {!hasUserMessage && initialPrompt !== undefined ? (
           <MessageBubble content={initialPrompt} role="user" />
         ) : null}
-        {!loading && items.length === 0 && initialPrompt === undefined ? (
+        {!loading &&
+        !eventsLoading &&
+        historyError === undefined &&
+        items.length === 0 &&
+        initialPrompt === undefined ? (
           <EmptyState
             description="Send a message to start a run with the agent."
             title="No conversation yet"
@@ -823,10 +1017,20 @@ export function Thread({
         ) : null}
         {items.map((item) => {
           if (item.kind === 'message') {
+            const optimistic =
+              item.messageId === undefined
+                ? undefined
+                : optimisticMessages.find(
+                    (message) =>
+                      message.runId === item.runId && message.messageId === item.messageId,
+                  );
             return (
               <MessageBubble
                 attachmentNames={item.attachments}
                 content={item.content}
+                {...(optimistic === undefined
+                  ? {}
+                  : { deliveryStatus: optimisticDeliveryStatus(optimistic, events) })}
                 key={item.key}
                 role={item.role}
               />
@@ -836,8 +1040,7 @@ export function Thread({
             return <ToolActivityLine activities={item.activities} key={item.key} />;
           }
           if (item.kind === 'card') {
-            if (currentRun === undefined) return null;
-            const props = { organizationId, runId: currentRun.id } as const;
+            const props = { organizationId, runId: item.runId } as const;
             if (item.card.kind === 'question')
               return <QuestionCard card={item.card} key={item.key} {...props} />;
             if (item.card.kind === 'specification')
@@ -847,7 +1050,11 @@ export function Thread({
             return <ApprovalCard card={item.card} key={item.key} {...props} />;
           }
           if (item.kind === 'phase') {
-            if (currentRun?.status === 'failed' && item.state === 'running') {
+            if (
+              selectedRun?.id === item.runId &&
+              selectedRun.status === 'failed' &&
+              item.state === 'running'
+            ) {
               return (
                 <article
                   aria-label={`${item.name} progress`}
@@ -887,20 +1094,29 @@ export function Thread({
           );
         })}
         {visibleOptimisticMessages.map((message) => (
-          <MessageBubble content={message.content} key={message.id} role="user" />
+          <MessageBubble
+            content={message.content}
+            {...(message.messageId === undefined
+              ? {}
+              : { deliveryStatus: optimisticDeliveryStatus(message, events) })}
+            key={message.id}
+            role="user"
+          />
         ))}
       </div>
-      <Composer
-        active={active}
-        allowedModels={allowedModels}
-        branches={branches}
-        incomingImages={incomingImages}
-        onStop={stop}
-        onSubmit={send}
-        projectId={projectId}
-        sending={sending}
-        stopping={stopping}
-      />
+      <fieldset className="zapp-conversation-composer-guard" disabled={!selectionReady}>
+        <Composer
+          active={active}
+          allowedModels={allowedModels}
+          branches={branches}
+          incomingImages={incomingImages}
+          onStop={stop}
+          onSubmit={send}
+          projectId={projectId}
+          sending={sending}
+          stopping={stopping}
+        />
+      </fieldset>
     </div>
   );
 }

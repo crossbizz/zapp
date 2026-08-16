@@ -4,6 +4,54 @@
   min-height: 0;
 }
 
+.conversationActions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.conversationHistoryDrawer :global(.zapp-overlay-panel__body) {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.conversationHistoryHeader {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.conversationHistoryList {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conversationHistoryList button {
+  display: grid;
+  width: 100%;
+  gap: 0.2rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  padding: 0.7rem;
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversationHistoryList button[aria-current='page'] {
+  border-color: var(--zapp-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--zapp-accent) 14%, transparent);
+}
+
+.conversationHistoryList span {
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+}
+
 .surfaceTab,
 .moreTab {
   min-height: 1.75rem;

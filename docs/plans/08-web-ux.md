@@ -489,10 +489,10 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **ADR:** ADR-0034. **Files:** Modify builder thread/header/API/SSE composition and styles, add conversation hooks/history drawer, Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-durable-project-conversations.md`.
 **Effort:** L. **[expand-at-execution]**
 
-- [ ] Render the selected conversation's structured events across every ordered run; terminal same-thread follow-up creates a successor without unmounting prior messages, while an active-run message uses the existing keyed continuation route.
-- [ ] Add accessible **History** and **New thread** controls. Store selection in `?conversation=`, support refresh/Back/Forward, select newest only when no selection exists, and create no empty record for `conversation=new`.
-- [ ] Show accepted busy-run user messages as **Queued** and transition only on the matching `message.applied`; merge history pages and active SSE by `(runId, sequence)` without duplicates or cross-tenant retained selection.
-- [ ] Prove seeded multi-run history, terminal follow-up, explicit new-thread creation, queued-to-applied state, pagination, navigation restoration, retry states, and organization fencing in focused and full web suites. Commit: `feat(web): add project conversation history`
+- [x] Render the selected conversation's structured events across every ordered run; terminal same-thread follow-up creates a successor without unmounting prior messages, while an active-run message uses the existing keyed continuation route.
+- [x] Add accessible **History** and **New thread** controls. Store selection in `?conversation=`, support refresh/Back/Forward, select newest only when no selection exists, and create no empty record for `conversation=new`.
+- [x] Show accepted busy-run user messages as **Queued** and transition only on the matching `message.applied`; merge history pages and active SSE by `(runId, sequence)` without duplicates or cross-tenant retained selection.
+- [x] Prove seeded multi-run history, terminal follow-up, explicit new-thread creation, queued-to-applied state, pagination, navigation restoration, retry states, and organization fencing in focused and full web suites. Commit: `feat(web): add durable project conversation history`
 
 ### Task WEB-20 [M6]: Project-card deletion lifecycle
 
@@ -517,6 +517,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-16 WEB-19 done — Added tenant-scoped paginated project history, explicit new threads, same-thread successor continuity, queued/applied delivery state, safe ambiguous-admission handling, retryable history, legacy preview continuity, and passed 149/149 browser tests plus the full repository gate.
 - 2026-08-16 WEB-18-FIX-20 done — Made capability scans compatible with the immutable legacy workspace agent, restored the actual pnpm preview contract, replaced impossible revisionless wake attempts with a keyed same-conversation build retry, passed control API 13/13 and web 140/140, rendered the real signed-in Docker preview and source tree, and passed the 94/94-task cold repository gate.
 - 2026-08-16 WEB-18-FIX-19 done — Isolated the canonical port 3000 Next process in `.next-dev`, proved a clean local startup and the 140/140 browser suite, and passed the 94/94-task cold repository gate.
 - 2026-08-15 WEB-18-FIX-18 done — Filtered dependency/generated trees before bounded listings and scans, refreshed preview contracts from current source, preserved the shared pnpm cache, serialized wake recovery, and proved 12/12 preview browser flows plus a live authenticated Docker restart that restored Vite and rendered the project.

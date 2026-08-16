@@ -26,6 +26,12 @@ export type EnqueueGitHubImportInput =
   paths['/v1/projects/{projectId}/import/github']['post']['requestBody']['content']['application/json'];
 export type CreateRunMessageInput =
   paths['/v1/runs/{runId}/messages']['post']['requestBody']['content']['application/json'];
+export type ListProjectConversationsQuery = NonNullable<
+  paths['/v1/projects/{projectId}/conversations']['get']['parameters']['query']
+>;
+export type ListConversationEventsQuery = NonNullable<
+  paths['/v1/conversations/{conversationId}/events']['get']['parameters']['query']
+>;
 export type MissionControlData =
   paths['/v1/runs/{runId}/mission-control']['get']['responses'][200]['content']['application/json'];
 export type ResolveApprovalInput =
@@ -668,6 +674,30 @@ export function createControlPlaneClient(organizationId?: string) {
         headers: headers(),
         ...(signal === undefined ? {} : { signal }),
       }),
+    listProjectConversations: (
+      projectId: string,
+      query: ListProjectConversationsQuery = {},
+      signal?: AbortSignal,
+    ) =>
+      client.request('/v1/projects/{projectId}/conversations', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    listConversationEvents: (
+      conversationId: string,
+      query: ListConversationEventsQuery = {},
+      signal?: AbortSignal,
+    ) =>
+      client.request('/v1/conversations/{conversationId}/events', {
+        method: 'GET',
+        path: { conversationId },
+        headers: headers(),
+        query,
+        ...(signal === undefined ? {} : { signal }),
+      }),
     listIncidents: (projectId: string, query: ListIncidentsQuery = {}, signal?: AbortSignal) =>
       client.request('/v1/projects/{projectId}/incidents', {
         method: 'GET',
@@ -978,6 +1008,15 @@ export type FeatureFlagsResponse = Awaited<
 export type BuilderRun = Awaited<
   ReturnType<ReturnType<typeof createControlPlaneClient>['listRuns']>
 >['items'][number];
+export type ProjectConversation = Awaited<
+  ReturnType<ReturnType<typeof createControlPlaneClient>['listProjectConversations']>
+>['items'][number];
+export type ProjectConversationEvent = Awaited<
+  ReturnType<ReturnType<typeof createControlPlaneClient>['listConversationEvents']>
+>['items'][number];
+export type CreatedConversation = Awaited<
+  ReturnType<ReturnType<typeof createControlPlaneClient>['createRun']>
+>['conversation'];
 export type ProjectIncident = Awaited<
   ReturnType<ReturnType<typeof createControlPlaneClient>['listIncidents']>
 >['items'][number];

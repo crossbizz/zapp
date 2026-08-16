@@ -1,9 +1,12 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
-const appBaseUrl = 'http://127.0.0.1:3100';
+const apiBaseUrl = `http://127.0.0.1:${process.env['ZAPP_WEB_E2E_API_PORT'] ?? '4100'}`;
+const appBaseUrl = `http://127.0.0.1:${process.env['ZAPP_WEB_E2E_APP_PORT'] ?? '3100'}`;
 const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
+const conversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FA';
+const secondConversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FB';
+const newConversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FC';
 const branchId = 'br_01K27Q9C2W85CMN1V9S6Q3D4FQ';
 const organizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 const contractOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
@@ -39,6 +42,8 @@ const activeRun = {
   appType: 'web' as const,
   branchId: null as string | null,
   completedAt: null as string | null,
+  conversationId,
+  conversationRunNumber: 1,
   id: runId,
   mode: 'build' as const,
   model: null,
@@ -49,17 +54,36 @@ const activeRun = {
   status: 'running' as const,
 };
 
-type RunFixture = Omit<typeof activeRun, 'status'> & {
+type RunFixture = Omit<typeof activeRun, 'mode' | 'model' | 'status'> & {
+  readonly mode: 'ask' | 'autonomous' | 'build' | 'fix' | 'prototype';
+  readonly model: string | null;
   readonly status:
     'cancelled' | 'completed' | 'failed' | 'paused' | 'queued' | 'running' | 'waiting_for_approval';
 };
 
+function createdRunResponse(run: RunFixture) {
+  return {
+    conversation: {
+      createdAt: run.startedAt,
+      createdBy: run.startedBy,
+      id: run.conversationId,
+      organizationId: run.organizationId,
+      projectId: run.projectId,
+      title: 'Conversation Fixture',
+      updatedAt: run.startedAt,
+    },
+    run,
+  };
+}
+
 interface EventInput {
   readonly payload: Readonly<Record<string, unknown>>;
+  readonly runId?: string;
   readonly sequence: number;
   readonly type:
     | 'commit.created'
     | 'conversation.card'
+    | 'message.applied'
     | 'message.assistant'
     | 'message.user'
     | 'phase.completed'
@@ -69,7 +93,8 @@ interface EventInput {
     | 'tool.started';
 }
 
-function eventData({ payload, sequence, type }: EventInput) {
+function eventData(input: EventInput) {
+  const { payload, sequence, type } = input;
   const tail = sequence.toString(32).toUpperCase().padStart(6, '0');
   return {
     id: `evt_01K27Q9C2W85CMN1V9S6${tail}`,
@@ -77,7 +102,7 @@ function eventData({ payload, sequence, type }: EventInput) {
     organizationId: contractOrganizationId,
     payload,
     projectId,
-    runId,
+    runId: input.runId ?? runId,
     sequence,
     type,
     visibility: 'user' as const,
@@ -110,7 +135,11 @@ async function signIn(page: Page): Promise<void> {
   await expect(page).toHaveURL('/');
 }
 
-async function mockBuilder(page: Page, runs: readonly RunFixture[] = [activeRun]): Promise<void> {
+async function mockBuilder(
+  page: Page,
+  runs: readonly RunFixture[] = [activeRun],
+  withConversationRoutes = true,
+): Promise<void> {
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}`, async (route) => {
     await route.fulfill({
       body: JSON.stringify(projectRead),
@@ -125,6 +154,39 @@ async function mockBuilder(page: Page, runs: readonly RunFixture[] = [activeRun]
       status: 200,
     });
   });
+  if (withConversationRoutes) {
+    await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+      const latestRun = runs[0];
+      await route.fulfill({
+        body: JSON.stringify({
+          items:
+            latestRun === undefined
+              ? []
+              : [
+                  {
+                    createdAt: latestRun.startedAt,
+                    id: latestRun.conversationId,
+                    latestRun: { id: latestRun.id, status: latestRun.status },
+                    projectId,
+                    runCount: latestRun.conversationRunNumber,
+                    title: 'Conversation Fixture',
+                    updatedAt: latestRun.completedAt ?? latestRun.startedAt,
+                  },
+                ],
+          nextCursor: null,
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    });
+    await page.route(`${apiBaseUrl}/v1/conversations/*/events*`, async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({ items: [], nextCursor: null }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    });
+  }
 }
 
 async function openBuilder(page: Page, runs?: readonly RunFixture[]): Promise<void> {
@@ -806,13 +868,9 @@ test('shows an accepted queued prompt immediately and reconciles the durable use
       return;
     }
     await route.fulfill({
-      body: JSON.stringify({
-        run: {
-          ...activeRun,
-          id: createdRunId,
-          status: 'queued',
-        },
-      }),
+      body: JSON.stringify(
+        createdRunResponse({ ...activeRun, id: createdRunId, status: 'queued' }),
+      ),
       headers: corsHeaders(),
       status: 201,
     });
@@ -850,7 +908,7 @@ test('reconciles a failed run from the public runs API when the event stream sta
     await route.fulfill({
       body:
         route.request().method() === 'POST'
-          ? JSON.stringify({ run: { ...run, status: 'queued' } })
+          ? JSON.stringify(createdRunResponse({ ...run, status: 'queued' }))
           : JSON.stringify({ items: [run], nextCursor: null }),
       headers: corsHeaders(),
       status: route.request().method() === 'POST' ? 201 : 200,
@@ -1074,7 +1132,7 @@ test('retries a partially created run with the same idempotency keys and attachm
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
     createRequests.push(route.request());
     await route.fulfill({
-      body: JSON.stringify({ run: { ...activeRun, id: createdRunId } }),
+      body: JSON.stringify(createdRunResponse({ ...activeRun, id: createdRunId })),
       headers: corsHeaders(),
       status: 201,
     });
@@ -1151,7 +1209,12 @@ test('uploads a replacement image after a failed send even when its metadata is 
       return;
     }
     await route.fulfill({
-      body: JSON.stringify({ run: { ...activeRun, id: 'run_01K27Q9C2W85CMN1V9S6Q3D4FN' } }),
+      body: JSON.stringify(
+        createdRunResponse({
+          ...activeRun,
+          id: 'run_01K27Q9C2W85CMN1V9S6Q3D4FN',
+        }),
+      ),
       headers: corsHeaders(),
       status: 201,
     });
@@ -1226,14 +1289,14 @@ test('starts a new run with the project-persisted mode and model when the latest
     }
     createdRunBody = route.request().postDataJSON();
     await route.fulfill({
-      body: JSON.stringify({
-        run: {
+      body: JSON.stringify(
+        createdRunResponse({
           ...activeRun,
           id: 'run_01K27Q9C2W85CMN1V9S6Q3D4FK',
           mode: 'ask',
           model: 'anthropic/claude-sonnet-5',
-        },
-      }),
+        }),
+      ),
       headers: corsHeaders(),
       status: 201,
     });
@@ -1251,4 +1314,730 @@ test('starts a new run with the project-persisted mode and model when the latest
       model: 'anthropic/claude-sonnet-5',
       prompt: 'Fix the checkout validation race.',
     });
+});
+
+test('keeps prior runs visible when a terminal conversation receives a follow-up', async ({
+  page,
+}) => {
+  const completedRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:05:00.000Z',
+    status: 'completed' as const,
+  };
+  const successorRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FC';
+  const priorRequest = 'Build the original landing page.';
+  const priorAnswer = 'The original landing page is complete.';
+  let createBody: unknown;
+
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            createdAt: '2026-08-10T12:00:00.000Z',
+            id: conversationId,
+            latestRun: { id: runId, status: 'completed' },
+            projectId,
+            runCount: 1,
+            title: priorRequest,
+            updatedAt: '2026-08-10T12:05:00.000Z',
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/conversations/${conversationId}/events*`, async (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get('cursor');
+    await route.fulfill({
+      body: JSON.stringify({
+        items:
+          cursor === null
+            ? [
+                {
+                  event: eventData({
+                    payload: {
+                      content: priorRequest,
+                      messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FC',
+                    },
+                    sequence: 1,
+                    type: 'message.user',
+                  }),
+                  runNumber: 1,
+                },
+              ]
+            : [
+                {
+                  event: eventData({
+                    payload: {
+                      content: priorAnswer,
+                      messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FD',
+                    },
+                    sequence: 2,
+                    type: 'message.assistant',
+                  }),
+                  runNumber: 1,
+                },
+              ],
+        nextCursor: cursor === null ? 'history-page-2' : null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/*/events*`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await mockBuilder(page, [completedRun], false);
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?conversation=${conversationId}`);
+
+  await expect(page.getByText(priorRequest, { exact: true })).toBeVisible();
+  await expect(page.getByText(priorAnswer, { exact: true })).toBeVisible();
+
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        body: JSON.stringify({ items: [completedRun], nextCursor: null }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+      return;
+    }
+    createBody = route.request().postDataJSON();
+    await route.fulfill({
+      body: JSON.stringify({
+        conversation: {
+          createdAt: '2026-08-10T12:00:00.000Z',
+          createdBy: activeRun.startedBy,
+          id: conversationId,
+          organizationId,
+          projectId,
+          title: priorRequest,
+          updatedAt: '2026-08-10T12:06:00.000Z',
+        },
+        run: {
+          ...activeRun,
+          conversationRunNumber: 2,
+          id: successorRunId,
+          status: 'queued',
+        },
+      }),
+      headers: corsHeaders(),
+      status: 201,
+    });
+  });
+
+  await page.getByLabel('Message the agent').fill('Add a pricing section.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect.poll(() => createBody).toMatchObject({ conversationId });
+  await expect(page.getByText(priorRequest, { exact: true })).toBeVisible();
+  await expect(page.getByText(priorAnswer, { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`conversation=${conversationId}`));
+});
+
+test('selects project history through the URL and offers an explicit empty new thread', async ({
+  page,
+}) => {
+  const firstTitle = 'First checkout thread';
+  const secondTitle = 'Second analytics thread';
+  const secondHistoryRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FJ';
+  const firstHistoryRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:05:00.000Z',
+    status: 'completed' as const,
+  };
+  const secondHistoryRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T13:05:00.000Z',
+    conversationId: secondConversationId,
+    id: secondHistoryRunId,
+    status: 'completed' as const,
+  };
+  let createBody: Readonly<Record<string, unknown>> | undefined;
+  let createRequests = 0;
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get('cursor');
+    await route.fulfill({
+      body: JSON.stringify({
+        items:
+          cursor === null
+            ? [
+                {
+                  createdAt: '2026-08-10T13:00:00.000Z',
+                  id: secondConversationId,
+                  latestRun: { id: secondHistoryRunId, status: 'completed' },
+                  projectId,
+                  runCount: 1,
+                  title: secondTitle,
+                  updatedAt: '2026-08-10T13:05:00.000Z',
+                },
+              ]
+            : [
+                {
+                  createdAt: '2026-08-10T12:00:00.000Z',
+                  id: conversationId,
+                  latestRun: { id: runId, status: 'completed' },
+                  projectId,
+                  runCount: 1,
+                  title: firstTitle,
+                  updatedAt: '2026-08-10T12:05:00.000Z',
+                },
+              ],
+        nextCursor: cursor === null ? 'conversation-page-2' : null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  for (const [id, title, historyRunId] of [
+    [conversationId, firstTitle, runId],
+    [secondConversationId, secondTitle, secondHistoryRunId],
+  ] as const) {
+    await page.route(`${apiBaseUrl}/v1/conversations/${id}/events*`, async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          items: [
+            {
+              event: eventData({
+                payload: { content: title, messageId: `msg_${id.slice(5)}` },
+                runId: historyRunId,
+                sequence: 1,
+                type: 'message.user',
+              }),
+              runNumber: 1,
+            },
+          ],
+          nextCursor: null,
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    });
+  }
+  await page.route(`${apiBaseUrl}/v1/runs/*/events*`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await mockBuilder(page, [secondHistoryRun, firstHistoryRun], false);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    if (route.request().method() === 'POST') {
+      createRequests += 1;
+      createBody = route.request().postDataJSON() as Readonly<Record<string, unknown>>;
+      await route.fulfill({
+        body: JSON.stringify(
+          createdRunResponse({
+            ...activeRun,
+            conversationId: newConversationId,
+            id: 'run_01K27Q9C2W85CMN1V9S6Q3D4FG',
+            status: 'queued',
+          }),
+        ),
+        headers: corsHeaders(),
+        status: 201,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({ items: [secondHistoryRun, firstHistoryRun], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?conversation=${conversationId}`);
+  await expect(page.getByText(firstTitle, { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'History' }).click();
+  await page.getByRole('button', { name: secondTitle }).click();
+  await expect(page).toHaveURL(new RegExp(`conversation=${secondConversationId}`));
+  await expect(page.getByText(secondTitle, { exact: true })).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`conversation=${conversationId}`));
+  await expect(page.getByText(firstTitle, { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'New thread' }).click();
+  await expect(page).toHaveURL(/conversation=new/u);
+  await expect(page.getByText('No conversation yet')).toBeVisible();
+  expect(createRequests).toBe(0);
+
+  await page.getByLabel('Message the agent').fill('Start a clean support portal.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => createRequests).toBe(1);
+  expect(createBody).not.toHaveProperty('conversationId');
+  await expect(page).toHaveURL(new RegExp(`conversation=${newConversationId}`));
+});
+
+test('keeps an accepted active-run message queued until message.applied arrives', async ({
+  page,
+}) => {
+  const prompt = 'Add the missing account navigation.';
+  const messageId = 'msg_01K27Q9C2W85CMN1V9S6Q3D4FE';
+  let releaseApplied: (() => void) | undefined;
+  const appliedGate = new Promise<void>((resolve) => {
+    releaseApplied = resolve;
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            createdAt: activeRun.startedAt,
+            id: conversationId,
+            latestRun: { id: runId, status: 'running' },
+            projectId,
+            runCount: 1,
+            title: 'Account navigation',
+            updatedAt: activeRun.startedAt,
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/conversations/${conversationId}/events*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ items: [], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    await appliedGate;
+    await route.fulfill({
+      body: eventFrame({
+        payload: { messageId, operationKey: `op_${'a'.repeat(64)}` },
+        sequence: 8,
+        type: 'message.applied',
+      }),
+      headers: corsHeaders('text/event-stream'),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/messages`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ messageId, sequence: 7 }),
+      headers: corsHeaders(),
+      status: 202,
+    });
+  });
+  await mockBuilder(page, [activeRun], false);
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?conversation=${conversationId}`);
+
+  await page.getByLabel('Message the agent').fill(prompt);
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.getByRole('article', { name: 'You' }).filter({ hasText: prompt })).toContainText(
+    'Queued',
+  );
+
+  releaseApplied?.();
+  await expect(page.getByRole('article', { name: 'You' }).filter({ hasText: prompt })).toContainText(
+    'Applied',
+  );
+});
+
+test('blocks submission while a newly selected conversation run is unresolved', async ({
+  page,
+}) => {
+  const firstRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:05:00.000Z',
+    status: 'completed' as const,
+  };
+  const secondRun = {
+    ...activeRun,
+    conversationId: secondConversationId,
+    id: 'run_01K27Q9C2W85CMN1V9S6Q3D4FH',
+    status: 'running' as const,
+  };
+  let releaseSecondRun: (() => void) | undefined;
+  const secondRunGate = new Promise<void>((resolve) => {
+    releaseSecondRun = resolve;
+  });
+  let runReads = 0;
+  let messageRequests = 0;
+
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            createdAt: secondRun.startedAt,
+            id: secondConversationId,
+            latestRun: { id: secondRun.id, status: secondRun.status },
+            projectId,
+            runCount: 1,
+            title: 'Second delayed thread',
+            updatedAt: secondRun.startedAt,
+          },
+          {
+            createdAt: firstRun.startedAt,
+            id: conversationId,
+            latestRun: { id: firstRun.id, status: firstRun.status },
+            projectId,
+            runCount: 1,
+            title: 'First loaded thread',
+            updatedAt: firstRun.startedAt,
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/conversations/*/events*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ items: [], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/*/events*`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await mockBuilder(page, [firstRun, secondRun], false);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    runReads += 1;
+    if (runReads > 1) await secondRunGate;
+    await route.fulfill({
+      body: JSON.stringify({ items: [secondRun, firstRun], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${secondRun.id}/messages`, async (route) => {
+    messageRequests += 1;
+    await route.fulfill({
+      body: JSON.stringify({ messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FJ', sequence: 2 }),
+      headers: corsHeaders(),
+      status: 202,
+    });
+  });
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?conversation=${conversationId}`);
+  await expect(page.getByText('Build complete')).toBeVisible();
+  await page.getByLabel('Message the agent').fill('Apply this only to the second thread.');
+
+  await page.getByRole('button', { name: 'History' }).click();
+  await page.getByRole('button', { name: 'Second delayed thread' }).click();
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled();
+  expect(messageRequests).toBe(0);
+
+  releaseSecondRun?.();
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => messageRequests).toBe(1);
+});
+
+test('does not create a duplicate successor when rejected admission races terminal status', async ({
+  page,
+}) => {
+  const terminalRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:05:00.000Z',
+    status: 'completed' as const,
+  };
+  let successorRequests = 0;
+  let messageRejected = false;
+  await page.route(`${apiBaseUrl}/v1/runs/*/events*`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await openBuilder(page, [activeRun]);
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/messages`, async (route) => {
+    messageRejected = true;
+    await route.fulfill({
+      body: JSON.stringify({
+        error: {
+          code: 'run_not_active',
+          message: 'The run could not accept this message.',
+          requestId: 'request-web-conversation-1',
+        },
+      }),
+      headers: corsHeaders(),
+      status: 409,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    if (route.request().method() === 'POST') successorRequests += 1;
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [messageRejected ? terminalRun : activeRun],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+
+  await page.getByLabel('Message the agent').fill('Do not duplicate this message.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect(page.getByText(/message was not sent/u)).toBeVisible();
+  expect(successorRequests).toBe(0);
+});
+
+test('shows a retryable conversation history failure in the main thread', async ({ page }) => {
+  let historyReads = 0;
+  await mockBuilder(page, [activeRun], false);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+    historyReads += 1;
+    if (historyReads === 1) {
+      await route.fulfill({
+        body: JSON.stringify({
+          error: {
+            code: 'fixture_failure',
+            message: 'fixture failure',
+            requestId: 'request-web-conversation-2',
+          },
+        }),
+        headers: corsHeaders(),
+        status: 500,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            createdAt: activeRun.startedAt,
+            id: conversationId,
+            latestRun: { id: runId, status: activeRun.status },
+            projectId,
+            runCount: 1,
+            title: 'Recovered history',
+            updatedAt: activeRun.startedAt,
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/conversations/${conversationId}/events*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ items: [], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/*/events*`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect(page.getByText('Conversation history could not be loaded.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reload thread' })).toBeVisible();
+  await expect(page.getByText('Loading conversation…')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Reload thread' }).click();
+  await expect.poll(() => historyReads).toBe(2);
+  await expect(page.getByText('Agent is running')).toBeVisible();
+});
+
+test('rejects a conversation selection outside the scoped project history', async ({ page }) => {
+  const foreignConversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FZ';
+  let foreignHistoryReads = 0;
+  await mockBuilder(page, [activeRun]);
+  await page.route(`${apiBaseUrl}/v1/conversations/${foreignConversationId}/events*`, async (route) => {
+    foreignHistoryReads += 1;
+    await route.fulfill({
+      body: JSON.stringify({ items: [], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?conversation=${foreignConversationId}`);
+
+  await expect(page).toHaveURL(/conversation=new/u);
+  await expect(page.getByText('No conversation yet')).toBeVisible();
+  expect(foreignHistoryReads).toBe(0);
+});
+
+test('retries failed conversation event history before enabling submission', async ({ page }) => {
+  const completedRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:05:00.000Z',
+    status: 'completed' as const,
+  };
+  let eventReads = 0;
+  await mockBuilder(page, [completedRun], false);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            createdAt: completedRun.startedAt,
+            id: conversationId,
+            latestRun: { id: runId, status: completedRun.status },
+            projectId,
+            runCount: 1,
+            title: 'Retry event history',
+            updatedAt: completedRun.completedAt,
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/conversations/${conversationId}/events*`, async (route) => {
+    eventReads += 1;
+    if (eventReads === 1) {
+      await route.fulfill({
+        body: JSON.stringify({
+          error: {
+            code: 'fixture_failure',
+            message: 'fixture failure',
+            requestId: 'request-web-conversation-3',
+          },
+        }),
+        headers: corsHeaders(),
+        status: 500,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            event: eventData({
+              payload: {
+                content: 'Recovered event history.',
+                messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FM',
+              },
+              sequence: 1,
+              type: 'message.assistant',
+            }),
+            runNumber: 1,
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?conversation=${conversationId}`);
+
+  await expect(page.getByText('This conversation could not be loaded.', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Message the agent')).toBeDisabled();
+  await page.getByRole('button', { name: 'Reload thread' }).click();
+
+  await expect.poll(() => eventReads).toBe(2);
+  await expect(page.getByText('Recovered event history.', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Message the agent')).toBeEnabled();
+});
+
+test('masks the prior transcript synchronously when conversation scope changes', async ({ page }) => {
+  const firstTitle = 'Scoped transcript from the first conversation';
+  const secondTitle = 'Scoped transcript from the second conversation';
+  const completedRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:05:00.000Z',
+    status: 'completed' as const,
+  };
+  const secondRun = {
+    ...completedRun,
+    conversationId: secondConversationId,
+    id: 'run_01K27Q9C2W85CMN1V9S6Q3D4FN',
+  };
+  let releaseSecondHistory: (() => void) | undefined;
+  const secondHistoryGate = new Promise<void>((resolve) => {
+    releaseSecondHistory = resolve;
+  });
+  await mockBuilder(page, [secondRun, completedRun], false);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            createdAt: secondRun.startedAt,
+            id: secondConversationId,
+            latestRun: { id: secondRun.id, status: secondRun.status },
+            projectId,
+            runCount: 1,
+            title: 'Second scoped thread',
+            updatedAt: secondRun.completedAt,
+          },
+          {
+            createdAt: completedRun.startedAt,
+            id: conversationId,
+            latestRun: { id: completedRun.id, status: completedRun.status },
+            projectId,
+            runCount: 1,
+            title: 'First scoped thread',
+            updatedAt: completedRun.completedAt,
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  for (const [id, title] of [
+    [conversationId, firstTitle],
+    [secondConversationId, secondTitle],
+  ] as const) {
+    await page.route(`${apiBaseUrl}/v1/conversations/${id}/events*`, async (route) => {
+      if (id === secondConversationId) await secondHistoryGate;
+      await route.fulfill({
+        body: JSON.stringify({
+          items: [
+            {
+              event: eventData({
+                payload: { content: title, messageId: `msg_${id.slice(5)}` },
+                runId: id === secondConversationId ? secondRun.id : completedRun.id,
+                sequence: 1,
+                type: 'message.user',
+              }),
+              runNumber: 1,
+            },
+          ],
+          nextCursor: null,
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    });
+  }
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?conversation=${conversationId}`);
+  await expect(page.getByText(firstTitle, { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'History' }).click();
+  await page.evaluate(
+    ({ expectedConversationId, priorTitle }) => {
+      document.body.dataset['retainedPriorTranscript'] = '';
+      const observer = new MutationObserver(() => {
+        if (!window.location.search.includes(expectedConversationId)) return;
+        document.body.dataset['retainedPriorTranscript'] = String(
+          document.body.textContent.includes(priorTitle),
+        );
+        observer.disconnect();
+      });
+      observer.observe(document.body, { attributes: true, childList: true, subtree: true });
+    },
+    { expectedConversationId: secondConversationId, priorTitle: firstTitle },
+  );
+  await page.getByRole('button', { name: 'Second scoped thread' }).click();
+  await expect
+    .poll(() => page.evaluate(() => document.body.dataset['retainedPriorTranscript']))
+    .toBe('false');
+
+  releaseSecondHistory?.();
+  await expect(page.getByText(secondTitle, { exact: true })).toBeVisible();
+  await expect(page.getByText(firstTitle, { exact: true })).toHaveCount(0);
 });

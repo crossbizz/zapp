@@ -3,6 +3,7 @@ import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
 
 interface TopBarProps {
+  readonly conversationActions: ReactNode;
   readonly deploy: ReactNode;
   readonly missionControl: ReactNode;
   readonly mode: 'manage' | 'preview';
@@ -67,6 +68,7 @@ function BuilderModeIcon({ mode }: { readonly mode: 'manage' | 'preview' }): Rea
 }
 
 export function TopBar({
+  conversationActions,
   deploy,
   missionControl,
   mode,
@@ -113,6 +115,7 @@ export function TopBar({
         ))}
       </div>
       <nav aria-label="Project actions" className="zapp-builder-project-actions">
+        {conversationActions}
         {repositoryAvailable ? <a
           aria-label="Source repository"
           className="zapp-builder-action-link"

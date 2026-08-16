@@ -421,7 +421,7 @@ git commit -m "feat(orchestrator): apply queued messages safely"
 - Consumes: generated CP-28 SDK operations, cross-run event identity `(runId, sequence)`, `message.applied`, existing active-run SSE subscription and composer.
 - Produces: URL-selected project conversation, paginated history drawer, explicit blank new-thread state, queued/applied user-message status.
 
-- [ ] **Step 1: Write failing Playwright acceptance cases**
+- [x] **Step 1: Write failing Playwright acceptance cases**
 
 ```ts
 test('restores history, keeps same-thread messages, and creates a new thread explicitly', async ({ page }) => {
@@ -441,13 +441,13 @@ test('restores history, keeps same-thread messages, and creates a new thread exp
 
 Add cases for terminal same-thread successor creation, no empty conversation before first send, Queued → Applied, Back/Forward selection, and organization-switch stale-response fencing.
 
-- [ ] **Step 2: Run focused browser tests to verify RED**
+- [x] **Step 2: Run focused browser tests to verify RED**
 
 Run: `pnpm --filter @zapp/web exec playwright test e2e/conversation.spec.ts --grep "history|new thread|Queued"`
 
 Expected: FAIL because History/New thread controls and conversation endpoints are not consumed.
 
-- [ ] **Step 3: Add API wrappers and conversation hooks**
+- [x] **Step 3: Add API wrappers and conversation hooks**
 
 ```ts
 export function conversationEventKey(event: ConversationEvent): string {
@@ -462,7 +462,7 @@ export interface ConversationSelection {
 
 `useProjectConversations` pages summaries, derives selection only from `?conversation=`, selects newest only when the parameter is absent, and uses generation+abort fencing on organization/project changes. `useConversationEvents` pages historical events and merges the active run SSE without duplicates by `(runId, sequence)`.
 
-- [ ] **Step 4: Render the drawer and preserve same-thread transcript during sends**
+- [x] **Step 4: Render the drawer and preserve same-thread transcript during sends**
 
 ```tsx
 <ConversationHistoryDrawer
@@ -475,13 +475,13 @@ export interface ConversationSelection {
 
 Refactor `Thread` to submit active-run messages through continuation, terminal-run messages through create-run with `conversationId`, and blank new-thread sends through create-run without it. Keep historical items mounted when a successor becomes active. Store optimistic messages by stable `messageId`; label them `Queued` until matching `message.applied`, then `Applied` until the next assistant event.
 
-- [ ] **Step 5: Run the conversation suite to verify GREEN**
+- [x] **Step 5: Run the conversation suite to verify GREEN**
 
 Run: `pnpm --filter @zapp/web exec playwright test e2e/conversation.spec.ts`
 
 Expected: all conversation tests pass, including existing cards, controls, uploads, and lifecycle behavior.
 
-- [ ] **Step 6: Run web and repository gates**
+- [x] **Step 6: Run web and repository gates**
 
 Run: `pnpm --filter @zapp/web lint && pnpm --filter @zapp/web typecheck && pnpm --filter @zapp/web build`
 
@@ -491,7 +491,7 @@ Run: `pnpm verify`
 
 Expected: repository gate passes; no real provider call is required.
 
-- [ ] **Step 7: Record and commit WEB-19**
+- [x] **Step 7: Record and commit WEB-19**
 
 Append the WEB-19 execution-log line, check WEB-19 in `tasks/todo.md`, and commit:
 
