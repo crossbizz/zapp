@@ -1,10 +1,7 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { checkA11y, injectAxe } from 'axe-playwright';
 
-const apiPort = Number(process.env['ZAPP_WEB_E2E_API_PORT'] ?? 4100);
-const appPort = Number(process.env['ZAPP_WEB_E2E_APP_PORT'] ?? 3100);
-const apiBaseUrl = `http://127.0.0.1:${String(apiPort)}`;
-const appBaseUrl = `http://127.0.0.1:${String(appPort)}`;
+import { apiBaseUrl, appBaseUrl } from './support/ports.js';
 const projectId = 'project-a11y';
 const releaseId = 'rel_01J00000000000000000000000';
 const deploymentId = 'dep_01J00000000000000000000000';

@@ -1,7 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
-const appBaseUrl = 'http://127.0.0.1:3100';
+import { apiBaseUrl, appBaseUrl } from './support/ports.js';
 const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
 const conversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FY';

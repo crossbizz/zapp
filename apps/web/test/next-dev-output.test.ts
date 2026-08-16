@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url';
 import {
   createNextDevOutputName,
   defaultNextDevOutputDirectory,
+  nextE2ECommands,
   nextDevWatchEnvironment,
+  prepareNextGeneratedFiles,
   preserveNextGeneratedFiles,
   resetNextDevOutput,
 } from '../e2e/support/next-dev-output.js';
@@ -47,7 +49,7 @@ void test('defaults to the absolute web app Next output directory', () => {
   assert.equal(defaultNextDevOutputDirectory, join(webAppDirectory, '.next'));
 });
 
-void test('uses polling for repository-scale local and E2E Next watchers', () => {
+void test('uses polling for the repository-scale local Next watcher', () => {
   assert.deepEqual(nextDevWatchEnvironment(), { WATCHPACK_POLLING: 'true' });
 });
 
@@ -58,6 +60,13 @@ void test('gives every E2E server run its own Next output directory', () => {
   assert.match(first, /^\.next-e2e-3100-[a-f0-9-]+$/u);
   assert.match(second, /^\.next-e2e-3100-[a-f0-9-]+$/u);
   assert.notEqual(first, second);
+});
+
+void test('builds once and serves the production bundle for browser acceptance', () => {
+  assert.deepEqual(nextE2ECommands(3310), [
+    ['build'],
+    ['start', '--port', '3310'],
+  ]);
 });
 
 void test('restores tracked files that Next rewrites during an isolated dev run', async () => {
@@ -77,4 +86,52 @@ void test('restores tracked files that Next rewrites during an isolated dev run'
 
   assert.equal(await readFile(nextEnvPath, 'utf8'), 'tracked next env\n');
   assert.equal(await readFile(tsconfigPath, 'utf8'), '{"include":[]}\n');
+});
+
+void test('prepares isolated generated-file references before the E2E build', async () => {
+  const appDirectory = await mkdtemp(join(tmpdir(), 'zapp-web-next-prepared-'));
+  fixtureDirectories.push(appDirectory);
+
+  const nextEnvPath = join(appDirectory, 'next-env.d.ts');
+  const tsconfigPath = join(appDirectory, 'tsconfig.json');
+  const originalNextEnv = [
+    '/// <reference types="next" />',
+    '/// <reference path="./.next/types/routes.d.ts" />',
+    '',
+  ].join('\n');
+  const originalTsconfig = `${JSON.stringify(
+    {
+      compilerOptions: { strict: true },
+      include: ['**/*.ts', '.next/types/**/*.ts', 'next-env.d.ts', '.next-dev/types/**/*.ts'],
+    },
+    null,
+    2,
+  )}\n`;
+  await writeFile(nextEnvPath, originalNextEnv, 'utf8');
+  await writeFile(tsconfigPath, originalTsconfig, 'utf8');
+
+  const restore = await prepareNextGeneratedFiles({
+    nextEnvPath,
+    outputName: '.next-e2e-3310',
+    tsconfigPath,
+  });
+
+  assert.match(
+    await readFile(nextEnvPath, 'utf8'),
+    /<reference path="\.\/\.next-e2e-3310\/types\/routes\.d\.ts" \/>/u,
+  );
+  assert.deepEqual(JSON.parse(await readFile(tsconfigPath, 'utf8')), {
+    compilerOptions: { strict: true },
+    include: [
+      '**/*.ts',
+      '.next-dev/types/**/*.ts',
+      '.next/types/**/*.ts',
+      'next-env.d.ts',
+      '.next-e2e-3310/types/**/*.ts',
+    ],
+  });
+
+  await restore();
+  assert.equal(await readFile(nextEnvPath, 'utf8'), originalNextEnv);
+  assert.equal(await readFile(tsconfigPath, 'utf8'), originalTsconfig);
 });

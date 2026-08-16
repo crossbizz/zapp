@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
+import { apiBaseUrl, appBaseUrl } from './support/ports.js';
 
 async function fakeRequests(page: Page): Promise<unknown[]> {
   return await page.request.get(`${apiBaseUrl}/__requests`).then(async (response) => {
@@ -14,6 +14,9 @@ async function signIn(page: Page, userCode?: string): Promise<void> {
   await expect(page).toHaveURL(
     userCode === undefined ? '/' : `/device?userCode=${encodeURIComponent(userCode)}`,
   );
+  if (userCode === undefined) {
+    await expect(page.getByRole('textbox', { name: 'Describe your project' })).toBeVisible();
+  }
 }
 
 async function issueDeviceCode(page: Page): Promise<string> {
@@ -86,7 +89,7 @@ test('redirects unauthenticated requests to login', async ({ page }) => {
 
 test('rejects a forged session cookie before rendering a protected device route', async ({ page }) => {
   await page.context().addCookies([
-    { name: 'zapp_session', value: 'forged', url: 'http://127.0.0.1:3100' },
+    { name: 'zapp_session', value: 'forged', url: appBaseUrl },
   ]);
   await page.goto('/device?userCode=ABCD-1234');
 
@@ -126,7 +129,7 @@ test('middleware forwards only the zapp session cookie to CP-2', async ({ page }
     {
       name: 'unrelated_app_cookie',
       value: 'must-stay-in-web',
-      url: 'http://127.0.0.1:3100',
+      url: appBaseUrl,
     },
   ]);
   await page.request.get(`${apiBaseUrl}/__reset`);
@@ -149,7 +152,9 @@ test('middleware forwards only the zapp session cookie to CP-2', async ({ page }
 for (const status of [429, 500]) {
   test(`returns a protected 503 when CP-2 validation returns ${String(status)}`, async ({ page }) => {
     await signIn(page);
-    await page.request.get(`${apiBaseUrl}/__fail-me?request=1&status=${String(status)}`);
+    await page.request.get(
+      `${apiBaseUrl}/__fail-me?target=server&always=true&status=${String(status)}`,
+    );
 
     const response = await page.goto('/device?userCode=ABCD-1234');
 
@@ -162,7 +167,7 @@ for (const status of [429, 500]) {
 
 test('returns a protected 503 when CP-2 validation has a transport outage', async ({ page }) => {
   await signIn(page);
-  await page.request.get(`${apiBaseUrl}/__drop-me?request=1`);
+  await page.request.get(`${apiBaseUrl}/__drop-me?target=server&always=true`);
 
   const response = await page.goto('/device?userCode=ABCD-1234');
 
@@ -205,7 +210,7 @@ test('invalid URL override falls back to the persisted active organization', asy
 
 test('renders a recoverable error instead of redirecting for a control-plane failure', async ({ page }) => {
   await signIn(page);
-  await page.request.get(`${apiBaseUrl}/__fail-me?request=2&status=500`);
+  await page.request.get(`${apiBaseUrl}/__fail-me?target=client&always=true&status=500`);
   await page.goto('/');
 
   await expect(page).toHaveURL('/');
@@ -225,6 +230,30 @@ test('renders a recoverable error instead of redirecting for localStorage failur
   await expect(page).toHaveURL('/');
   await expect(page.getByText('We could not load your session. Please try again.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
+});
+
+test('recovers from a hung session profile request instead of loading forever', async ({ page }) => {
+  await page.request.get(`${apiBaseUrl}/__hang-me?clientRequests=1`);
+
+  await page.goto('/login');
+  await page.getByRole('link', { name: 'Sign in' }).click();
+
+  await expect(page).toHaveURL('/');
+  await expect(page.getByRole('textbox', { name: 'Describe your project' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText('Loading session…')).toHaveCount(0);
+});
+
+test('shows recovery controls when session profile requests remain hung', async ({ page }) => {
+  await page.request.get(`${apiBaseUrl}/__hang-me?clientRequests=99`);
+
+  await page.goto('/login');
+  await page.getByRole('link', { name: 'Sign in' }).click();
+
+  await expect(page).toHaveURL('/');
+  await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('Loading session…')).toHaveCount(0);
 });
 
 test('invited memberships cannot be selected from the URL or persisted storage', async ({ page }) => {

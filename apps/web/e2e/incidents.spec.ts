@@ -1,7 +1,6 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
-const appBaseUrl = 'http://127.0.0.1:3100';
+import { apiBaseUrl, appBaseUrl } from './support/ports.js';
 const projectId = 'project-apollo';
 const incidentId = 'aud_01K2AB3CD4EF5GH6JK7MNP8QRS';
 const releaseId = 'rel_01K2AB3CD4EF5GH6JK7MNP8QRS';

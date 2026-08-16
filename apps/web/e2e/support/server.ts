@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
+import type { Socket } from 'node:net';
 import { resolve } from 'node:path';
 
 import { createFeatureFlagEvaluator } from '../../../../packages/config/src/index.js';
@@ -30,15 +31,12 @@ import { InMemoryOrganizationStore } from '../../../../services/control-api/test
 import { createE1Composition, E1_ORGANIZATION_ID, E1_ORGANIZATION_NAME } from './e1-composition.js';
 import {
   createNextDevOutputName,
-  nextDevWatchEnvironment,
-  preserveNextGeneratedFiles,
+  nextE2ECommands,
+  prepareNextGeneratedFiles,
   resetNextDevOutput,
 } from './next-dev-output.js';
+import { apiBaseUrl, apiPort, appBaseUrl, appPort } from './ports.js';
 
-const appPort = Number(process.env['ZAPP_WEB_E2E_APP_PORT'] ?? 3100);
-const apiPort = Number(process.env['ZAPP_WEB_E2E_API_PORT'] ?? 4100);
-const appBaseUrl = `http://127.0.0.1:${String(appPort)}`;
-const apiBaseUrl = `http://127.0.0.1:${String(apiPort)}`;
 const nextOutputName = createNextDevOutputName(appPort);
 const nextOutputDirectory = resolve(process.cwd(), nextOutputName);
 const betaOrganizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FE';
@@ -227,10 +225,22 @@ const built = {
 };
 const requests: RecordedRequest[] = [];
 let providerSequence = 0;
-let meRequestCount = 0;
 let failMeRequest: number | undefined;
+let failMeRequestCount = 0;
+let failMeAlways = false;
 let failMeStatus = 500;
+let failMeTarget: 'client' | 'server' = 'client';
 let dropMeRequest: number | undefined;
+let dropMeRequestCount = 0;
+let dropMeAlways = false;
+let dropMeTarget: 'client' | 'server' = 'client';
+let hangingClientMeRequests = 0;
+const hangingMeSockets = new Set<Socket>();
+
+function closeHangingMeSockets(): void {
+  for (const socket of hangingMeSockets) socket.destroy();
+  hangingMeSockets.clear();
+}
 
 function hasCookie(header: string | undefined, name: string): boolean {
   return header?.split(';').some((pair) => pair.trim().startsWith(`${name}=`)) ?? false;
@@ -259,13 +269,31 @@ built.app.addHook('onRequest', async (request, reply) => {
 
   const path = new URL(request.raw.url ?? '/', apiBaseUrl).pathname;
   if (path === '/v1/me') {
-    meRequestCount += 1;
-    if (meRequestCount === dropMeRequest) {
+    const requestTarget = request.headers.origin === appBaseUrl ? 'client' : 'server';
+    const hangClientRequest =
+      hangingClientMeRequests > 0 && request.headers.origin === appBaseUrl;
+    if (hangClientRequest) hangingClientMeRequests -= 1;
+    if (requestTarget === dropMeTarget) dropMeRequestCount += 1;
+    if (
+      requestTarget === dropMeTarget &&
+      (dropMeAlways || dropMeRequestCount === dropMeRequest)
+    ) {
       reply.hijack();
       request.raw.socket.destroy();
       return reply;
     }
-    if (meRequestCount === failMeRequest) {
+    if (hangClientRequest) {
+      reply.hijack();
+      const socket = request.raw.socket;
+      hangingMeSockets.add(socket);
+      socket.once('close', () => hangingMeSockets.delete(socket));
+      return reply;
+    }
+    if (requestTarget === failMeTarget) failMeRequestCount += 1;
+    if (
+      requestTarget === failMeTarget &&
+      (failMeAlways || failMeRequestCount === failMeRequest)
+    ) {
       await reply.status(failMeStatus).send({ error: { code: 'fixture_failure' } });
       return reply;
     }
@@ -314,13 +342,20 @@ built.app.get('/__feature-flags', (request) => {
   return { flags: clientFeatureFlags };
 });
 built.app.get('/__reset', () => {
+  closeHangingMeSockets();
   requests.length = 0;
   e1.reset();
   clockOffset = 0;
-  meRequestCount = 0;
   failMeRequest = undefined;
+  failMeRequestCount = 0;
+  failMeAlways = false;
   failMeStatus = 500;
+  failMeTarget = 'client';
   dropMeRequest = undefined;
+  dropMeRequestCount = 0;
+  dropMeAlways = false;
+  dropMeTarget = 'client';
+  hangingClientMeRequests = 0;
   clientFeatureFlags = {
     'voice-input': false,
     'mobile-app-tab': false,
@@ -339,16 +374,29 @@ built.app.get('/__fail-me', (request) => {
   const url = new URL(request.raw.url ?? '/', apiBaseUrl);
   const requestNumber = Number(url.searchParams.get('request'));
   const status = Number(url.searchParams.get('status'));
+  const target = url.searchParams.get('target');
+  failMeAlways = url.searchParams.get('always') === 'true';
   failMeRequest = Number.isInteger(requestNumber) && requestNumber > 0 ? requestNumber : 1;
   failMeStatus = Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500;
-  meRequestCount = 0;
+  failMeTarget = target === 'server' ? 'server' : 'client';
+  failMeRequestCount = 0;
   return { ok: true };
 });
 built.app.get('/__drop-me', (request) => {
   const url = new URL(request.raw.url ?? '/', apiBaseUrl);
   const requestNumber = Number(url.searchParams.get('request'));
+  const target = url.searchParams.get('target');
+  dropMeAlways = url.searchParams.get('always') === 'true';
   dropMeRequest = Number.isInteger(requestNumber) && requestNumber > 0 ? requestNumber : 1;
-  meRequestCount = 0;
+  dropMeTarget = target === 'server' ? 'server' : 'client';
+  dropMeRequestCount = 0;
+  return { ok: true };
+});
+built.app.get('/__hang-me', (request) => {
+  const url = new URL(request.raw.url ?? '/', apiBaseUrl);
+  const clientRequests = Number(url.searchParams.get('clientRequests'));
+  hangingClientMeRequests =
+    Number.isInteger(clientRequests) && clientRequests > 0 ? clientRequests : 1;
   return { ok: true };
 });
 built.app.get('/__stytch', async (request, reply) => {
@@ -372,30 +420,45 @@ built.app.get('/__stytch', async (request, reply) => {
   return await reply.redirect(callback.toString(), 302);
 });
 
-const restoreNextGeneratedFiles = await preserveNextGeneratedFiles([
-  resolve(process.cwd(), 'next-env.d.ts'),
-  resolve(process.cwd(), 'tsconfig.json'),
-]);
+const restoreNextGeneratedFiles = await prepareNextGeneratedFiles({
+  nextEnvPath: resolve(process.cwd(), 'next-env.d.ts'),
+  outputName: nextOutputName,
+  tsconfigPath: resolve(process.cwd(), 'tsconfig.json'),
+});
 await resetNextDevOutput(nextOutputDirectory);
 await built.app.listen({ host: '127.0.0.1', port: apiPort });
 
-const next = spawn('./node_modules/.bin/next', ['dev', '--port', String(appPort)], {
-  env: {
-    ...process.env,
-    ...nextDevWatchEnvironment(),
-    NEXT_PUBLIC_APP_BASE_URL: appBaseUrl,
-    NEXT_PUBLIC_CONTROL_API_URL: apiBaseUrl,
-    ZAPP_WEB_NEXT_DIST_DIR: nextOutputName,
-  },
-  stdio: 'inherit',
-});
-
+const nextEnvironment = {
+  ...process.env,
+  NEXT_PUBLIC_APP_BASE_URL: appBaseUrl,
+  NEXT_PUBLIC_CONTROL_API_URL: apiBaseUrl,
+  ZAPP_WEB_NEXT_DIST_DIR: nextOutputName,
+};
+const [buildCommand, startCommand] = nextE2ECommands(appPort);
+let activeNext: ChildProcess | undefined;
+let activeNextExit: Promise<number | null> | undefined;
 let stopping = false;
-let nextExited = false;
-let resolveNextExit: (() => void) | undefined;
-const nextExit = new Promise<void>((resolveExit) => {
-  resolveNextExit = resolveExit;
-});
+
+function launchNext(args: readonly string[]): Promise<number | null> {
+  const child = spawn('./node_modules/.bin/next', [...args], {
+    env: nextEnvironment,
+    stdio: 'inherit',
+  });
+  activeNext = child;
+  const exited = new Promise<number | null>((resolveExit) => {
+    child.once('exit', (code) => {
+      resolveExit(code);
+    });
+  });
+  activeNextExit = exited;
+  void exited.then(() => {
+    if (activeNext === child) {
+      activeNext = undefined;
+      activeNextExit = undefined;
+    }
+  });
+  return exited;
+}
 
 async function stop(exitCode = 0): Promise<void> {
   if (stopping) return;
@@ -403,13 +466,16 @@ async function stop(exitCode = 0): Promise<void> {
   let resolvedExitCode = exitCode;
 
   try {
-    if (!nextExited) {
-      next.kill('SIGTERM');
-      const forceKill = setTimeout(() => next.kill('SIGKILL'), 5_000);
+    if (activeNext !== undefined && activeNextExit !== undefined) {
+      const child = activeNext;
+      const childExit = activeNextExit;
+      child.kill('SIGTERM');
+      const forceKill = setTimeout(() => child.kill('SIGKILL'), 5_000);
       forceKill.unref();
-      await nextExit;
+      await childExit;
       clearTimeout(forceKill);
     }
+    closeHangingMeSockets();
     await built.app.close();
     await e1.close();
   } catch {
@@ -423,8 +489,13 @@ async function stop(exitCode = 0): Promise<void> {
 
 process.on('SIGINT', () => void stop());
 process.on('SIGTERM', () => void stop());
-next.on('exit', (code) => {
-  nextExited = true;
-  resolveNextExit?.();
+
+const buildExitCode = await launchNext(buildCommand);
+if (buildExitCode !== 0) {
+  await stop(buildExitCode ?? 1);
+}
+
+const nextExit = launchNext(startCommand);
+void nextExit.then((code) => {
   if (!stopping) void stop(code ?? 1);
 });

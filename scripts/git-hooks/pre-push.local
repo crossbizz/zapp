@@ -79,7 +79,8 @@ export GIT_BACKUP_LIVE="1"
 export CI="zapp-prepush"
 
 # One gate at a time per machine. Concurrent verifies collide on fixed test
-# ports (the web e2e server binds 3100) and on the per-service `_test`
+# ports (the web e2e app and support API bind dedicated ports 3310 and 4310)
+# and on the per-service `_test`
 # databases on the local postgres — which reproduces, one layer down, exactly
 # the cross-run chaos the localhost pin above exists to prevent. mkdir is
 # atomic; a lock whose recorded pid is dead is stale and reclaimed.

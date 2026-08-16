@@ -1,7 +1,6 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 
-const apiBaseUrl = `http://127.0.0.1:${process.env['ZAPP_WEB_E2E_API_PORT'] ?? '4100'}`;
-const appBaseUrl = `http://127.0.0.1:${process.env['ZAPP_WEB_E2E_APP_PORT'] ?? '3100'}`;
+import { apiBaseUrl, appBaseUrl } from './support/ports.js';
 const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
 const conversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FA';

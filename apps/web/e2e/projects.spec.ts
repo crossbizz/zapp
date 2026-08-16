@@ -1,7 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
-const appBaseUrl = 'http://127.0.0.1:3100';
+import { apiBaseUrl, appBaseUrl } from './support/ports.js';
 
 type SupportLevel = 'compatible' | 'verified' | 'managed';
 

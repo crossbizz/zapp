@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
+import { apiBaseUrl, appBaseUrl } from './support/ports.js';
 const organizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 
 interface E1Status {
@@ -39,7 +39,7 @@ test('takes one signed-in user through the real public API from prompt to deploy
   await page.route('https://app.e1.test/**', async (route) => {
     const publicUrl = new URL(route.request().url());
     const response = await route.fetch({
-      url: `http://127.0.0.1:3100${publicUrl.pathname}${publicUrl.search}`,
+      url: `${appBaseUrl}${publicUrl.pathname}${publicUrl.search}`,
     });
     await route.fulfill({ response });
   });

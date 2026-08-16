@@ -1,7 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
-const appBaseUrl = 'http://127.0.0.1:3100';
+import { apiBaseUrl, appBaseUrl } from './support/ports.js';
 const projectId = 'proj_01J00000000000000000000000';
 const releaseId = 'rel_01J00000000000000000000000';
 const currentDeploymentId = 'dep_01J00000000000000000000000';

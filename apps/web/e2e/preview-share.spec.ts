@@ -1,10 +1,10 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
+import { apiBaseUrl, apiPort, appBaseUrl } from './support/ports.js';
 const organizationId = 'org_01J00000000000000000000000';
 const shareId = '01j00000000000000000000000';
 const bearer = 'psb_public-fragment-secret';
-const previewOrigin = `http://${organizationId.slice(4).toLowerCase()}-${shareId}.preview.localhost:4100`;
+const previewOrigin = `http://${organizationId.slice(4).toLowerCase()}-${shareId}.preview.localhost:${String(apiPort)}`;
 
 function cors(route: Route, body: unknown, headers: Record<string, string> = {}): Promise<void> {
   return route.fulfill({
@@ -12,7 +12,7 @@ function cors(route: Route, body: unknown, headers: Record<string, string> = {})
     contentType: 'application/json',
     headers: {
       'access-control-allow-credentials': 'true',
-      'access-control-allow-origin': 'http://127.0.0.1:3100',
+      'access-control-allow-origin': appBaseUrl,
       ...headers,
     },
     status: 200,

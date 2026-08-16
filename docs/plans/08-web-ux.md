@@ -574,6 +574,16 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - [x] Assert the transport reconnect explicitly with a bounded ten-second recovery window, then independently verify that the replayed event renders once.
 - [x] Stress the exact dropped-stream scenario and pass the complete repository gate. Commit: `test(web): stabilize conversation reconnect coverage`
 
+### Task WEB-22-FIX-2 [M6]: Bound session bootstrap and stabilize browser acceptance
+
+**Files:** Modify `apps/web/src/hooks/useAppSession.ts`, web E2E support/configuration and browser specs, focused Node/Playwright tests, `scripts/git-hooks/pre-push.local`, this plan, and `tasks/todo.md`. No public API, authentication provider, workspace policy, or product visual redesign is in scope.
+**Effort:** S.
+
+- [x] Reproduce a client `/v1/me` request that never settles and prove the authenticated shell cannot remain on **Loading session…** indefinitely.
+- [x] Bound each session-profile request, retry only transient transport/time-out failures once, and expose the existing recoverable error controls after the final attempt.
+- [x] Isolate browser acceptance ports from the live development stack and serve a one-time production build so Next development hot updates cannot corrupt a first protected-route load.
+- [x] Prove transient recovery, permanent-hang recovery, protected-route failure handling, the complete browser suite, and affected lint/typecheck/unit checks. Commit: `fix(web): recover stalled session bootstrap`
+
 ---
 
 ## Testing strategy
@@ -590,6 +600,7 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - 2026-08-16 WEB-19-FIX-2 done — Kept the production one-second reconnect policy unchanged, replaced an overloaded five-second presentation race with explicit bounded transport and rendering assertions, passed the scenario 20/20 under isolated stress, and passed the complete repository gate.
 - 2026-08-16 WEB-6-FIX-1 done — Collapsed noisy tool lifecycle rows into truthful structured activity batches with exact ordered details on demand, failed closed on missing outcomes and inexact file metadata, and kept active work visible; TDD regressions passed 12/12 focused presentation tests and 26/26 conversation browser tests, web lint/typecheck and the production build passed, with the one pre-existing image warning unchanged and no port behavior changed.
 - 2026-08-16 WEB-22-FIX-1 done — Replaced the shared per-port E2E Next output directory with a unique run-owned directory so delayed shutdown cleanup cannot corrupt a successor server; the focused regression, three repeated accessibility passes, 52/52 web Node tests, 163/163 browser tests, all integration/isolation suites, Gate 5, and the complete 94/94-task repository gate passed, while credential-dependent cases skipped visibly as designed.
+- 2026-08-16 WEB-22-FIX-2 done — Bounded and retried transient session bootstrap requests, replaced infinite loading with the existing recovery state, isolated browser ports, and moved browser acceptance from flaky development hot updates to a one-time production build; 53/53 web Node tests, 165/165 browser tests, lint, typecheck, and the complete 94/94-task cold repository gate passed, while credential-dependent integration cases skipped visibly as designed.
 - 2026-08-16 WEB-22 done — Added deterministic three-to-four-word project titles while preserving the full builder prompt, made `/dashboard` the canonical creation route, removed non-actionable support badges, matched the Lovable-style neutral composer rhythm, and passed 51/51 web Node tests, 163/163 browser tests, the production build, and the complete 94/94-task repository gate; credential-dependent integration cases skipped visibly as designed.
 - 2026-08-16 WEB-18-FIX-21 done — Stopped Docker containers no longer masquerade as live workspaces, provider resources are cleaned before durable attachment reconciliation, and Preview recovers from boot-log failure through the current branch; 13/13 focused sandbox tests, the preview-disappearance browser regression, affected lint/typecheck, and the complete 94/94-task repository gate passed.
 - 2026-08-16 WEB-21 done — Replaced the plain source view with a read-only CodeMirror 6 editor, Lovable-density tabs and darker compact semantic file icons, reference-in-chat context, polished conversation typography and localized timestamps, and removed the non-actionable builder Compatible badge; Builder/Viewer read-only checks, one-copy context handoff, 45/45 web Node tests, 160/160 browser tests, the production build, and the complete 94/94-task repository gate passed, while live-provider checks skipped visibly without credentials.
