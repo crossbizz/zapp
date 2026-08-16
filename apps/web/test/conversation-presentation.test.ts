@@ -157,7 +157,7 @@ void test('keeps active work visible beside completed activity', () => {
   assert.match(markup, /Updated 1 project file · Installing dependencies…/u);
 });
 
-void test('counts affected files instead of file tool calls', () => {
+void test('avoids an exact file count when path and count-only metadata can overlap', () => {
   const activities = [
     {
       affectedPaths: ['package.json'],
@@ -195,7 +195,50 @@ void test('counts affected files instead of file tool calls', () => {
 
   const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
 
-  assert.match(markup, /Updated 3 project files ✓/u);
+  assert.match(markup, /Updated project files ✓/u);
+  assert.doesNotMatch(markup, /Updated \d+ project files/u);
+});
+
+void test('deduplicates exact affected paths', () => {
+  const activities = [
+    {
+      affectedPaths: ['package.json'],
+      sequence: 1,
+      state: 'completed',
+      summary: 'Wrote package.json',
+      tool: 'write_file',
+      toolCallId: 'write-package-first',
+    },
+    {
+      affectedPaths: ['package.json'],
+      sequence: 2,
+      state: 'completed',
+      summary: 'Wrote package.json again',
+      tool: 'write_file',
+      toolCallId: 'write-package-second',
+    },
+  ] as const;
+
+  const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
+
+  assert.match(markup, /Updated 1 project file ✓/u);
+});
+
+void test('does not claim success when a terminal outcome is unavailable', () => {
+  const activities = [
+    {
+      sequence: 1,
+      state: 'unknown',
+      summary: 'Build failed',
+      tool: 'run_build',
+      toolCallId: 'build',
+    },
+  ] as const;
+
+  const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
+
+  assert.match(markup, /<summary><span>Build failed<\/span>/u);
+  assert.doesNotMatch(markup, /✓/u);
 });
 
 void test('pairs legacy lifecycle events without tool call ids', () => {

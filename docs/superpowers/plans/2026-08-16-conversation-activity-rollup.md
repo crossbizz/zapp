@@ -113,3 +113,10 @@
   without call IDs, and canonical checks/migrations/releases. Confirm RED, then make
   the projection and semantic summarizer truthful for those cases without changing
   the event contract or any port behavior.
+
+- [x] **Step 12: Fail closed for incomplete audit metadata**
+
+  Add regressions proving a missing/truncated terminal audit outcome cannot receive a
+  success checkmark and overlapping path/count-only file metadata cannot produce an
+  overstated number. Confirm RED, then render the exact terminal summary without ✓ and
+  fall back to a non-numeric file summary when an exact distinct-file count is unknown.

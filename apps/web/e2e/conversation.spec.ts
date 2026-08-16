@@ -795,7 +795,7 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
     }),
     eventFrame({
       payload: {
-        audit: { path: 'package.json' },
+        audit: { outcome: 'succeeded', path: 'package.json' },
         tool: 'write_file',
         toolCallId: 'write-package',
         userSummary: 'Wrote package.json',
@@ -823,7 +823,7 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
     }),
     eventFrame({
       payload: {
-        audit: { path: 'tsconfig.json' },
+        audit: { outcome: 'succeeded', path: 'tsconfig.json' },
         tool: 'write_file',
         toolCallId: 'write-tsconfig',
         userSummary: 'Wrote tsconfig.json',
@@ -852,7 +852,7 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
     }),
     eventFrame({
       payload: {
-        audit: { count: 3 },
+        audit: { count: 3, outcome: 'succeeded' },
         tool: 'install_dependency',
         toolCallId: 'install-runtime',
         userSummary: 'Installed 3 dependencies',
@@ -881,7 +881,7 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
     }),
     eventFrame({
       payload: {
-        audit: { count: 7 },
+        audit: { count: 7, outcome: 'succeeded' },
         tool: 'install_dependency',
         toolCallId: 'install-dev',
         userSummary: 'Installed 7 dependencies',
@@ -890,7 +890,12 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
       type: 'tool.completed',
     }),
     eventFrame({
-      payload: { tool: 'run_command', toolCallId: 'run-build', userSummary: 'Ran build' },
+      payload: {
+        audit: { outcome: 'succeeded' },
+        tool: 'run_command',
+        toolCallId: 'run-build',
+        userSummary: 'Ran build',
+      },
       sequence: 17,
       type: 'tool.completed',
     }),
@@ -976,6 +981,41 @@ test('shows a completed tool event with a failed audit outcome as failed', async
 
   const activity = page.locator('details.zapp-conversation-activity');
   await expect(activity.getByText('Build failed !', { exact: true })).toBeVisible();
+  await expect(activity).not.toContainText('✓');
+});
+
+test('does not claim success when a completed tool audit outcome is unavailable', async ({
+  page,
+}) => {
+  const frames = [
+    eventFrame({
+      payload: {
+        tool: 'run_build',
+        toolCallId: 'run-build',
+        userSummary: 'Started run build',
+      },
+      sequence: 1,
+      type: 'tool.started',
+    }),
+    eventFrame({
+      payload: {
+        audit: { message: 'Audit details omitted', type: 'truncated' },
+        tool: 'run_build',
+        toolCallId: 'run-build',
+        userSummary: 'Build failed',
+      },
+      sequence: 2,
+      type: 'tool.completed',
+    }),
+  ].join('');
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    await route.fulfill({ body: frames, headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+
+  await openBuilder(page);
+
+  const activity = page.locator('details.zapp-conversation-activity');
+  await expect(activity.getByText('Build failed', { exact: true })).toBeVisible();
   await expect(activity).not.toContainText('✓');
 });
 
@@ -1141,7 +1181,11 @@ test('reconnects after a dropped stream and deduplicates replayed sequences', as
     }
     await route.fulfill({
       body: `${assistant}${eventFrame({
-        payload: { tool: 'run_build', userSummary: 'Ran build' },
+        payload: {
+          audit: { outcome: 'succeeded' },
+          tool: 'run_build',
+          userSummary: 'Ran build',
+        },
         sequence: 4,
         type: 'tool.completed',
       })}`,
@@ -1153,7 +1197,7 @@ test('reconnects after a dropped stream and deduplicates replayed sequences', as
   await openBuilder(page);
 
   await expect(page.getByText('Reconnecting to the run…')).toBeVisible();
-  await expect(page.getByText('Ran build ✓')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('Ran project checks ✓')).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText('One durable answer')).toHaveCount(1);
   expect(streamAttempt).toBeGreaterThanOrEqual(2);
 });

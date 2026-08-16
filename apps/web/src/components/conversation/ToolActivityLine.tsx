@@ -6,7 +6,7 @@ export interface ToolActivity {
   readonly count?: number;
   readonly filesChanged?: number;
   readonly sequence: number;
-  readonly state: 'completed' | 'failed' | 'started';
+  readonly state: 'completed' | 'failed' | 'started' | 'unknown';
   readonly summary: string;
   readonly tool?: string;
   readonly toolCallId?: string;
@@ -146,19 +146,21 @@ function uniqueCalls(activities: readonly ToolActivity[]): number {
 
 function fileCount(activities: readonly ToolActivity[]): number | undefined {
   const paths = new Set<string>();
-  let countWithoutPaths = 0;
+  const countsWithoutPaths: number[] = [];
   for (const activity of activities) {
     if (activity.affectedPaths !== undefined && activity.affectedPaths.length > 0) {
       for (const path of activity.affectedPaths) paths.add(path);
       continue;
     }
     if (activity.filesChanged !== undefined) {
-      countWithoutPaths += activity.filesChanged;
+      countsWithoutPaths.push(activity.filesChanged);
       continue;
     }
     return undefined;
   }
-  return paths.size + countWithoutPaths;
+  if (paths.size > 0 && countsWithoutPaths.length > 0) return undefined;
+  if (countsWithoutPaths.length > 1) return undefined;
+  return paths.size > 0 ? paths.size : countsWithoutPaths[0];
 }
 
 function completedSummary(bucket: ActivityBucket): string {
@@ -288,17 +290,25 @@ function activitySummary(activities: readonly ToolActivity[]): string {
 
   const buckets = activityBuckets(activities);
   const pending = buckets.some((bucket) => hasPendingActivity(bucket.activities));
+  const outcomeUnavailable = activities.some((activity) => activity.state === 'unknown');
   const summaries = limitedSummaries(
     buckets.map((bucket) => {
       if (hasPendingActivity(bucket.activities)) return activeSummary(bucket);
+      const unknown = bucket.activities.filter((activity) => activity.state === 'unknown');
+      const latestUnknown = unknown.at(-1);
+      if (latestUnknown !== undefined) return latestUnknown.summary;
       const completed = bucket.activities.filter((activity) => activity.state === 'completed');
       return completed.length > 0
         ? completedSummary({ ...bucket, activities: completed })
         : activeSummary(bucket);
     }),
   );
-  const suffix = pending ? '…' : ' ✓';
+  const suffix = pending ? '…' : outcomeUnavailable ? '' : ' ✓';
   return `${summaries.join(' · ')}${suffix}`;
+}
+
+function activityStateLabel(state: ToolActivity['state']): string {
+  return state === 'unknown' ? 'outcome unavailable' : state;
 }
 
 export function ToolActivityLine({ activities }: ToolActivityLineProps): ReactElement {
@@ -311,7 +321,7 @@ export function ToolActivityLine({ activities }: ToolActivityLineProps): ReactEl
       <ol>
         {activities.map((activity) => (
           <li key={`${String(activity.sequence)}-${activity.summary}`}>
-            {activity.summary} ({activity.state})
+            {activity.summary} ({activityStateLabel(activity.state)})
           </li>
         ))}
       </ol>

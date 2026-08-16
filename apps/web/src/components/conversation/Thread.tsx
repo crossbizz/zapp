@@ -180,9 +180,11 @@ function toolActivityState(
   if (event.type === 'tool.failed') return 'failed';
   if (event.type === 'tool.completed') {
     const outcome = audit?.['outcome'];
-    return outcome === 'failed' || outcome === 'timed_out' || outcome === 'cancelled'
-      ? 'failed'
-      : 'completed';
+    if (outcome === 'succeeded') return 'completed';
+    if (outcome === 'failed' || outcome === 'timed_out' || outcome === 'cancelled') {
+      return 'failed';
+    }
+    return 'unknown';
   }
   return 'started';
 }

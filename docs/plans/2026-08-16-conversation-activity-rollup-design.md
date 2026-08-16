@@ -22,8 +22,9 @@ API, orchestrator, sandbox, model-gateway, preview, or port behavior changes.
 
 ## Interaction
 
-- File mutations roll up to `Updated 2 project files` from structured path and
-  `filesChanged` audit metadata; repeated paths are counted once.
+- File mutations roll up to `Updated 2 project files` when structured path metadata
+  can be deduplicated or a single `filesChanged` count is authoritative. Mixed metadata
+  that may overlap uses the truthful non-numeric `Updated project files` summary.
 - Dependency installations roll up to `Installed 10 dependencies` when structured
   audit counts are available, otherwise `Installed dependencies`.
 - Read-only discovery rolls up to `Reviewed project context`.
@@ -31,10 +32,12 @@ API, orchestrator, sandbox, model-gateway, preview, or port behavior changes.
   tool-family summaries.
 - Mixed batches join at most three semantic summaries with ` · ` and collapse any
   additional categories into `Completed N more tasks`.
-- A completed batch ends with `✓`, an active batch ends with `…`, and a failed batch
+- A confirmed completed batch ends with `✓`, an active batch ends with `…`, and a failed batch
   displays the event's user-language failure summary with `!`. A `tool.completed`
   lifecycle event whose structured audit outcome is failed, timed out, or cancelled
   remains a visible failure rather than receiving a success checkmark.
+- A terminal event with a missing or truncated structured outcome keeps its exact
+  user summary but receives no success checkmark.
 - Each tool family is summarized from its own lifecycle state, so newly started work
   remains visible beside earlier completed work in the same batch.
 - The disclosure label is `Details`; expanding it shows the original ordered
