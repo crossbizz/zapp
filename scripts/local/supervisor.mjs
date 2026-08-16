@@ -168,7 +168,15 @@ export async function runLocal(options = {}) {
     );
   const runPnpm = (args) => run(PNPM_COMMAND, [...PNPM_PREFIX, ...args]);
   const raceReady = (promise) => controlled(promise);
-  const startHttp = async (spec, url) => {
+  const requireAvailablePort = async (port) => {
+    if (!(await checkPort(port))) {
+      throw new LocalPreflightError(
+        `Local application port ${String(port)} is already in use`,
+      );
+    }
+  };
+  const startHttp = async (spec, url, port) => {
+    await requireAvailablePort(port);
     supervisor.start(spec);
     await raceReady(waitForHttp(url, { signal: commandController.signal }));
   };
@@ -187,9 +195,7 @@ export async function runLocal(options = {}) {
     await run('docker', ['info']);
     await run('cloudflared', ['--version']);
     for (const port of config.ports) {
-      if (!(await checkPort(port))) {
-        throw new LocalPreflightError(`Local application port ${String(port)} is already in use`);
-      }
+      await requireAvailablePort(port);
     }
 
     output('[local] starting infrastructure');
@@ -221,29 +227,32 @@ export async function runLocal(options = {}) {
     await controlled(prepareImages(config, { run }));
 
     await startHttp(
-      pnpmService('git-service', ['--filter', '@zapp/git-service', 'dev'], config, {
+      pnpmService('git-service', ['--filter', '@zapp/git-service', 'start'], config, {
         HOST: '127.0.0.1',
         PORT: '4500',
       }),
       'http://127.0.0.1:4500/healthz',
+      4500,
     );
     await startHttp(
-      pnpmService('model-gateway', ['--filter', '@zapp/model-gateway', 'dev'], config, {
+      pnpmService('model-gateway', ['--filter', '@zapp/model-gateway', 'start'], config, {
         MODEL_GATEWAY_PORT: '4100',
       }),
       'http://127.0.0.1:4100/healthz',
+      4100,
     );
     await startHttp(
-      pnpmService('sandbox-service', ['--filter', '@zapp/sandbox-service', 'dev'], config, {
+      pnpmService('sandbox-service', ['--filter', '@zapp/sandbox-service', 'start'], config, {
         SANDBOX_HOST: '127.0.0.1',
         SANDBOX_PORT: '4400',
       }),
       'http://127.0.0.1:4400/healthz',
+      4400,
     );
     supervisor.start(
       pnpmService(
         'agent-runs-worker',
-        ['--filter', '@zapp/orchestrator-worker', 'dev:run'],
+        ['--filter', '@zapp/orchestrator-worker', 'start:run'],
         config,
       ),
     );
@@ -259,11 +268,12 @@ export async function runLocal(options = {}) {
     );
     await raceReady(supervisor.waitForLine('verification-worker', /state: 'RUNNING'/u));
     await startHttp(
-      pnpmService('control-api', ['--filter', '@zapp/control-api', 'dev'], config, {
+      pnpmService('control-api', ['--filter', '@zapp/control-api', 'start'], config, {
         HOST: '127.0.0.1',
         PORT: '4000',
       }),
       'http://127.0.0.1:4000/healthz',
+      4000,
     );
     await startHttp(
       pnpmService(
@@ -276,6 +286,7 @@ export async function runLocal(options = {}) {
         },
       ),
       'http://127.0.0.1:3000/login',
+      3000,
     );
 
     output('[local] ready: http://127.0.0.1:3000');

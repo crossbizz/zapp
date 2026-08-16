@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 
 function redact(value, redactions) {
   return redactions.reduce(
@@ -21,6 +22,8 @@ export function createProcessSupervisor({
   output = (line) => process.stdout.write(`${line}\n`),
   redactions = [],
   maxTailLines = 100,
+  shutdownGraceMs = 10_000,
+  wait = delay,
 } = {}) {
   const children = [];
   const lines = new EventEmitter();
@@ -154,34 +157,31 @@ export function createProcessSupervisor({
     if (stopping) return;
     stopping = true;
     for (const entry of [...children].reverse()) {
-      if (entry.exited || entry.child.pid === undefined) continue;
+      if (entry.child.pid === undefined) continue;
+      const processGroup = -entry.child.pid;
       try {
-        killImpl(-entry.child.pid, 'SIGTERM');
+        killImpl(processGroup, 'SIGTERM');
       } catch (error) {
         if (error?.code !== 'ESRCH') throw error;
       }
-      let timeout;
-      try {
-        await Promise.race([
-          entry.exitedPromise,
-          new Promise((resolve, reject) => {
-            timeout = setTimeout(() => {
-              if (!entry.exited && entry.child.pid !== undefined) {
-                try {
-                  killImpl(-entry.child.pid, 'SIGKILL');
-                } catch (error) {
-                  if (error?.code !== 'ESRCH') {
-                    reject(error);
-                    return;
-                  }
-                }
-              }
-              resolve();
-            }, 10_000);
-          }),
-        ]);
-      } finally {
-        if (timeout !== undefined) clearTimeout(timeout);
+
+      const deadline = Date.now() + shutdownGraceMs;
+      let running = true;
+      while (running && Date.now() < deadline) {
+        try {
+          killImpl(processGroup, 0);
+          await wait(Math.min(50, Math.max(1, deadline - Date.now())));
+        } catch (error) {
+          if (error?.code === 'ESRCH') running = false;
+          else throw error;
+        }
+      }
+      if (running) {
+        try {
+          killImpl(processGroup, 'SIGKILL');
+        } catch (error) {
+          if (error?.code !== 'ESRCH') throw error;
+        }
       }
     }
   }

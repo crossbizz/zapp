@@ -240,17 +240,28 @@ class FakeChild extends EventEmitter {
 test('prefixes, redacts, bounds logs and stops process groups in reverse order', async () => {
   const children = [];
   const kills = [];
+  const running = new Set();
   const output = [];
   const supervisor = createProcessSupervisor({
     spawnImpl() {
       const child = new FakeChild(100 + children.length);
       children.push(child);
+      running.add(child.pid);
       return child;
     },
     killImpl(pid, signal) {
+      if (signal === 0) {
+        if (!running.has(Math.abs(pid))) {
+          throw Object.assign(new Error('process group exited'), { code: 'ESRCH' });
+        }
+        return;
+      }
       kills.push([pid, signal]);
       const child = children.find((candidate) => candidate.pid === Math.abs(pid));
-      queueMicrotask(() => child?.emit('exit', 0, signal));
+      queueMicrotask(() => {
+        running.delete(Math.abs(pid));
+        child?.emit('exit', 0, signal);
+      });
     },
     output: (line) => output.push(line),
     redactions: ['secret-value'],
@@ -272,15 +283,50 @@ test('prefixes, redacts, bounds logs and stops process groups in reverse order',
   ]);
 });
 
+test('force-kills a process group when its wrapper exits before descendants', async () => {
+  let child;
+  const kills = [];
+  const supervisor = createProcessSupervisor({
+    spawnImpl() {
+      child = new FakeChild(175);
+      return child;
+    },
+    killImpl(pid, signal) {
+      kills.push([pid, signal]);
+    },
+    shutdownGraceMs: 5,
+    wait: () => new Promise((resolve) => setTimeout(resolve, 10)),
+  });
+  supervisor.start({ name: 'wrapper', command: 'one', args: [], env: {}, required: true });
+  child.emit('exit', 0, null);
+
+  await supervisor.stopAll();
+
+  assert.deepEqual(kills, [
+    [-175, 'SIGTERM'],
+    [-175, 0],
+    [-175, 'SIGKILL'],
+  ]);
+});
+
 test('returns the first matching child line for dynamic local endpoints', async () => {
   let child;
+  let running = true;
   const supervisor = createProcessSupervisor({
     spawnImpl() {
       child = new FakeChild(150);
       return child;
     },
-    killImpl() {
-      queueMicrotask(() => child.emit('exit', 0, 'SIGTERM'));
+    killImpl(_pid, signal) {
+      if (signal === 0 && !running) {
+        throw Object.assign(new Error('process group exited'), { code: 'ESRCH' });
+      }
+      if (signal === 'SIGTERM') {
+        queueMicrotask(() => {
+          running = false;
+          child.emit('exit', 0, 'SIGTERM');
+        });
+      }
     },
   });
   supervisor.start({
@@ -421,6 +467,47 @@ test('reports the exact occupied application port before starting infrastructure
   );
 });
 
+test('refuses readiness when an application port is reclaimed during the build', async () => {
+  const config = await configFixture();
+  const started = [];
+  const checks = [];
+  const supervisor = {
+    failure: new Promise(() => undefined),
+    start(spec) {
+      started.push(spec.name);
+    },
+    waitForLine: () => Promise.resolve(),
+    waitForLineMatch: () =>
+      Promise.resolve([
+        'https://local-m1.trycloudflare.com',
+        'local-m1.trycloudflare.com',
+      ]),
+    stopAll: () => Promise.resolve(),
+  };
+
+  await assert.rejects(
+    runLocal({
+      config,
+      supervisor,
+      exec: (_command, args) =>
+        Promise.resolve({ stdout: args.includes('--version') ? '9.15.0' : '' }),
+      checkPort: (port) => {
+        checks.push(port);
+        const observations = checks.filter((candidate) => candidate === port).length;
+        return Promise.resolve(!(port === 4500 && observations === 2));
+      },
+      waitForHttp: () => Promise.resolve(),
+      prepareImages: () => Promise.resolve(),
+      signals: new EventEmitter(),
+    }),
+    /port 4500 is already in use/,
+  );
+
+  assert.equal(started.includes('forgejo-tunnel'), true);
+  assert.equal(started.includes('git-service'), false);
+  assert.equal(checks.filter((port) => port === 4500).length, 2);
+});
+
 test('aborts an in-flight HTTP readiness retry on shutdown', async () => {
   const controller = new AbortController();
   let attempts = 0;
@@ -540,5 +627,32 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
     started.find((spec) => spec.name === 'sandbox-service').env.GIT_CLONE_BASE_URL,
     'https://local-m1.trycloudflare.com',
   );
+  assert.deepEqual(
+    started.find((spec) => spec.name === 'git-service').args.slice(-1),
+    ['start'],
+  );
+  assert.deepEqual(
+    started.find((spec) => spec.name === 'model-gateway').args.slice(-1),
+    ['start'],
+  );
+  assert.deepEqual(
+    started.find((spec) => spec.name === 'sandbox-service').args.slice(-1),
+    ['start'],
+  );
+  assert.deepEqual(
+    started.find((spec) => spec.name === 'agent-runs-worker').args.slice(-1),
+    ['start:run'],
+  );
+  assert.deepEqual(
+    started.find((spec) => spec.name === 'control-api').args.slice(-1),
+    ['start'],
+  );
+  assert.deepEqual(started.find((spec) => spec.name === 'web').args.slice(-5), [
+    'dev',
+    '--hostname',
+    '127.0.0.1',
+    '--port',
+    '3000',
+  ]);
   assert.equal(events.at(-1), 'stop');
 });
