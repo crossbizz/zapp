@@ -11,6 +11,13 @@ const OPERATION_KEY = `op_${'a'.repeat(64)}`;
 
 class FakeProvider implements WorkspaceFileEditorProvider {
   readonly files = new Map([['src/index.ts', Buffer.from('before\n')]]);
+  entries: Array<{ path: string; type: 'directory' | 'file' | 'symlink' }> = Array.from(
+    { length: 501 },
+    (_, index) => ({
+      path: `src/file-${String(index)}.ts`,
+      type: 'file' as const,
+    }),
+  );
   readonly gitInputs: unknown[] = [];
   readonly writes: Array<{ path: string; body: string; key: string | undefined }> = [];
   failCommit = false;
@@ -22,12 +29,7 @@ class FakeProvider implements WorkspaceFileEditorProvider {
   }
 
   listFiles() {
-    return Promise.resolve(
-      Array.from({ length: 501 }, (_, index) => ({
-        path: `src/file-${String(index)}.ts`,
-        type: 'file' as const,
-      })),
-    );
+    return Promise.resolve(this.entries);
   }
 
   writeFilesAtomically(
@@ -79,6 +81,35 @@ describe('WS-16 workspace file editor boundary', () => {
     });
   });
 
+  it('removes dependency and generated trees before applying the editor listing cap', async () => {
+    const provider = new FakeProvider();
+    provider.entries = [
+      ...Array.from({ length: 500 }, (_, index) => ({
+        path: `node_modules/package-${String(index)}/package.json`,
+        type: 'file' as const,
+      })),
+      { path: '.git/config', type: 'file' as const },
+      { path: 'dist/index.js', type: 'file' as const },
+      { path: 'package.json', type: 'file' as const },
+      { path: 'pnpm-lock.yaml', type: 'file' as const },
+      { path: 'src', type: 'directory' as const },
+      { path: 'src/index.ts', type: 'file' as const },
+    ];
+    const editor = createWorkspaceFileEditor(provider);
+
+    const listing = await editor.list(WORKSPACE_ID, '.', { glob: '**/*', maxDepth: 100 });
+
+    expect(listing).toEqual({
+      entries: [
+        { path: 'package.json', type: 'file' },
+        { path: 'pnpm-lock.yaml', type: 'file' },
+        { path: 'src', type: 'directory' },
+        { path: 'src/index.ts', type: 'file' },
+      ],
+      truncated: false,
+    });
+  });
+
   it('rejects stale and unsafe edits, then creates exactly one attributed manual commit', async () => {
     const provider = new FakeProvider();
     const editor = createWorkspaceFileEditor(provider);
@@ -86,26 +117,36 @@ describe('WS-16 workspace file editor boundary', () => {
 
     await expect(
       editor.edit(WORKSPACE_ID, {
-        path: '../outside', data: Buffer.from('bad'), expectedCompareToken: snapshot.compareToken,
-        actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NY', operationKey: OPERATION_KEY,
+        path: '../outside',
+        data: Buffer.from('bad'),
+        expectedCompareToken: snapshot.compareToken,
+        actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NY',
+        operationKey: OPERATION_KEY,
       }),
     ).rejects.toMatchObject({ code: 'workspace_path_invalid' });
     await expect(
       editor.edit(WORKSPACE_ID, {
-        path: 'src/index.ts', data: Buffer.from('bad'), expectedCompareToken: '0'.repeat(64),
-        actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NY', operationKey: OPERATION_KEY,
+        path: 'src/index.ts',
+        data: Buffer.from('bad'),
+        expectedCompareToken: '0'.repeat(64),
+        actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NY',
+        operationKey: OPERATION_KEY,
       }),
     ).rejects.toMatchObject({ code: 'workspace_edit_stale' });
 
     const edited = await editor.edit(WORKSPACE_ID, {
-      path: 'src/index.ts', data: Buffer.from('after\n'),
+      path: 'src/index.ts',
+      data: Buffer.from('after\n'),
       expectedCompareToken: snapshot.compareToken,
-      actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NY', operationKey: OPERATION_KEY,
+      actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NY',
+      operationKey: OPERATION_KEY,
     });
 
     expect(edited).toMatchObject({ path: 'src/index.ts', commitRef: 'abcdef012345' });
     expect(provider.files.get('src/index.ts')?.toString('utf8')).toBe('after\n');
-    expect(provider.gitInputs).toEqual([{ operation: 'add_commit', paths: ['src/index.ts'], message: 'manual edit via web' }]);
+    expect(provider.gitInputs).toEqual([
+      { operation: 'add_commit', paths: ['src/index.ts'], message: 'manual edit via web' },
+    ]);
     expect(provider.writes).toHaveLength(1);
   });
 
@@ -117,9 +158,11 @@ describe('WS-16 workspace file editor boundary', () => {
 
     await expect(
       editor.edit(WORKSPACE_ID, {
-        path: 'src/index.ts', data: Buffer.from('after\n'),
+        path: 'src/index.ts',
+        data: Buffer.from('after\n'),
         expectedCompareToken: snapshot.compareToken,
-        actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NY', operationKey: OPERATION_KEY,
+        actorUserId: 'user_01J8ME7YQZJ2V9Q0X3T5B6K7NY',
+        operationKey: OPERATION_KEY,
       }),
     ).rejects.toMatchObject({ code: 'workspace_edit_commit_failed' });
 

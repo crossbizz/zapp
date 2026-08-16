@@ -4,6 +4,22 @@ export const MAX_EDITOR_FILE_BYTES = 1_048_576;
 export const MAX_EDITOR_LIST_ENTRIES = 500;
 export const MANUAL_EDIT_COMMIT_SUBJECT = 'manual edit via web';
 
+const NON_SOURCE_DIRECTORY_NAMES = new Set([
+  '.astro',
+  '.cache',
+  '.git',
+  '.next',
+  '.nuxt',
+  '.svelte-kit',
+  '.turbo',
+  '.vite',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+]);
+
 type FileEntry = { readonly path: string; readonly type: 'file' | 'directory' | 'symlink' };
 type GitResult = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
@@ -81,6 +97,10 @@ function requireBounded(data: Uint8Array): Buffer {
   return Buffer.from(data);
 }
 
+function isProjectSourceEntry(entry: FileEntry): boolean {
+  return !entry.path.split('/').some((part) => NON_SOURCE_DIRECTORY_NAMES.has(part));
+}
+
 function parseCommitRef(stdout: string): string {
   const match = /(?:^|\s)([0-9a-f]{7,64})(?=\s|\])/u.exec(stdout);
   if (match?.[1] === undefined) {
@@ -93,13 +113,18 @@ export function createWorkspaceFileEditor(provider: WorkspaceFileEditorProvider)
   const tails = new Map<string, Promise<void>>();
   const completed = new Map<
     string,
-    { readonly fingerprint: string; readonly result: { path: string; commitRef: string; compareToken: string } }
+    {
+      readonly fingerprint: string;
+      readonly result: { path: string; commitRef: string; compareToken: string };
+    }
   >();
 
   async function serialized<T>(key: string, operation: () => Promise<T>): Promise<T> {
     const previous = tails.get(key) ?? Promise.resolve();
     let release = (): void => undefined;
-    const current = new Promise<void>((resolve) => { release = resolve; });
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     tails.set(key, current);
     await previous;
     try {
@@ -116,7 +141,9 @@ export function createWorkspaceFileEditor(provider: WorkspaceFileEditorProvider)
       path: string,
       options?: { readonly glob?: string; readonly maxDepth?: number },
     ) {
-      const entries = await provider.listFiles(providerWorkspaceId, validatePath(path), options);
+      const entries = (
+        await provider.listFiles(providerWorkspaceId, validatePath(path), options)
+      ).filter(isProjectSourceEntry);
       return {
         entries: entries.slice(0, MAX_EDITOR_LIST_ENTRIES),
         truncated: entries.length > MAX_EDITOR_LIST_ENTRIES,
@@ -138,12 +165,16 @@ export function createWorkspaceFileEditor(provider: WorkspaceFileEditorProvider)
       const path = validatePath(input.path);
       const next = requireBounded(input.data);
       const nextToken = compareToken(next);
-      const fingerprint = compareToken(Buffer.from(JSON.stringify({
-        path,
-        expectedCompareToken: input.expectedCompareToken,
-        nextToken,
-        actorUserId: input.actorUserId,
-      })));
+      const fingerprint = compareToken(
+        Buffer.from(
+          JSON.stringify({
+            path,
+            expectedCompareToken: input.expectedCompareToken,
+            nextToken,
+            actorUserId: input.actorUserId,
+          }),
+        ),
+      );
       const replayKey = `${providerWorkspaceId}:${input.operationKey}`;
 
       return serialized(providerWorkspaceId, async () => {
@@ -197,7 +228,11 @@ export function createWorkspaceFileEditor(provider: WorkspaceFileEditorProvider)
           );
         }
 
-        const result = { path, commitRef: parseCommitRef(committed.stdout), compareToken: nextToken };
+        const result = {
+          path,
+          commitRef: parseCommitRef(committed.stdout),
+          compareToken: nextToken,
+        };
         completed.set(replayKey, { fingerprint, result });
         if (completed.size > 1_000) completed.delete(completed.keys().next().value as string);
         return result;

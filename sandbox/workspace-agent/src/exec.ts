@@ -34,6 +34,8 @@ const SAFE_INHERITED_ENV_NAMES = [
   'SHELL',
   'USER',
   'LOGNAME',
+  'NPM_CONFIG_STORE_DIR',
+  'PNPM_STORE_DIR',
 ] as const;
 
 const RESERVED_AGENT_ENV_NAMES = new Set([

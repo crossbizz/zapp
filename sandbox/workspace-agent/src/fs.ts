@@ -1,10 +1,15 @@
 import { spawn } from 'node:child_process';
-import { basename, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Writable } from 'node:stream';
 import { rgPath } from '@vscode/ripgrep';
+import { minimatch } from 'minimatch';
 import { z } from 'zod';
-import { AtomicWriteConflictError, PathViolationError, resolveInRoot } from '@zapp/workspace-runtime';
+import {
+  AtomicWriteConflictError,
+  PathViolationError,
+  resolveInRoot,
+} from '@zapp/workspace-runtime';
 
 const NonEmptyNoNulStringSchema = z
   .string()
@@ -98,8 +103,7 @@ function isTypedEarlyExitPipeClosure(error: Error, exitCode: number | null): boo
 }
 
 function globMatches(path: string, glob: string): boolean {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/gu, '\\$&').replaceAll('*', '.*').replaceAll('?', '.');
-  return new RegExp(`^${escaped}$`, 'u').test(basename(path));
+  return minimatch(path, glob, { dot: true, matchBase: !glob.includes('/') });
 }
 
 function runPathHelper(args: readonly string[], input?: Buffer): Promise<Buffer> {
@@ -152,7 +156,11 @@ function runNativeHelper(
     const child = spawn(PATH_HELPER, args, {
       stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
-    if (child.stdout === null || child.stderr === null || (input !== undefined && child.stdin === null)) {
+    if (
+      child.stdout === null ||
+      child.stderr === null ||
+      (input !== undefined && child.stdin === null)
+    ) {
       child.kill('SIGKILL');
       rejectResult(new NativePathHelperError(null));
       return;

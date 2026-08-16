@@ -130,7 +130,7 @@ export function registerBuilderPreviewRoutes(
         stored === undefined
           ? undefined
           : ExecutionContractSchema.safeParse(stored.contractJson).data;
-      if (contract === undefined && deps.artifacts !== undefined) {
+      if (deps.artifacts !== undefined) {
         try {
           const scan = await scanProjectCapabilities({
             workspaceRoot: '.',
@@ -162,7 +162,7 @@ export function registerBuilderPreviewRoutes(
           });
           contract = ExecutionContractSchema.parse(scan.contract);
         } catch {
-          throw projectContractUnavailable();
+          if (contract === undefined) throw projectContractUnavailable();
         }
       }
       if (contract === undefined) throw projectContractUnavailable();
@@ -177,6 +177,13 @@ export function registerBuilderPreviewRoutes(
         runId: attachedRun?.id ?? latestRun?.id ?? workspace.runId,
       });
       const operationKey = operationOf(request);
+      request.log.info(
+        {
+          packageManager: contract.package_manager,
+          workspaceRoot: contract.workspace_root,
+        },
+        'Resolved current preview execution contract',
+      );
       await request.auditDetached({
         organizationId: ctx.organizationId,
         action: 'workspace.preview_requested',

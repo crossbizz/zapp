@@ -65,9 +65,9 @@ describe('VF-3 capability scan activity', () => {
         scanId,
       }),
     ).not.toBe(input.idempotencyKey);
-    expect(
-      CapabilityScanInputSchema.safeParse({ ...input, idempotencyKey: scanId }).success,
-    ).toBe(false);
+    expect(CapabilityScanInputSchema.safeParse({ ...input, idempotencyKey: scanId }).success).toBe(
+      false,
+    );
   });
 
   test('derives a Next + Supabase contract and a support report from workspace evidence', async () => {
@@ -137,5 +137,42 @@ describe('VF-3 capability scan activity', () => {
       integration: `${prefix} test:integration`,
       browser: `${prefix} test:browser`,
     });
+  });
+
+  test('ignores dependency, repository, and generated output trees during restore scans', async () => {
+    const manifest = JSON.stringify({
+      name: 'restored-project',
+      scripts: { dev: 'vite --port 3000' },
+    });
+    const files = [
+      '.git/config',
+      '.next/server/app.js',
+      'dist/assets/app.js',
+      'node_modules/fake-sdk/package.json',
+      'node_modules/fake-sdk/src/index.ts',
+      'package.json',
+      'pnpm-lock.yaml',
+      'src/main.ts',
+    ];
+    const reads: string[] = [];
+
+    const result = await scanProjectCapabilities({
+      workspaceRoot: '.',
+      listFiles: () => Promise.resolve(files),
+      readFile: (path) => {
+        reads.push(path);
+        if (path === 'package.json') return Promise.resolve(manifest);
+        if (path === 'src/main.ts') return Promise.resolve("document.body.textContent = 'ready';");
+        throw new Error(`restore scan read generated file: ${path}`);
+      },
+    });
+
+    expect(result.contract).toMatchObject({
+      package_manager: 'pnpm',
+      install: { command: 'pnpm install --frozen-lockfile' },
+      develop: { command: 'pnpm run dev', port: 3000 },
+    });
+    expect(reads).toEqual(expect.arrayContaining(['package.json', 'src/main.ts']));
+    expect(reads.every((path) => !/^(?:\.git|\.next|dist|node_modules)\//u.test(path))).toBe(true);
   });
 });

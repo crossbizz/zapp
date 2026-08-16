@@ -355,32 +355,51 @@ const EditorListQuerySchema = z
   })
   .strict();
 const EditorReadQuerySchema = z.object({ path: EditorPathSchema }).strict();
-const EditorListResponseSchema = z.object({
-  entries: z.array(
-    z.object({ path: z.string().max(1_024), type: z.enum(['file', 'directory', 'symlink']) }).strict(),
-  ).max(MAX_EDITOR_LIST_ENTRIES),
-  truncated: z.boolean(),
-}).strict();
-const EditorReadResponseSchema = z.object({
-  path: EditorPathSchema,
-  dataBase64: z.string().max(Math.ceil(MAX_EDITOR_FILE_BYTES / 3) * 4),
-  byteSize: z.number().int().nonnegative().max(MAX_EDITOR_FILE_BYTES),
-  compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
-}).strict();
-const EditorEditBodySchema = z.object({
-  path: EditorPathSchema,
-  dataBase64: z.string()
-    .max(Math.ceil(MAX_EDITOR_FILE_BYTES / 3) * 4)
-    .refine((value) => Buffer.from(value, 'base64').toString('base64') === value, 'Expected canonical base64')
-    .refine((value) => Buffer.from(value, 'base64').byteLength <= MAX_EDITOR_FILE_BYTES, 'File is too large'),
-  expectedCompareToken: z.string().regex(/^[0-9a-f]{64}$/u),
-  actorUserId: idSchema('user'),
-}).strict();
-const EditorEditResponseSchema = z.object({
-  path: EditorPathSchema,
-  commitRef: z.string().regex(/^[0-9a-f]{7,64}$/u),
-  compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
-}).strict();
+const EditorListResponseSchema = z
+  .object({
+    entries: z
+      .array(
+        z
+          .object({ path: z.string().max(1_024), type: z.enum(['file', 'directory', 'symlink']) })
+          .strict(),
+      )
+      .max(MAX_EDITOR_LIST_ENTRIES),
+    truncated: z.boolean(),
+  })
+  .strict();
+const EditorReadResponseSchema = z
+  .object({
+    path: EditorPathSchema,
+    dataBase64: z.string().max(Math.ceil(MAX_EDITOR_FILE_BYTES / 3) * 4),
+    byteSize: z.number().int().nonnegative().max(MAX_EDITOR_FILE_BYTES),
+    compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+  })
+  .strict();
+const EditorEditBodySchema = z
+  .object({
+    path: EditorPathSchema,
+    dataBase64: z
+      .string()
+      .max(Math.ceil(MAX_EDITOR_FILE_BYTES / 3) * 4)
+      .refine(
+        (value) => Buffer.from(value, 'base64').toString('base64') === value,
+        'Expected canonical base64',
+      )
+      .refine(
+        (value) => Buffer.from(value, 'base64').byteLength <= MAX_EDITOR_FILE_BYTES,
+        'File is too large',
+      ),
+    expectedCompareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+    actorUserId: idSchema('user'),
+  })
+  .strict();
+const EditorEditResponseSchema = z
+  .object({
+    path: EditorPathSchema,
+    commitRef: z.string().regex(/^[0-9a-f]{7,64}$/u),
+    compareToken: z.string().regex(/^[0-9a-f]{64}$/u),
+  })
+  .strict();
 const GitMergeRefSchema = z
   .string()
   .min(1)
@@ -388,13 +407,13 @@ const GitMergeRefSchema = z
   .refine((ref) => {
     const components = ref.split('/');
     return !(
-      ref.startsWith('-')
-      || ref.endsWith('.')
-      || ref.endsWith('/')
-      || ref.includes('..')
-      || ref.includes('@{')
-      || /[\u0000-\u0020\u007f~^:?*[\\]/u.test(ref)
-      || components.some(
+      ref.startsWith('-') ||
+      ref.endsWith('.') ||
+      ref.endsWith('/') ||
+      ref.includes('..') ||
+      ref.includes('@{') ||
+      /[\u0000-\u0020\u007f~^:?*[\\]/u.test(ref) ||
+      components.some(
         (component) =>
           component.length === 0 || component.startsWith('.') || component.endsWith('.lock'),
       )
@@ -647,7 +666,10 @@ export function registerWorkspaceRoutes(
     };
     readonly snapshotDeletion?: {
       remove(input: { readonly organizationId: string; readonly projectId: string }): Promise<void>;
-      absent(input: { readonly organizationId: string; readonly projectId: string }): Promise<boolean>;
+      absent(input: {
+        readonly organizationId: string;
+        readonly projectId: string;
+      }): Promise<boolean>;
     };
     readonly checkpointService?: {
       checkpoint(input: unknown): Promise<CheckpointRecord>;
@@ -1724,14 +1746,12 @@ export function registerWorkspaceRoutes(
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const query = EditorListQuerySchema.parse(request.query);
-      return EditorListResponseSchema.parse(await fileEditor.list(
-        await resolveProviderWorkspaceId(workspaceId, request),
-        query.path,
-        {
+      return EditorListResponseSchema.parse(
+        await fileEditor.list(await resolveProviderWorkspaceId(workspaceId, request), query.path, {
           ...(query.glob === undefined ? {} : { glob: query.glob }),
           ...(query.maxDepth === undefined ? {} : { maxDepth: query.maxDepth }),
-        },
-      ));
+        }),
+      );
     },
   );
 
@@ -1748,10 +1768,9 @@ export function registerWorkspaceRoutes(
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const { path } = EditorReadQuerySchema.parse(request.query);
-      return EditorReadResponseSchema.parse(await fileEditor.read(
-        await resolveProviderWorkspaceId(workspaceId, request),
-        path,
-      ));
+      return EditorReadResponseSchema.parse(
+        await fileEditor.read(await resolveProviderWorkspaceId(workspaceId, request), path),
+      );
     },
   );
 
@@ -1768,16 +1787,15 @@ export function registerWorkspaceRoutes(
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const body = EditorEditBodySchema.parse(request.body);
-      return EditorEditResponseSchema.parse(await fileEditor.edit(
-        await resolveProviderWorkspaceId(workspaceId, request),
-        {
+      return EditorEditResponseSchema.parse(
+        await fileEditor.edit(await resolveProviderWorkspaceId(workspaceId, request), {
           path: body.path,
           data: Buffer.from(body.dataBase64, 'base64'),
           expectedCompareToken: body.expectedCompareToken,
           actorUserId: body.actorUserId,
           operationKey: readIdempotencyKey(request.headers['idempotency-key']),
-        },
-      ));
+        }),
+      );
     },
   );
 
@@ -1825,15 +1843,15 @@ export function registerWorkspaceRoutes(
 
   app.get(
     '/internal/workspaces/:workspaceId/files/stat',
-    { preHandler: app.requireService, schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema } },
+    {
+      preHandler: app.requireService,
+      schema: { params: WorkspaceParamsSchema, querystring: FileQuerySchema },
+    },
     async (request: FastifyRequest) => {
       const { workspaceId } = WorkspaceParamsSchema.parse(request.params);
       const { path } = FileQuerySchema.parse(request.query);
       return FileStatResponseSchema.parse(
-        await deps.provider.statFile(
-          await resolveProviderWorkspaceId(workspaceId, request),
-          path,
-        ),
+        await deps.provider.statFile(await resolveProviderWorkspaceId(workspaceId, request), path),
       );
     },
   );
@@ -2023,6 +2041,10 @@ export function registerWorkspaceRoutes(
                   : deps.provider.restartDevServer(providerWorkspaceId, contract, key)),
               );
             } catch (error) {
+              request.log.error(
+                { err: error, workspaceId, action },
+                'Workspace dev-server operation failed',
+              );
               try {
                 await emitPreview(record, execution, key, action, 'preview.failed', {
                   code: 'dev_server_operation_failed',

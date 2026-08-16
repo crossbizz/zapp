@@ -263,7 +263,10 @@ class FakeModalWorkspaceSandbox implements ModalWorkspaceSandbox {
     return Promise.resolve();
   }
 
-  snapshotFilesystem(input: { readonly timeoutMs: number; readonly ttlMs: number }): Promise<string> {
+  snapshotFilesystem(input: {
+    readonly timeoutMs: number;
+    readonly ttlMs: number;
+  }): Promise<string> {
     expect(input).toEqual({ timeoutMs: 55_000, ttlMs: 30 * 86_400_000 });
     this.snapshotEvents.push('snapshot');
     return Promise.resolve('im-checkpoint0123');
@@ -453,9 +456,8 @@ function strictAgentResponse(request: AgentRequest): AgentResponse {
     };
     return jsonResponse({
       exitCode: 0,
-      stdout: body.operation === 'add_commit'
-        ? '[main abcdef012345] manual edit via web\n'
-        : 'clean',
+      stdout:
+        body.operation === 'add_commit' ? '[main abcdef012345] manual edit via web\n' : 'clean',
       stderr: '',
     });
   }
@@ -610,7 +612,10 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary, PreviewMonitorCoordin
   private readonly rows = new Map<string, WorkspaceLifecycleRow>();
   private readonly idempotency = new Map<string, string>();
   private readonly createWaiters = new Map<string, Array<(row: WorkspaceLifecycleRow) => void>>();
-  private readonly attachments = new Map<string, Parameters<WorkspaceRowBoundary['claimCreate']>[2]>();
+  private readonly attachments = new Map<
+    string,
+    Parameters<WorkspaceRowBoundary['claimCreate']>[2]
+  >();
   private readonly previewMonitorOwners = new Map<string, string>();
   private readonly previewMonitorsEnabled = new Set<string>();
   private previewMonitorLeaseSequence = 0;
@@ -619,9 +624,7 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary, PreviewMonitorCoordin
 
   projectOwnedBy(projectId: string, organizationId: string): Promise<boolean> {
     return Promise.resolve(
-      this.projectOwned &&
-        projectId === IDS.projectId &&
-        organizationId === IDS.organizationId,
+      this.projectOwned && projectId === IDS.projectId && organizationId === IDS.organizationId,
     );
   }
 
@@ -687,24 +690,16 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary, PreviewMonitorCoordin
   ): Promise<WorkspaceLifecycleRow | undefined> {
     const row = this.rows.get(workspaceId);
     return Promise.resolve(
-      row === undefined ||
-        row.organizationId !== organizationId ||
-        row.projectId !== projectId
+      row === undefined || row.organizationId !== organizationId || row.projectId !== projectId
         ? undefined
         : row,
     );
   }
 
-  async getAttachment(
-    workspaceId: string,
-    organizationId: string,
-    projectId: string,
-  ) {
+  async getAttachment(workspaceId: string, organizationId: string, projectId: string) {
     const row = await this.get(workspaceId, organizationId, projectId);
     const attachment = this.attachments.get(workspaceId);
-    return row === undefined || attachment === undefined
-      ? undefined
-      : { row, attachment };
+    return row === undefined || attachment === undefined ? undefined : { row, attachment };
   }
 
   listAttachments() {
@@ -878,9 +873,9 @@ describe('attach reattach recovery and ownership', () => {
         timeoutMs: 1_000,
       }),
     ).resolves.toMatchObject({ exitCode: 0, stdout: 'hello' });
-    await expect(restartedProvider.readFile(attached.providerWorkspaceId, 'src/index.ts')).resolves.toEqual(
-      Buffer.from('file bytes'),
-    );
+    await expect(
+      restartedProvider.readFile(attached.providerWorkspaceId, 'src/index.ts'),
+    ).resolves.toEqual(Buffer.from('file bytes'));
     expect(sdk.creates).toHaveLength(1);
   });
 
@@ -1063,9 +1058,11 @@ describe('attach reattach recovery and ownership', () => {
       sleep: () => Promise.resolve(),
     });
 
-    await expect(restartedProvider.attachWorkspace('sb-unknown', attachment)).rejects.toMatchObject({
-      name: 'ModalWorkspaceNotFoundError',
-    });
+    await expect(restartedProvider.attachWorkspace('sb-unknown', attachment)).rejects.toMatchObject(
+      {
+        name: 'ModalWorkspaceNotFoundError',
+      },
+    );
     sdk.sandbox.tags = { ...createInputTags(), project_id: `${IDS.projectId}-wrong` };
     await expect(
       restartedProvider.attachWorkspace(created.providerWorkspaceId, attachment),
@@ -1237,7 +1234,13 @@ describe('attach reattach recovery and ownership', () => {
       providerWorkspaceId: created.providerWorkspaceId,
       status: 'provisioning',
     });
-    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
     apps.push(app);
     await app.ready();
     const headers = {
@@ -1401,7 +1404,13 @@ describe('attach reattach recovery and ownership', () => {
         status: testCase.mode === 'terminated-row' ? 'terminated' : 'ready',
         terminatedAt: testCase.mode === 'terminated-row' ? NOW : null,
       });
-      const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+      const app = buildTestApp({
+        provider,
+        rows,
+        workspaceGit: WORKSPACE_GIT_FIXTURE,
+        serviceTokens,
+        now: () => NOW,
+      });
       apps.push(app);
       await app.ready();
       const response = await app.inject({
@@ -1957,8 +1966,7 @@ describe('create status terminate and idempotency', () => {
             Promise.resolve({ patch: new Uint8Array(), untrackedTar: new Uint8Array() }),
         },
         crypto: {
-          encrypt: () =>
-            Promise.resolve({ ciphertext: new Uint8Array([4, 5, 6]), keyVersion: 1 }),
+          encrypt: () => Promise.resolve({ ciphertext: new Uint8Array([4, 5, 6]), keyVersion: 1 }),
           decrypt: () => Promise.resolve(new Uint8Array([1, 2, 3])),
         },
         artifacts: {
@@ -2515,56 +2523,47 @@ describe('create status terminate and idempotency', () => {
     if (creation === undefined) throw new Error('workspace create input missing');
     const { command, ...creationWithoutCommand } = creation;
     expect(creation.sandboxName).toMatch(/^zapp-writer-[a-f0-9]{32}$/);
-    expect(command.slice(0, 4)).toEqual([
-      '/usr/bin/dumb-init',
-      '--',
-      '/bin/bash',
-      '-lc',
-    ]);
+    expect(command.slice(0, 4)).toEqual(['/usr/bin/dumb-init', '--', '/bin/bash', '-lc']);
     expect(command[4]).toContain(`/workspace/.zapp-writer-${IDS.branchId}.lock`);
     expect(command[4]).not.toContain(`/workspace/${IDS.branchId}/.zapp-writer.lock`);
-    expect({ ...creationWithoutCommand, sandboxName: '<stable-hash>' }).toEqual(
-      {
+    expect({ ...creationWithoutCommand, sandboxName: '<stable-hash>' }).toEqual({
+      environment: 'zapp-dev',
+      appName: 'zapp-workspaces',
+      digest: 'im-9NCxx8merCgh67jj0YLM84',
+      publishedName: 'forge-node-base:2026-08-08-c58a416',
+      tags: {
+        org_id: IDS.organizationId,
+        project_id: IDS.projectId,
+        branch_id: IDS.branchId,
+        run_id: IDS.runId,
+        task_id: IDS.taskId,
+        purpose: 'builder',
         environment: 'zapp-dev',
-        appName: 'zapp-workspaces',
-        digest: 'im-9NCxx8merCgh67jj0YLM84',
-        publishedName: 'forge-node-base:2026-08-08-c58a416',
-        tags: {
-          org_id: IDS.organizationId,
-          project_id: IDS.projectId,
-          branch_id: IDS.branchId,
-          run_id: IDS.runId,
-          task_id: IDS.taskId,
-          purpose: 'builder',
-          environment: 'zapp-dev',
-        },
-        resources: {
-          cpuRequest: 0.5,
-          cpuLimit: 2,
-          memRequestMiB: 1024,
-          memLimitMiB: 4096,
-        },
-        environmentVariables: {
-          ZAPP_AGENT_TOKEN: 'agent-test-token',
-          ZAPP_WORKSPACE_ROOT: `/workspace/${IDS.branchId}`,
-          NPM_CONFIG_STORE_DIR: '/cache/pnpm',
-          PNPM_STORE_DIR: '/cache/pnpm',
-          PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
-        },
-        sandboxName: '<stable-hash>',
-        volume: {
-          name: `vol-proj_${IDS.projectId}`,
-          mounts: [
-            { mountPath: '/cache', subPath: '/cache' },
-          ],
-        },
-        encryptedPorts: [8877, 8080],
-        readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
-        outboundCidrAllowlist: [],
-        outboundDomainAllowlist: ['github.com', 'registry.npmjs.org'],
-        timeoutMs: 14_400_000,
       },
-    );
+      resources: {
+        cpuRequest: 0.5,
+        cpuLimit: 2,
+        memRequestMiB: 1024,
+        memLimitMiB: 4096,
+      },
+      environmentVariables: {
+        ZAPP_AGENT_TOKEN: 'agent-test-token',
+        ZAPP_WORKSPACE_ROOT: `/workspace/${IDS.branchId}`,
+        NPM_CONFIG_STORE_DIR: '/cache/pnpm',
+        PNPM_STORE_DIR: '/cache/pnpm',
+        PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
+      },
+      sandboxName: '<stable-hash>',
+      volume: {
+        name: `vol-proj_${IDS.projectId}`,
+        mounts: [{ mountPath: '/cache', subPath: '/cache' }],
+      },
+      encryptedPorts: [8877, 8080],
+      readinessProbe: { kind: 'tcp', port: 8877, intervalMs: 250 },
+      outboundCidrAllowlist: [],
+      outboundDomainAllowlist: ['github.com', 'registry.npmjs.org'],
+      timeoutMs: 14_400_000,
+    });
     expect(sdk.sandbox.readinessTimeouts).toEqual([30_000]);
     expect(sdk.sandbox.healthTokens).toEqual(['agent-test-token', 'agent-test-token']);
     expect(await provider.getStatus(handle.providerWorkspaceId)).toBe('ready');
@@ -2961,7 +2960,13 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
     apps.push(app);
     await app.ready();
 
@@ -3036,7 +3041,13 @@ describe('create status terminate and idempotency', () => {
       providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
       status: 'ready',
     });
-    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
     apps.push(app);
     await app.ready();
 
@@ -3074,7 +3085,13 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
     apps.push(app);
     await app.ready();
     const body = {
@@ -3163,7 +3180,13 @@ describe('create status terminate and idempotency', () => {
       sleep: () => Promise.resolve(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
     apps.push(app);
     await app.ready();
     const headers = {
@@ -3214,7 +3237,13 @@ describe('create status terminate and idempotency', () => {
     });
     const rows = new MemoryWorkspaceRows();
     rows.failTransitionStatus = 'ready';
-    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
     apps.push(app);
     await app.ready();
     const request = {
@@ -3318,7 +3347,13 @@ describe('create status terminate and idempotency', () => {
       sdkFactory: () => new FakeModalWorkspaceSdk(),
     });
     const rows = new MemoryWorkspaceRows();
-    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
     apps.push(app);
     await app.ready();
     const validBody = {
@@ -3693,7 +3728,12 @@ describe('agent proxy and unguarded conformance', () => {
         cmd: 'sh',
         args: ['-lc', EXECUTION_CONTRACT.install.command],
         cwd: EXECUTION_CONTRACT.workspace_root,
-        env: { CI: '1', NODE_ENV: 'development' },
+        env: {
+          CI: '1',
+          NODE_ENV: 'development',
+          NPM_CONFIG_STORE_DIR: '/cache/pnpm',
+          PNPM_STORE_DIR: '/cache/pnpm',
+        },
         timeoutMs: 120_000,
       });
     }
@@ -3730,7 +3770,9 @@ describe('agent proxy and unguarded conformance', () => {
 
     await expect(
       provider.startDevServer(sdk.sandbox.providerWorkspaceId, EXECUTION_CONTRACT),
-    ).rejects.toThrow('Dependency installation failed with exit code 7');
+    ).rejects.toThrow(
+      'Dependency installation failed with exit code 7 (durationMs=1, stdout=false, stderr=true, truncated=false)',
+    );
     expect(
       sdk.sandbox.agentRequests.some(
         (request) => request.method === 'POST' && request.path === '/dev-server/start',
@@ -3810,10 +3852,7 @@ describe('agent proxy and unguarded conformance', () => {
         within(consumption, 100, 'Aborted stream remained blocked on its Modal body read.'),
       ).resolves.toBeUndefined();
       expect(records).toHaveLength(1);
-      expect(sdk.sandbox.agentRequests.map(({ path }) => path)).toEqual([
-        '/exec',
-        '/exec/41/kill',
-      ]);
+      expect(sdk.sandbox.agentRequests.map(({ path }) => path)).toEqual(['/exec', '/exec/41/kill']);
       expect(sdk.sandbox.streamCancelCalls).toBeGreaterThan(0);
     } finally {
       sdk.sandbox.releaseStalledStream();
@@ -3923,10 +3962,7 @@ describe('agent proxy and unguarded conformance', () => {
       });
       expect(logs.statusCode).toBe(200);
       expect(logs.json()).toMatchObject({ nextCursor: 7, state: 'ready' });
-      expect(storedEvents.map(({ type }) => type)).toEqual([
-        'preview.starting',
-        'preview.ready',
-      ]);
+      expect(storedEvents.map(({ type }) => type)).toEqual(['preview.starting', 'preview.ready']);
       expect(storedEvents).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -3988,8 +4024,7 @@ describe('agent proxy and unguarded conformance', () => {
       });
       const terminalDeliveriesBeforeRead = events.emit.mock.calls.filter(
         ([event]) =>
-          event.type === 'preview.failed' &&
-          event.payload.code === 'restart_limit_exceeded',
+          event.type === 'preview.failed' && event.payload.code === 'restart_limit_exceeded',
       ).length;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const terminalLogs = await app.inject({
@@ -4006,8 +4041,7 @@ describe('agent proxy and unguarded conformance', () => {
       expect(
         events.emit.mock.calls.filter(
           ([event]) =>
-            event.type === 'preview.failed' &&
-            event.payload.code === 'restart_limit_exceeded',
+            event.type === 'preview.failed' && event.payload.code === 'restart_limit_exceeded',
         ),
       ).toHaveLength(terminalDeliveriesBeforeRead);
       expect(
@@ -4089,9 +4123,7 @@ describe('agent proxy and unguarded conformance', () => {
     try {
       await app.ready();
       await vi.waitFor(() => {
-        expect(stored).toEqual([
-          `ws13:failure:${IDS.workspaceId}:devfail_restored-supervisor`,
-        ]);
+        expect(stored).toEqual([`ws13:failure:${IDS.workspaceId}:devfail_restored-supervisor`]);
       });
       expect(logPolls).toBeGreaterThan(0);
       await vi.waitFor(() => {
@@ -4239,11 +4271,11 @@ describe('agent proxy and unguarded conformance', () => {
     let resolveStaleRead!: (
       value: Awaited<ReturnType<AgentProxyProvider['readDevServerLogs']>>,
     ) => void;
-    const staleRead = new Promise<
-      Awaited<ReturnType<AgentProxyProvider['readDevServerLogs']>>
-    >((resolve) => {
-      resolveStaleRead = resolve;
-    });
+    const staleRead = new Promise<Awaited<ReturnType<AgentProxyProvider['readDevServerLogs']>>>(
+      (resolve) => {
+        resolveStaleRead = resolve;
+      },
+    );
     const providerFor = (count: () => void, blockFirstRead = false): AgentProxyProvider => {
       const replica = createModalSandboxProvider({
         environment: 'dev',
@@ -4340,9 +4372,7 @@ describe('agent proxy and unguarded conformance', () => {
       expect(terminated.statusCode).toBe(200);
       const pollsAtTermination = firstReplicaPolls + secondReplicaPolls + thirdReplicaPolls;
       await new Promise<void>((resolve) => setTimeout(resolve, 40));
-      expect(firstReplicaPolls + secondReplicaPolls + thirdReplicaPolls).toBe(
-        pollsAtTermination,
-      );
+      expect(firstReplicaPolls + secondReplicaPolls + thirdReplicaPolls).toBe(pollsAtTermination);
       expect(ownerByWorkspace.has(IDS.workspaceId)).toBe(false);
     } finally {
       await Promise.all(
@@ -4437,23 +4467,33 @@ describe('agent proxy and unguarded conformance', () => {
       sdkFactory: () => sdk,
     });
     const rows = new MemoryWorkspaceRows();
-    await rows.claimCreate(requestedRow(), {
-      runId: IDS.runId,
-      taskId: IDS.taskId,
-      purpose: 'builder',
-      branchId: IDS.branchId,
-      branchName: 'main',
-    }, {
-      resourceProfile: 'small',
-      imageTag: IMAGE_LOCK.environments.dev.images['forge-node-base'].publishedName,
-      createdAt: NOW,
-      requiredTags: createInputTags(),
-    });
+    await rows.claimCreate(
+      requestedRow(),
+      {
+        runId: IDS.runId,
+        taskId: IDS.taskId,
+        purpose: 'builder',
+        branchId: IDS.branchId,
+        branchName: 'main',
+      },
+      {
+        resourceProfile: 'small',
+        imageTag: IMAGE_LOCK.environments.dev.images['forge-node-base'].publishedName,
+        createdAt: NOW,
+        requiredTags: createInputTags(),
+      },
+    );
     await rows.transition(IDS.workspaceId, 'started', {
       providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
     });
     await rows.transition(IDS.workspaceId, 'ready');
-    const app = buildTestApp({ provider, rows, workspaceGit: WORKSPACE_GIT_FIXTURE, serviceTokens, now: () => NOW });
+    const app = buildTestApp({
+      provider,
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      now: () => NOW,
+    });
     await app.ready();
     const headers = {
       'x-zapp-service-token': SERVICE_TOKEN,

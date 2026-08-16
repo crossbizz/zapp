@@ -63,6 +63,31 @@ class PreviewSandbox implements BuilderPreviewSandboxPort {
   }
 }
 
+function viteArtifacts(source: ReadonlyMap<string, string>): BuilderArtifactPort {
+  return {
+    listFiles: () =>
+      Promise.resolve({
+        entries: [...source.keys()].map((path) => ({ path, type: 'file' as const })),
+        truncated: false,
+      }),
+    readFile: ({ path }) => {
+      const body = source.get(path);
+      if (body === undefined) return Promise.reject(new Error('file not found'));
+      const bytes = Buffer.from(body);
+      return Promise.resolve({
+        path,
+        dataBase64: bytes.toString('base64'),
+        byteSize: bytes.length,
+        compareToken: 'a'.repeat(64),
+      });
+    },
+    editFile: () => Promise.reject(new Error('not used')),
+    compareCommits: () => Promise.reject(new Error('not used')),
+    listTests: () => Promise.reject(new Error('not used')),
+    signEvidence: () => Promise.reject(new Error('not used')),
+  };
+}
+
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
 
 class PreviewCaptureProxy implements PreviewProxyPort {
@@ -388,6 +413,43 @@ describe('public builder preview bridge', () => {
     ).toHaveLength(2);
   });
 
+  it('refreshes a stale stored execution contract from the current workspace source', async () => {
+    const source = new Map<string, string>([
+      [
+        'package.json',
+        JSON.stringify({
+          name: 'migrated-vite-app',
+          private: true,
+          scripts: { dev: 'vite --port 3000', build: 'vite build' },
+          dependencies: { vite: '^5.4.0', typescript: '^5.6.0' },
+        }),
+      ],
+      ['pnpm-lock.yaml', 'lockfileVersion: 9.0'],
+      ['index.html', '<main id="app"></main>'],
+      ['src/main.ts', "document.querySelector('#app')!.textContent = 'Migrated';"],
+    ]);
+    const wired = await wire({ builderArtifacts: viteArtifacts(source) });
+    const { workspace } = await seedWorkspace(wired);
+    Object.assign(wired.data.contracts[0]?.contractJson ?? {}, {
+      package_manager: 'npm',
+      install: { command: 'npm install' },
+      develop: { command: 'npm run dev', port: 3000 },
+    });
+
+    const response = await wired.harness.app.inject({
+      method: 'POST',
+      url: `/v1/workspaces/${workspace.id}/dev-server/restart`,
+      headers: { ...wired.asOwner, 'idempotency-key': 'builder-preview-refresh-contract-01' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(wired.sandbox.restarts[0]?.contract).toMatchObject({
+      package_manager: 'pnpm',
+      install: { command: 'pnpm install --frozen-lockfile' },
+      develop: { command: 'pnpm run dev', port: 3000 },
+    });
+  });
+
   it('attributes a recovered workspace restart to the latest durable project run', async () => {
     const wired = await wire();
     const { project, workspace } = await seedWorkspace(wired);
@@ -461,29 +523,7 @@ describe('public builder preview bridge', () => {
       ['index.html', '<main id="app"></main>'],
       ['src/main.ts', "document.querySelector('#app')!.textContent = 'Recovered';"],
     ]);
-    const builderArtifacts: BuilderArtifactPort = {
-      listFiles: () =>
-        Promise.resolve({
-          entries: [...source.keys()].map((path) => ({ path, type: 'file' as const })),
-          truncated: false,
-        }),
-      readFile: ({ path }) => {
-        const body = source.get(path);
-        if (body === undefined) return Promise.reject(new Error('file not found'));
-        const bytes = Buffer.from(body);
-        return Promise.resolve({
-          path,
-          dataBase64: bytes.toString('base64'),
-          byteSize: bytes.length,
-          compareToken: 'a'.repeat(64),
-        });
-      },
-      editFile: () => Promise.reject(new Error('not used')),
-      compareCommits: () => Promise.reject(new Error('not used')),
-      listTests: () => Promise.reject(new Error('not used')),
-      signEvidence: () => Promise.reject(new Error('not used')),
-    };
-    const wired = await wire({ builderArtifacts });
+    const wired = await wire({ builderArtifacts: viteArtifacts(source) });
     const { workspace } = await seedWorkspace(wired);
     wired.data.contracts.length = 0;
 

@@ -4,6 +4,8 @@ import { posix } from 'node:path';
 import { idSchema } from '@zapp/contracts';
 import { z } from 'zod';
 
+export const PROJECT_PACKAGE_CACHE_PATH = '/cache/pnpm' as const;
+
 const ProjectVolumeInputSchema = z
   .object({
     organizationId: idSchema('org'),
@@ -23,8 +25,8 @@ const ProjectVolumePlanSchema = z
     sandboxName: z.string().regex(/^zapp-writer-[a-f0-9]{32}$/),
     environment: z
       .object({
-        NPM_CONFIG_STORE_DIR: z.literal('/cache/pnpm'),
-        PNPM_STORE_DIR: z.literal('/cache/pnpm'),
+        NPM_CONFIG_STORE_DIR: z.literal(PROJECT_PACKAGE_CACHE_PATH),
+        PNPM_STORE_DIR: z.literal(PROJECT_PACKAGE_CACHE_PATH),
         PLAYWRIGHT_BROWSERS_PATH: z.literal('/cache/ms-playwright'),
       })
       .strict(),
@@ -58,15 +60,13 @@ export function createProjectVolumePlan(untrustedInput: unknown): ProjectVolumeP
     .slice(0, 32)}`;
   return ProjectVolumePlanSchema.parse({
     volumeName: projectVolumeName(input.projectId),
-    mounts: [
-      { mountPath: '/cache', subPath: '/cache' },
-    ],
+    mounts: [{ mountPath: '/cache', subPath: '/cache' }],
     workspaceRoot,
     lockFile: posix.join('/workspace', `.zapp-writer-${input.branchId}.lock`),
     sandboxName,
     environment: {
-      NPM_CONFIG_STORE_DIR: '/cache/pnpm',
-      PNPM_STORE_DIR: '/cache/pnpm',
+      NPM_CONFIG_STORE_DIR: PROJECT_PACKAGE_CACHE_PATH,
+      PNPM_STORE_DIR: PROJECT_PACKAGE_CACHE_PATH,
       PLAYWRIGHT_BROWSERS_PATH: '/cache/ms-playwright',
     },
   });

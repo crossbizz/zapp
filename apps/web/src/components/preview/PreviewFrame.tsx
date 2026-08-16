@@ -1,6 +1,6 @@
 'use client';
 
-import type { BuilderPreviewEvent, RunEvent } from '@zapp/api-client';
+import { ZappApiError, type BuilderPreviewEvent, type RunEvent } from '@zapp/api-client';
 import { Button, ErrorState } from '@zapp/ui';
 import {
   useCallback,
@@ -35,7 +35,7 @@ const previewLogPageSize = 100;
 const previewShareLifetimeMs = 8 * 60 * 60 * 1_000;
 const previewShareRenewalWindowMs = 60_000;
 
-type PreviewState = 'disconnected' | 'failed' | 'ready' | 'sleeping' | 'stale' | 'starting';
+type PreviewState = 'failed' | 'ready' | 'sleeping' | 'stale' | 'starting';
 type LogResponse = Awaited<
   ReturnType<ReturnType<typeof createControlPlaneClient>['readDevServerLogs']>
 >;
@@ -116,6 +116,10 @@ function currentPath(rawUrl: string): string {
   } catch {
     return '/';
   }
+}
+
+function operationWasRejected(error: unknown): boolean {
+  return error instanceof ZappApiError && error.status !== 409;
 }
 
 function logContext(logs: LogResponse | undefined): string {
@@ -423,6 +427,7 @@ export function PreviewFrame({
   const [workspaceId, setWorkspaceId] = useState<string>();
   const [workspaceRecoveryError, setWorkspaceRecoveryError] = useState<string>();
   const [workspaceRecoveryGeneration, setWorkspaceRecoveryGeneration] = useState(0);
+  const [wakeRequested, setWakeRequested] = useState(false);
   const attachingRef = useRef(false);
   const autoWakeWorkspaceRef = useRef<string | undefined>(undefined);
   const fixRunAttemptRef = useRef<StoredFixAttempt | undefined>(undefined);
@@ -449,8 +454,18 @@ export function PreviewFrame({
   const workspaceScopeRef = useRef<string | undefined>(undefined);
   const lifecycle = useMemo(() => previewLifecycle(events), [events]);
   const eventWorkspace = eventWorkspaceId(lifecycle.event);
-  const workspaceRecoveryAllowed = eventWorkspace !== undefined || runStatus === 'completed';
+  const runCompletedObserved =
+    runStatus === 'completed' || events.some((event) => event.type === 'run.completed');
+  const runTerminalObserved =
+    runCompletedObserved ||
+    runStatus === 'failed' ||
+    runStatus === 'cancelled' ||
+    events.some((event) => event.type === 'run.cancelled');
+  const activeRunOwnsPreview = !runTerminalObserved;
+  const workspaceRecoveryAllowed = eventWorkspace !== undefined || runTerminalObserved;
   const previewUsable = logs?.state === 'ready';
+  const wakeInProgress =
+    wakeRequested || (workspaceId !== undefined && autoWakeWorkspaceRef.current === workspaceId);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -583,6 +598,7 @@ export function PreviewFrame({
     wakeKeyRef.current = undefined;
     wakePendingRef.current = false;
     setLogs(undefined);
+    setWakeRequested(false);
     setPreviewStartExpired(false);
     setShareFailed(false);
     setCaptureEvents([]);
@@ -615,7 +631,7 @@ export function PreviewFrame({
       workspaceId === undefined ||
       logs?.state === 'ready' ||
       logs?.state === 'failed' ||
-      logs?.state === 'idle'
+      (logs?.state === 'idle' && !wakeInProgress)
     )
       return;
     const timer = window.setInterval(() => {
@@ -624,6 +640,9 @@ export function PreviewFrame({
       });
     }, 2_000);
     const deadline = window.setTimeout(() => {
+      wakePendingRef.current = false;
+      autoWakeWorkspaceRef.current = undefined;
+      setWakeRequested(false);
       setPreviewStartExpired(true);
       setOperationStatus('Preview startup timed out. Retry the dev server without rebuilding.');
     }, 45_000);
@@ -631,14 +650,21 @@ export function PreviewFrame({
       window.clearInterval(timer);
       window.clearTimeout(deadline);
     };
-  }, [logs?.state, refreshLatestWorkspace, workspaceId]);
+  }, [logs?.state, refreshLatestWorkspace, wakeInProgress, workspaceId]);
 
   useEffect(() => {
-    if (workspaceId === undefined || lifecycle.event?.type !== 'preview.failed') return;
+    if (logs?.state !== 'ready' && logs?.state !== 'failed') return;
+    wakePendingRef.current = false;
+    autoWakeWorkspaceRef.current = undefined;
+    setWakeRequested(false);
+  }, [logs?.state]);
+
+  useEffect(() => {
+    if (workspaceId === undefined || lifecycle.event === undefined) return;
     void refreshLatestWorkspace(false, true).catch(() => {
-      setOperationStatus('The final preview failure logs could not be refreshed.');
+      setOperationStatus('The latest preview status could not be refreshed.');
     });
-  }, [lifecycle.event?.type, refreshLatestWorkspace, workspaceId]);
+  }, [lifecycle.event?.data.sequence, refreshLatestWorkspace, workspaceId]);
 
   useEffect(() => {
     if (workspaceId === undefined || !previewUsable) return;
@@ -716,11 +742,15 @@ export function PreviewFrame({
 
   const previewState: PreviewState = (() => {
     if (previewStartExpired || logs?.state === 'failed') return 'failed';
-    if (logs === undefined || logs.state === 'starting' || logs.state === 'restarting')
+    if (
+      logs === undefined ||
+      logs.state === 'starting' ||
+      logs.state === 'restarting' ||
+      (logs.state === 'idle' && wakeInProgress)
+    )
       return 'starting';
     if (logs.state === 'idle') return 'sleeping';
     if (lifecycle.stale) return 'stale';
-    if (captureFailed) return 'disconnected';
     return 'ready';
   })();
 
@@ -742,8 +772,9 @@ export function PreviewFrame({
       void refreshLatestWorkspace().catch(() => {
         setOperationStatus('Preview restart was requested, but logs could not be refreshed.');
       });
-    } catch {
+    } catch (error) {
       if (generation === workspaceGenerationRef.current) {
+        if (operationWasRejected(error)) restartKeyRef.current = undefined;
         setOperationStatus('Preview restart failed. Retry safely.');
       }
     } finally {
@@ -755,6 +786,7 @@ export function PreviewFrame({
     if (workspaceId === undefined || wakePendingRef.current) return;
     wakePendingRef.current = true;
     const generation = workspaceGenerationRef.current;
+    setWakeRequested(true);
     setOperationStatus('Waking preview…');
     setPreviewStartExpired(false);
     setShareFailed(false);
@@ -765,12 +797,15 @@ export function PreviewFrame({
       await createControlPlaneClient(organizationId).restartDevServer(workspaceId, idempotencyKey);
       if (generation !== workspaceGenerationRef.current) return;
       wakeKeyRef.current = undefined;
+      setWakeRequested(true);
       setOperationStatus('Preview wake requested.');
       void refreshLatestWorkspace().catch(() => {
         setOperationStatus('Preview wake was requested, but logs could not be refreshed.');
       });
-    } catch {
+    } catch (error) {
       if (generation === workspaceGenerationRef.current) {
+        if (operationWasRejected(error)) wakeKeyRef.current = undefined;
+        setWakeRequested(false);
         setOperationStatus('Preview could not be woken. Retry safely.');
       }
     } finally {
@@ -780,19 +815,29 @@ export function PreviewFrame({
 
   useEffect(() => {
     if (
+      activeRunOwnsPreview ||
       workspaceId === undefined ||
       logs?.state !== 'idle' ||
+      wakePendingRef.current ||
       autoWakeWorkspaceRef.current === workspaceId
     ) {
       return;
     }
     autoWakeWorkspaceRef.current = workspaceId;
-    if (!claimWorkspaceAutoWake(window.sessionStorage, workspaceId)) return;
+    const ownsWakeRequest = claimWorkspaceAutoWake(window.sessionStorage, workspaceId);
+    setWakeRequested(true);
+    setPreviewStartExpired(false);
+    if (!ownsWakeRequest) {
+      setOperationStatus('Preview wake already requested. Waiting for the dev server…');
+      return;
+    }
+    wakePendingRef.current = true;
     const generation = workspaceGenerationRef.current;
     setOperationStatus('Waking preview…');
     void restartWorkspaceOnce(createControlPlaneClient(organizationId), workspaceId)
       .then(() => {
         if (generation !== workspaceGenerationRef.current) return;
+        setWakeRequested(true);
         setOperationStatus('Preview wake requested.');
         void refreshLatestWorkspace().catch(() => {
           setOperationStatus('Preview wake was requested, but logs could not be refreshed.');
@@ -800,10 +845,14 @@ export function PreviewFrame({
       })
       .catch(() => {
         if (generation === workspaceGenerationRef.current) {
+          setWakeRequested(false);
           setOperationStatus('Preview could not be woken. Retry safely.');
         }
+      })
+      .finally(() => {
+        if (generation === workspaceGenerationRef.current) wakePendingRef.current = false;
       });
-  }, [logs?.state, organizationId, refreshLatestWorkspace, workspaceId]);
+  }, [activeRunOwnsPreview, logs?.state, organizationId, refreshLatestWorkspace, workspaceId]);
 
   const attachCapture = async (capture: BuilderPreviewEvent): Promise<void> => {
     if (workspaceId === undefined || attachingRef.current) return;
@@ -1075,6 +1124,14 @@ export function PreviewFrame({
         </div>
       );
     }
+    if (logs?.state === 'idle' && activeRunOwnsPreview) {
+      return (
+        <div aria-busy="true" className="zapp-preview-state">
+          <h2>Build in progress</h2>
+          <p>The agent is preparing the project preview…</p>
+        </div>
+      );
+    }
     if (previewState === 'starting') {
       return (
         <div aria-busy="true" className="zapp-preview-state">
@@ -1095,21 +1152,6 @@ export function PreviewFrame({
           <h2>Preview sleeping</h2>
           <p>The workspace is not running. Wake it without creating a new workspace.</p>
           <Button onClick={() => void wake()}>Wake preview</Button>
-        </div>
-      );
-    }
-    if (previewState === 'disconnected') {
-      return (
-        <div className="zapp-preview-state">
-          <h2>Preview disconnected</h2>
-          <p>The authenticated capture channel dropped. The workspace remains unchanged.</p>
-          <Button
-            onClick={() => {
-              setConnectionGeneration((value) => value + 1);
-            }}
-          >
-            Retry preview connection
-          </Button>
         </div>
       );
     }
@@ -1198,6 +1240,19 @@ export function PreviewFrame({
           Preview is behind latest changes — Restart{' '}
           <Button onClick={() => void restart()} variant="secondary">
             Restart
+          </Button>
+        </div>
+      ) : null}
+      {captureFailed && previewUsable ? (
+        <div className="zapp-preview-stale-banner" role="status">
+          Preview interaction channel disconnected.{' '}
+          <Button
+            onClick={() => {
+              setConnectionGeneration((value) => value + 1);
+            }}
+            variant="secondary"
+          >
+            Retry preview connection
           </Button>
         </div>
       ) : null}

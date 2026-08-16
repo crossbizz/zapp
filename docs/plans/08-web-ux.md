@@ -452,6 +452,17 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Prove the focused preview panel, web lint/typecheck, and signed-in fresh plus restored Docker project flows.
 - [x] Commit: `fix(web): prevent fresh-run preview workspace races`
 
+#### WEB-18-FIX-18 - source-aware preview wake and file recovery
+
+**Root cause:** Restored workspaces could list hundreds of dependency and generated files before the bounded editor/source scan saw the project manifest and lockfile. The resulting stale npm execution contract launched a pnpm project without its cached development toolchain, while automatic and manual wake actions could race each other and repeat the install. This produced `vite: not found`, blank source trees, long wake failures, and sleeping previews that appeared not to wake.
+**Files:** Modify `apps/web/src/components/preview/PreviewFrame.tsx`, `apps/web/e2e/preview-panel.spec.ts`, `packages/project-adapters/src/scan.ts`, `packages/project-adapters/test/integration/scan.test.ts`, `sandbox/workspace-agent/{package.json,src/exec.ts,src/fs.ts,test/agent.test.ts}`, `services/control-api/{src/routes/builder-preview.ts,test/builder-preview.test.ts}`, `services/sandbox-service/src/{provider/modal.ts,provider/volumes.ts,routes/workspaces.ts,workspace-files.ts}`, `services/sandbox-service/test/{integration/modal-provider.test.ts,workspace-files.test.ts}`, `pnpm-lock.yaml`, this plan, and `tasks/todo.md`. No public API shape, immutable image, generated application source, desktop file, or production provider substitution is in scope.
+
+- [x] Add failing regressions for root-level recursive globs, source-first bounded file listings, current-source execution-contract refresh, package-cache propagation, and one guarded preview wake lifecycle.
+- [x] Exclude dependency/generated trees structurally from editor and capability scans, derive preview startup from the current project source, and retain the shared package store through sandbox command execution.
+- [x] Keep automatic and manual wake behind one in-flight guard, poll continuously from idle through ready/failed, preserve a healthy iframe when capture disconnects, and allow safe retries after concrete failures.
+- [x] Prove the focused and full affected suites, package lint/typecheck, all 12 preview browser flows, the real source tree, and an authenticated Docker container-restart-to-render recovery.
+- [x] Commit: `fix(preview): make workspace recovery reliable`
+
 ---
 
 ## Testing strategy
@@ -465,6 +476,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-18 done — Filtered dependency/generated trees before bounded listings and scans, refreshed preview contracts from current source, preserved the shared pnpm cache, serialized wake recovery, and proved 12/12 preview browser flows plus a live authenticated Docker restart that restored Vite and rendered the project.
 - 2026-08-15 WEB-18-FIX-17 done — Reserved initial workspace provisioning for the authoritative run, restored terminal projects from their durable branch, and proved the focused preview lifecycle, web lint/typecheck, fresh-run non-race, and signed-in Docker restoration flow.
 - 2026-08-15 WEB-18-FIX-16 done — Forced preview dependency recovery into non-interactive development mode for both start and restart; the focused and full sandbox suites, full repository gate, and signed-in restored Docker preview/source flow passed.
 - 2026-08-15 WEB-18-FIX-15 done — Replaced placeholder More navigation with compact semantic icons, labeled the active surface, added Lovable-style nested Cloud navigation with truthful API-backed content, and passed 25/25 builder shell plus 136/136 browser tests, 37/37 web unit tests, lint/typecheck, desktop and 680px acceptance.

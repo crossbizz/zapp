@@ -173,6 +173,28 @@ function normalize(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//u, '');
 }
 
+const NON_SOURCE_DIRECTORY_NAMES = new Set([
+  '.astro',
+  '.cache',
+  '.git',
+  '.next',
+  '.nuxt',
+  '.svelte-kit',
+  '.turbo',
+  '.vite',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+]);
+
+function isProjectSourcePath(path: string): boolean {
+  return normalize(path)
+    .split('/')
+    .every((segment) => !NON_SOURCE_DIRECTORY_NAMES.has(segment));
+}
+
 function declaredPackages(manifest: PackageJson): Readonly<Record<string, string>> {
   return { ...manifest.dependencies, ...manifest.devDependencies };
 }
@@ -313,7 +335,10 @@ function environmentNames(contents: readonly string[]): Set<string> {
   return names;
 }
 
-async function readableContents(ctx: DetectionContext, paths: readonly string[]): Promise<string[]> {
+async function readableContents(
+  ctx: DetectionContext,
+  paths: readonly string[],
+): Promise<string[]> {
   const reads = await Promise.all(
     paths.map(async (path) => {
       try {
@@ -358,19 +383,27 @@ function missingCapabilities(input: {
  * The deterministic body of VF-3's workspace activity. It reads names and
  * project source only; environment values are neither required nor returned.
  */
-export async function scanProjectCapabilities(ctx: DetectionContext): Promise<CapabilityScanResult> {
-  const listed = (await ctx.listFiles('**/*')).map(normalize).sort();
+export async function scanProjectCapabilities(
+  ctx: DetectionContext,
+): Promise<CapabilityScanResult> {
+  const sourceContext: DetectionContext = {
+    ...ctx,
+    listFiles: async (glob) => (await ctx.listFiles(glob)).filter(isProjectSourcePath),
+  };
+  const listed = (await sourceContext.listFiles('**/*')).map(normalize).sort();
   const files = new Set(listed);
-  const manifest = PackageJsonSchema.parse(JSON.parse(await ctx.readFile('package.json')));
+  const manifest = PackageJsonSchema.parse(
+    JSON.parse(await sourceContext.readFile('package.json')),
+  );
   const packages = declaredPackages(manifest);
-  const detections = await detectProject(ctx);
+  const detections = await detectProject(sourceContext);
   const winner = detections.find(({ adapterId }) => adapterId !== 'capacitor') ?? detections[0];
   if (winner === undefined) throw new TypeError('Capability scan found no project adapter');
 
   const adapters: readonly ProjectAdapter[] = [...frameworkAdapters, genericNodeAdapter];
   const adapter = adapters.find(({ id }) => id === winner.adapterId);
   if (adapter === undefined) throw new TypeError(`Unknown project adapter: ${winner.adapterId}`);
-  const projectContext: ProjectContext = { ...ctx, detection: winner };
+  const projectContext: ProjectContext = { ...sourceContext, detection: winner };
   const baseContract = await adapter.deriveExecutionContract(projectContext);
   const scripts = manifest.scripts ?? {};
   const manager = baseContract.package_manager;
@@ -388,15 +421,17 @@ export async function scanProjectCapabilities(ctx: DetectionContext): Promise<Ca
               : { integration: command('test:integration') }),
             ...(scripts['test:browser'] === undefined && scripts.e2e === undefined
               ? {}
-              : { browser: command(scripts['test:browser'] === undefined ? 'e2e' : 'test:browser') }),
+              : {
+                  browser: command(scripts['test:browser'] === undefined ? 'e2e' : 'test:browser'),
+                }),
           },
         }),
   });
 
   const envFiles = listed.filter((path) => /(^|\/)\.env(?:\.[^.]+)?(?:\.example)?$/u.test(path));
-  const envNames = environmentNames(await readableContents(ctx, envFiles));
+  const envNames = environmentNames(await readableContents(sourceContext, envFiles));
   const sourceFiles = listed.filter((path) => /\.(?:[cm]?[jt]sx?|vue|svelte|astro)$/u.test(path));
-  const source = (await readableContents(ctx, sourceFiles)).join('\n');
+  const source = (await readableContents(sourceContext, sourceFiles)).join('\n');
   const database = detectDatabase(files, packages, envNames);
   const auth = detectAuth(packages, source);
   const proposed = await adapter.proposeDeployment(projectContext);
@@ -428,7 +463,9 @@ export async function scanProjectCapabilities(ctx: DetectionContext): Promise<Ca
   return CapabilityScanResultSchema.parse({
     supportLevel: 'compatible',
     verifiedEligible:
-      contract.build !== undefined && contract.typecheck !== undefined && contract.test !== undefined,
+      contract.build !== undefined &&
+      contract.typecheck !== undefined &&
+      contract.test !== undefined,
     detectedFramework: winner.adapterId === 'generic-node' ? null : winner.adapterId,
     detections,
     contract,

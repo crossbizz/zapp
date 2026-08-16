@@ -43,7 +43,7 @@ const projectRead = {
 const activeRun = {
   appType: 'web' as const,
   branchId: null,
-  completedAt: null,
+  completedAt: null as string | null,
   id: runId,
   mode: 'build' as const,
   model: null,
@@ -225,6 +225,125 @@ test('leaves initial workspace provisioning to the active run while run state hy
   await expect(page.getByRole('status', { name: 'Build status' })).toHaveText('Agent is running');
   expect(workspaceRequests).toEqual([]);
   await expect(page.getByRole('heading', { name: 'Build in progress' })).toBeVisible();
+});
+
+test('restores a failed run from its project branch when no workspace was started', async ({
+  page,
+}) => {
+  const recoveredWorkspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FR';
+  const workspaceCreateBodies: unknown[] = [];
+  await installBuilder(page, () => '', {
+    ...activeRun,
+    completedAt: '2026-08-10T12:01:00.000Z',
+    status: 'failed',
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    if (route.request().method() === 'POST') {
+      workspaceCreateBodies.push(route.request().postDataJSON());
+      await route.fulfill({
+        body: JSON.stringify({
+          workspace: {
+            branchId,
+            createdAt: '2026-08-10T12:01:00.000Z',
+            id: recoveredWorkspaceId,
+            lastActiveAt: '2026-08-10T12:01:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: 'provider-failed-run-preview',
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: 'ready',
+            terminatedAt: null,
+          },
+        }),
+        headers: corsHeaders(),
+        status: 201,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({ workspaces: [] }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/dev-server/restart`,
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          ownership: 'process_group',
+          pid: 42,
+          port: 3000,
+          supervisorId: 'failed-run-preview-fixture',
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${recoveredWorkspaceId}/dev-server/logs*`,
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          entries: [],
+          failureId: null,
+          nextCursor: 0,
+          state: 'starting',
+          truncated: false,
+        }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect(page.getByRole('heading', { name: 'Preview starting' })).toBeVisible();
+  expect(workspaceCreateBodies).toEqual([{ branchId, resourceProfile: 'standard' }]);
+  await expect(
+    page.getByText('This run ended before the agent started a project workspace.'),
+  ).toHaveCount(0);
+});
+
+test('does not race an active run for control of its idle preview workspace', async ({ page }) => {
+  const restartRequests: string[] = [];
+  await installBuilder(page, () =>
+    runFrame(1, 'preview.starting', { action: 'start', workspaceId }),
+  );
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        entries: [],
+        failureId: null,
+        nextCursor: 0,
+        state: 'idle',
+        truncated: false,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/restart`,
+    async (route) => {
+      restartRequests.push(route.request().headers()['idempotency-key'] ?? '');
+      await route.fulfill({ body: '{}', headers: corsHeaders(), status: 200 });
+    },
+  );
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect(page.getByRole('status', { name: 'Build status' })).toHaveText('Agent is running');
+  await expect(page.getByRole('heading', { name: 'Build in progress' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Wake preview' })).toHaveCount(0);
+  await page.waitForTimeout(300);
+  expect(restartRequests).toEqual([]);
 });
 
 test('keeps an existing healthy preview open when a repeated start reports failure', async ({
@@ -722,7 +841,7 @@ test('renders preview lifecycle states from structured events and public workspa
   expect(restartRequests).toHaveLength(1);
   await page.getByRole('button', { name: 'Restart', exact: true }).click();
   await expect.poll(() => restartRequests.length).toBe(2);
-  expect(restartRequests[0]).toBe(restartRequests[1]);
+  expect(restartRequests[0]).not.toBe(restartRequests[1]);
 
   frames += runFrame(4, 'run.completed', { status: 'completed' });
   await reloadBuilder(page);
@@ -731,21 +850,21 @@ test('renders preview lifecycle states from structured events and public workspa
   frames += runFrame(5, 'preview.ready', { action: 'restart', workspaceId });
   logState = 'idle';
   await reloadBuilder(page);
-  await expect(page.getByRole('heading', { name: 'Preview sleeping' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Wake preview' })).toBeVisible();
   await expect.poll(() => restartRequests.length).toBe(3);
+  await expect(page.getByRole('heading', { name: 'Preview starting' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Wake preview' })).toHaveCount(0);
   expect(restartRequests[2]).not.toBe(restartRequests[1]);
-  await page.getByRole('button', { name: 'Wake preview' }).evaluate((button) => {
-    (button as HTMLButtonElement).click();
-    (button as HTMLButtonElement).click();
-  });
-  await expect.poll(() => restartRequests.length).toBe(4);
-  expect(restartRequests[3]).not.toBe(restartRequests[2]);
+
+  await reloadBuilder(page);
+  await expect(page.getByRole('heading', { name: 'Preview starting' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Wake preview' })).toHaveCount(0);
+  expect(restartRequests).toHaveLength(3);
 
   logState = 'ready';
   captureFails = true;
   await reloadBuilder(page);
-  await expect(page.getByRole('heading', { name: 'Preview disconnected' })).toBeVisible();
+  await expect(page.getByTitle('Application preview')).toBeVisible();
+  await expect(page.getByText('Preview interaction channel disconnected.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry preview connection' })).toBeVisible();
 
   captureFails = false;

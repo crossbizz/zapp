@@ -45,6 +45,7 @@ import {
 import {
   BranchLockedError,
   createProjectVolumePlan,
+  PROJECT_PACKAGE_CACHE_PATH,
   projectVolumeName,
   type ProjectVolumePlan,
 } from './volumes.js';
@@ -647,9 +648,7 @@ async function waitForPreviewProxyHealth(
     );
     if (response.exitCode === 0) {
       try {
-        const health = PreviewProxyHealthSchema.safeParse(
-          JSON.parse(response.stdout) as unknown,
-        );
+        const health = PreviewProxyHealthSchema.safeParse(JSON.parse(response.stdout) as unknown);
         if (health.success) return;
         lastFailure = 'preview proxy returned an invalid health response';
       } catch {
@@ -857,7 +856,9 @@ const ModalImageLockSchema = z
     version: z.literal(1),
     publicMirrors: z
       .object({
-        'forge-node-base': z.string().regex(/^ghcr\.io\/crossbizz\/zapp-forge-node-base:[^@]+@sha256:[a-f0-9]{64}$/u),
+        'forge-node-base': z
+          .string()
+          .regex(/^ghcr\.io\/crossbizz\/zapp-forge-node-base:[^@]+@sha256:[a-f0-9]{64}$/u),
       })
       .strict()
       .optional(),
@@ -910,9 +911,7 @@ export interface ModalWorkspaceCreateOptions {
   readonly sandboxName: string;
   readonly volume: Readonly<{
     name: string;
-    mounts: readonly [
-      Readonly<{ mountPath: '/cache'; subPath: '/cache' }>,
-    ];
+    mounts: readonly [Readonly<{ mountPath: '/cache'; subPath: '/cache' }>];
   }>;
   readonly command: readonly string[];
   readonly encryptedPorts: readonly [8877, 8080];
@@ -1082,10 +1081,10 @@ const WorkspaceRelativePathSchema = z
   .min(1)
   .refine(
     (value) =>
-      !posix.isAbsolute(value)
-      && !value.includes('\\')
-      && !value.includes('\0')
-      && !value.split('/').includes('..'),
+      !posix.isAbsolute(value) &&
+      !value.includes('\\') &&
+      !value.includes('\0') &&
+      !value.split('/').includes('..'),
     'Expected a workspace-relative path',
   );
 const GitMergeRefSchema = z
@@ -1095,13 +1094,13 @@ const GitMergeRefSchema = z
   .refine((ref) => {
     const components = ref.split('/');
     return !(
-      ref.startsWith('-')
-      || ref.endsWith('.')
-      || ref.endsWith('/')
-      || ref.includes('..')
-      || ref.includes('@{')
-      || /[\u0000-\u0020\u007f~^:?*[\\]/u.test(ref)
-      || components.some(
+      ref.startsWith('-') ||
+      ref.endsWith('.') ||
+      ref.endsWith('/') ||
+      ref.includes('..') ||
+      ref.includes('@{') ||
+      /[\u0000-\u0020\u007f~^:?*[\\]/u.test(ref) ||
+      components.some(
         (component) =>
           component.length === 0 || component.startsWith('.') || component.endsWith('.lock'),
       )
@@ -1198,11 +1197,9 @@ const DevServerResponseSchema = z
   .strict();
 
 function previewInstallTimeoutMs(contract: ExecutionContract): number {
-  return (
-    contract.install.timeout_seconds === undefined
-      ? DEFAULT_PREVIEW_INSTALL_TIMEOUT_MS
-      : contract.install.timeout_seconds * 1_000
-  );
+  return contract.install.timeout_seconds === undefined
+    ? DEFAULT_PREVIEW_INSTALL_TIMEOUT_MS
+    : contract.install.timeout_seconds * 1_000;
 }
 
 function previewAgentRequestTimeoutMs(contract: ExecutionContract): number {
@@ -1582,7 +1579,10 @@ function createModalWorkspaceSdk(
           createIfMissing: false,
         });
       } catch (error) {
-        if (error instanceof NotFoundError || (error as { readonly name?: unknown }).name === 'NotFoundError') {
+        if (
+          error instanceof NotFoundError ||
+          (error as { readonly name?: unknown }).name === 'NotFoundError'
+        ) {
           return '0';
         }
         throw error;
@@ -1658,8 +1658,7 @@ function workspaceBootCommand(
 export class ModalSandboxProvider {
   readonly lockedImageTag: string;
   readonly attachmentEnvironment: ModalEnvironment;
-  readonly networkPolicyEnforcement: 'domain_allowlist' | 'connectivity_only' =
-    'domain_allowlist';
+  readonly networkPolicyEnforcement: 'domain_allowlist' | 'connectivity_only' = 'domain_allowlist';
   private readonly environment: WorkspaceEnvironmentName;
   private readonly modalEnvironment: ModalEnvironment;
   private readonly images: NonNullable<
@@ -1725,7 +1724,12 @@ export class ModalSandboxProvider {
     ttlMs: number,
   ): Promise<{ providerSnapshotId: string; logicalBytes: string; expiresAt: string }> {
     const id = z.string().min(1).parse(providerWorkspaceId);
-    const retentionMs = z.number().int().positive().max(30 * 86_400_000).parse(ttlMs);
+    const retentionMs = z
+      .number()
+      .int()
+      .positive()
+      .max(30 * 86_400_000)
+      .parse(ttlMs);
     const measurement = await this.exec({
       providerWorkspaceId: id,
       command: '/usr/bin/du',
@@ -1789,9 +1793,7 @@ export class ModalSandboxProvider {
     const input = CreateWorkspaceInputSchema.strict().parse(untrustedInput);
     const initialNetworkPolicy = resolveNetworkPolicy(input.networkProfile, []);
     const image =
-      input.purpose === 'verifier'
-        ? this.images['forge-web-test']
-        : this.images['forge-node-base'];
+      input.purpose === 'verifier' ? this.images['forge-web-test'] : this.images['forge-node-base'];
     if (input.imageTag !== image.publishedName || input.imageTag.includes(':latest')) {
       throw new Error('Workspace image must match the immutable image lock');
     }
@@ -1948,9 +1950,7 @@ export class ModalSandboxProvider {
         throw error;
       }
       const tags = SandboxTagsSchema.parse(untrustedTags);
-      const requiredTagNames = Object.keys(
-        attachment.requiredTags,
-      ) as Array<keyof SandboxTags>;
+      const requiredTagNames = Object.keys(attachment.requiredTags) as Array<keyof SandboxTags>;
       if (requiredTagNames.some((name) => tags[name] !== attachment.requiredTags[name])) {
         throw new ModalWorkspaceTagMismatchError();
       }
@@ -1958,7 +1958,9 @@ export class ModalSandboxProvider {
         await sandbox.waitUntilReady(Math.max(1, deadline - this.clockMs()));
         for (;;) {
           if (this.clockMs() >= deadline) throw new Error('readiness deadline exceeded');
-          const health = WorkspaceAgentHealthSchema.parse(await sandbox.agentHealth(this.agentToken));
+          const health = WorkspaceAgentHealthSchema.parse(
+            await sandbox.agentHealth(this.agentToken),
+          );
           if (this.clockMs() >= deadline) throw new Error('readiness deadline exceeded');
           if (health.ok) break;
           await this.sleep(Math.min(HEALTH_PROBE_INTERVAL_MS, deadline - this.clockMs()));
@@ -2413,13 +2415,24 @@ export class ModalSandboxProvider {
         command: 'sh',
         args: ['-lc', contract.install.command],
         cwd: contract.workspace_root,
-        env: { CI: '1', NODE_ENV: 'development' },
+        env: {
+          CI: '1',
+          NODE_ENV: 'development',
+          NPM_CONFIG_STORE_DIR: PROJECT_PACKAGE_CACHE_PATH,
+          PNPM_STORE_DIR: PROJECT_PACKAGE_CACHE_PATH,
+        },
         timeoutMs: previewInstallTimeoutMs(contract),
       },
       derivedInstallIdempotencyKey(idempotencyKey),
     );
     if (install.exitCode !== 0) {
-      throw new Error(`Dependency installation failed with exit code ${String(install.exitCode)}`);
+      throw new Error(
+        `Dependency installation failed with exit code ${String(install.exitCode)} ` +
+          `(durationMs=${String(Math.round(install.durationMs))}, ` +
+          `stdout=${String(install.stdout.length > 0)}, ` +
+          `stderr=${String(install.stderr.length > 0)}, ` +
+          `truncated=${String(install.truncated)})`,
+      );
     }
     const response = await this.requestAgent(providerWorkspaceId, {
       method: 'POST',
@@ -2535,7 +2548,12 @@ export function createModalNightlyE2eDriver(
   return {
     async checkpointAndKill(providerWorkspaceId, ttlMs) {
       const id = z.string().min(1).parse(providerWorkspaceId);
-      const retentionMs = z.number().int().positive().max(30 * 86_400_000).parse(ttlMs);
+      const retentionMs = z
+        .number()
+        .int()
+        .positive()
+        .max(30 * 86_400_000)
+        .parse(ttlMs);
       const sandbox = await client.sandboxes.fromId(id);
       const snapshot = await sandbox.snapshotFilesystem({
         timeoutMs: 55_000,

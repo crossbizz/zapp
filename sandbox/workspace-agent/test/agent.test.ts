@@ -615,7 +615,9 @@ describe('workspace-agent RPC daemon', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true });
     await expect(readFile(join(workspaceRoot, 'first.txt'), 'utf8')).resolves.toBe('first');
-    await expect(readFile(join(workspaceRoot, 'nested/second.txt'), 'utf8')).resolves.toBe('second');
+    await expect(readFile(join(workspaceRoot, 'nested/second.txt'), 'utf8')).resolves.toBe(
+      'second',
+    );
   });
 
   test('fails guarded snapshots and batches closed without changing the target', async () => {
@@ -678,9 +680,7 @@ describe('workspace-agent RPC daemon', () => {
     },
     {
       name: 'leaf symlink',
-      files: [
-        { path: 'leaf-alias.txt', dataBase64: Buffer.from('two').toString('base64') },
-      ],
+      files: [{ path: 'leaf-alias.txt', dataBase64: Buffer.from('two').toString('base64') }],
     },
   ])('returns typed HTTP 400 for an atomic $name conflict with zero writes', async ({ files }) => {
     await writeFile(join(workspaceRoot, 'target.txt'), 'before', { mode: 0o640 });
@@ -751,11 +751,17 @@ describe('workspace-agent RPC daemon', () => {
 
       expect(response.statusCode).toBe(500);
       expect(response.json()).toEqual({ error: 'internal_error' });
-      await expect(readFile(join(workspaceRoot, 'rollback-first.txt'), 'utf8')).resolves.toBe('first-before');
-      await expect(readFile(join(workspaceRoot, 'rollback-second.txt'), 'utf8')).resolves.toBe('second-before');
+      await expect(readFile(join(workspaceRoot, 'rollback-first.txt'), 'utf8')).resolves.toBe(
+        'first-before',
+      );
+      await expect(readFile(join(workspaceRoot, 'rollback-second.txt'), 'utf8')).resolves.toBe(
+        'second-before',
+      );
       expect((await lstat(join(workspaceRoot, 'rollback-first.txt'))).mode & 0o777).toBe(0o640);
       expect((await lstat(join(workspaceRoot, 'rollback-second.txt'))).mode & 0o777).toBe(0o600);
-      expect((await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-'))).toEqual([]);
+      expect(
+        (await readdir(workspaceRoot)).filter((name) => name.startsWith('.zapp-atomic-')),
+      ).toEqual([]);
     } finally {
       if (previousFailureIndex === undefined) {
         delete process.env.ZAPP_NATIVE_TEST_FAIL_ATOMIC_COMMIT_INDEX;
@@ -849,12 +855,18 @@ describe('workspace-agent RPC daemon', () => {
       method: 'POST',
       url: '/files/rename',
       headers: authorization(),
-      payload: { source: 'destination.txt', destination: './destination.txt', overwrite: 'replace' },
+      payload: {
+        source: 'destination.txt',
+        destination: './destination.txt',
+        overwrite: 'replace',
+      },
     });
     expect(renamed.statusCode).toBe(200);
     expect(renamed.json()).toEqual({ ok: true });
     await expect(readFile(join(workspaceRoot, 'destination.txt'), 'utf8')).resolves.toBe('source');
-    await expect(access(join(workspaceRoot, 'source.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(access(join(workspaceRoot, 'source.txt'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
     expect(same.statusCode).toBe(400);
   });
 
@@ -960,7 +972,7 @@ describe('workspace-agent RPC daemon', () => {
     const script = [
       `process.stdout.write(${JSON.stringify('first-out\n')});`,
       `process.stderr.write(${JSON.stringify('first-error\n')});`,
-      "process.stdout.write(Buffer.alloc(11*1024*1024,120));",
+      'process.stdout.write(Buffer.alloc(11*1024*1024,120));',
       `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(port)}, '127.0.0.1');`,
       'setInterval(() => {}, 1000);',
     ].join('');
@@ -997,7 +1009,11 @@ describe('workspace-agent RPC daemon', () => {
     expect(body.state).toBe('ready');
     expect(body.truncated).toBe(true);
     expect(body.entries.length).toBeGreaterThan(0);
-    expect(body.entries.every((entry, index, entries) => index === 0 || entry.cursor > (entries[index - 1]?.cursor ?? -1))).toBe(true);
+    expect(
+      body.entries.every(
+        (entry, index, entries) => index === 0 || entry.cursor > (entries[index - 1]?.cursor ?? -1),
+      ),
+    ).toBe(true);
     expect(
       body.entries.reduce((total, entry) => total + Buffer.byteLength(entry.message), 0),
     ).toBeLessThanOrEqual(10 * 1_024 * 1_024);
@@ -1023,7 +1039,7 @@ describe('workspace-agent RPC daemon', () => {
       "const fs=require('node:fs');",
       `const path=${JSON.stringify(countPath)};`,
       "const count=Number(fs.existsSync(path)?fs.readFileSync(path,'utf8'):'0')+1;",
-      "fs.writeFileSync(path,String(count));",
+      'fs.writeFileSync(path,String(count));',
       `const server=require('node:http').createServer((_request,response)=>{response.end('ready',()=>{setTimeout(()=>server.close(()=>process.exit(1)),25);});});`,
       `server.listen(${String(port)},'127.0.0.1',()=>{console.log('boot-'+String(count));});`,
     ].join('');
@@ -1086,7 +1102,7 @@ describe('workspace-agent RPC daemon', () => {
       "const fs=require('node:fs');",
       `const path=${JSON.stringify(countPath)};`,
       "const count=Number(fs.existsSync(path)?fs.readFileSync(path,'utf8'):'0')+1;",
-      "fs.writeFileSync(path,String(count));",
+      'fs.writeFileSync(path,String(count));',
       `const server=require('node:http').createServer((_request,response)=>{response.end('ready');if(count===1){server.close(()=>process.exit(1));}});`,
       `server.listen(${String(port)},'127.0.0.1');`,
       'setInterval(() => {}, 1000);',
@@ -1103,20 +1119,26 @@ describe('workspace-agent RPC daemon', () => {
       },
     });
     expect(response.statusCode).toBe(200);
-    await vi.waitFor(async () => {
-      await expect(readFile(countPath, 'utf8')).resolves.toBe('2');
-    }, { timeout: 5_000, interval: 25 });
-    await vi.waitFor(async () => {
-      const health = await requireApp().inject({
-        method: 'GET',
-        url: '/healthz',
-        headers: authorization(),
-      });
-      expect(health.json()).toMatchObject({
-        ok: true,
-        devServer: { owned: true, httpReady: true },
-      });
-    }, { timeout: 5_000, interval: 25 });
+    await vi.waitFor(
+      async () => {
+        await expect(readFile(countPath, 'utf8')).resolves.toBe('2');
+      },
+      { timeout: 5_000, interval: 25 },
+    );
+    await vi.waitFor(
+      async () => {
+        const health = await requireApp().inject({
+          method: 'GET',
+          url: '/healthz',
+          headers: authorization(),
+        });
+        expect(health.json()).toMatchObject({
+          ok: true,
+          devServer: { owned: true, httpReady: true },
+        });
+      },
+      { timeout: 5_000, interval: 25 },
+    );
   }, 12_000);
 
   test('rejects an unrelated ready listener as managed dev-server readiness', async () => {
@@ -1166,7 +1188,10 @@ describe('workspace-agent RPC daemon', () => {
         await writeFile(join(outsideRoot, operation.action, 'target.txt'), 'outside-marker');
         if (operation.action === 'rename') {
           await writeFile(join(parent, 'destination.txt'), 'destination-before');
-          await writeFile(join(outsideRoot, operation.action, 'destination.txt'), 'outside-destination');
+          await writeFile(
+            join(outsideRoot, operation.action, 'destination.txt'),
+            'outside-destination',
+          );
         }
         const restorePause = configureNativePause(readyPath, continuePath);
         try {
@@ -1220,13 +1245,19 @@ describe('workspace-agent RPC daemon', () => {
           const response = await request;
           expect(response.statusCode, operation.action).toBe(200);
           if (operation.action === 'delete') {
-            await expect(access(join(pinnedParent, 'target.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+            await expect(access(join(pinnedParent, 'target.txt'))).rejects.toMatchObject({
+              code: 'ENOENT',
+            });
           } else if (operation.action === 'rename') {
-            await expect(readFile(join(pinnedParent, 'destination.txt'), 'utf8')).resolves.toBe(operation.after);
+            await expect(readFile(join(pinnedParent, 'destination.txt'), 'utf8')).resolves.toBe(
+              operation.after,
+            );
           } else if (operation.action === 'search') {
             expect(response.json<{ stdout: string }>().stdout).toContain('pinned-search-marker');
           } else {
-            await expect(readFile(join(pinnedParent, 'target.txt'), 'utf8')).resolves.toBe(operation.after);
+            await expect(readFile(join(pinnedParent, 'target.txt'), 'utf8')).resolves.toBe(
+              operation.after,
+            );
           }
           await expect(
             readFile(
@@ -1251,7 +1282,10 @@ describe('workspace-agent RPC daemon', () => {
     const ports = await Promise.all([availablePort(), availablePort()]);
     const contracts = ports.map((port) => {
       const script = `require('node:http').createServer((_request, response) => response.end('ready')).listen(${String(port)}, '127.0.0.1'); setInterval(() => {}, 1000);`;
-      return executionContract(`${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`, port);
+      return executionContract(
+        `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+        port,
+      );
     });
     const responses = await Promise.all(
       contracts.map((contract, index) =>
@@ -1475,6 +1509,41 @@ describe('workspace-agent RPC daemon', () => {
         else process.env.ZAPP_WORKSPACE_ROOT = previousWorkspaceRoot;
         if (previousDevServerPort === undefined) delete process.env.ZAPP_DEV_SERVER_PORT;
         else process.env.ZAPP_DEV_SERVER_PORT = previousDevServerPort;
+      }
+    },
+  );
+
+  test.each([false, true])(
+    'inherits non-secret package cache paths for workspace commands when pty=%s',
+    async (pty) => {
+      const previousNpmStore = process.env.NPM_CONFIG_STORE_DIR;
+      const previousPnpmStore = process.env.PNPM_STORE_DIR;
+      process.env.NPM_CONFIG_STORE_DIR = '/cache/npm';
+      process.env.PNPM_STORE_DIR = '/cache/pnpm';
+
+      try {
+        const response = await requireApp().inject({
+          method: 'POST',
+          url: '/exec',
+          headers: authorization(),
+          payload: {
+            cmd: process.execPath,
+            args: [
+              '-e',
+              "process.stdout.write([process.env.NPM_CONFIG_STORE_DIR ?? 'absent', process.env.PNPM_STORE_DIR ?? 'absent'].join('|'))",
+            ],
+            timeoutMs: 2_000,
+            pty,
+          },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json<{ stdout: string }>().stdout).toContain('/cache/npm|/cache/pnpm');
+      } finally {
+        if (previousNpmStore === undefined) delete process.env.NPM_CONFIG_STORE_DIR;
+        else process.env.NPM_CONFIG_STORE_DIR = previousNpmStore;
+        if (previousPnpmStore === undefined) delete process.env.PNPM_STORE_DIR;
+        else process.env.PNPM_STORE_DIR = previousPnpmStore;
       }
     },
   );
@@ -2270,12 +2339,12 @@ describe('workspace-agent RPC daemon', () => {
   test('kills an active streamed command by its real PID and reaps it', async () => {
     const pidFile = join(workspaceRoot, 'active.pid');
     const stream = await startLiveExecStream(requireApp(), token, 'active-stream-kill', {
-        cmd: process.execPath,
-        args: [
-          '-e',
-          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
-        ],
-        timeoutMs: 10_000,
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+      ],
+      timeoutMs: 10_000,
     });
     const pid = Number(await waitForPopulatedFile(pidFile));
     expect(stream.started.pid).toBe(pid);
@@ -2401,13 +2470,13 @@ describe('workspace-agent RPC daemon', () => {
   test('reports a non-zero exit when the kill route terminates a PTY command', async () => {
     const pidFile = join(workspaceRoot, 'active-pty.pid');
     const stream = await startLiveExecStream(requireApp(), token, 'active-pty-kill', {
-        cmd: process.execPath,
-        args: [
-          '-e',
-          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
-        ],
-        timeoutMs: 10_000,
-        pty: true,
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+      ],
+      timeoutMs: 10_000,
+      pty: true,
     });
     const pid = Number(await waitForPopulatedFile(pidFile));
     expect(stream.started.pid).toBe(pid);
@@ -2546,6 +2615,25 @@ describe('workspace-agent RPC daemon', () => {
     expect(read.rawPayload).toEqual(bytes);
     expect(listed.statusCode).toBe(200);
     expect(listed.json()).toEqual([{ path: 'nested/visible.txt', type: 'file' }]);
+  });
+
+  test('matches globstar files at the workspace root and in nested directories', async () => {
+    await writeFile(join(workspaceRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9');
+    await mkdir(join(workspaceRoot, 'src'));
+    await writeFile(join(workspaceRoot, 'src', 'main.ts'), 'export {};');
+
+    const listed = await requireApp().inject({
+      method: 'GET',
+      url: '/files/list?path=.&glob=**%2F*&maxDepth=4',
+      headers: authorization(),
+    });
+
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toEqual([
+      { path: 'pnpm-lock.yaml', type: 'file' },
+      { path: 'src', type: 'directory' },
+      { path: 'src/main.ts', type: 'file' },
+    ]);
   });
 
   test('uses the native helper for read, write, and list across parent swaps', async () => {
@@ -3015,20 +3103,17 @@ describe('workspace-agent RPC daemon', () => {
     '/files/update-snapshot?path=missing',
     '/healthz',
     '/metrics',
-  ])(
-    'rejects a request body on GET %s',
-    async (url) => {
-      const response = await requireApp().inject({
-        method: 'GET',
-        url,
-        headers: authorization(),
-        payload: { unexpected: true },
-      });
+  ])('rejects a request body on GET %s', async (url) => {
+    const response = await requireApp().inject({
+      method: 'GET',
+      url,
+      headers: authorization(),
+      payload: { unexpected: true },
+    });
 
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ error: 'bad_request' });
-    },
-  );
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'bad_request' });
+  });
 
   test('reports configured dev-server readiness and finite non-negative metrics', async () => {
     await requireApp().close();
@@ -3087,12 +3172,12 @@ describe('workspace-agent RPC daemon', () => {
     app = await buildWorkspaceAgent(options);
     const pidFile = join(workspaceRoot, 'metrics.pid');
     const stream = await startLiveExecStream(requireApp(), token, 'metrics-active-stream', {
-        cmd: process.execPath,
-        args: [
-          '-e',
-          `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
-        ],
-        timeoutMs: 10_000,
+      cmd: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`,
+      ],
+      timeoutMs: 10_000,
     });
     const pid = Number(await waitForPopulatedFile(pidFile));
     expect(stream.started.pid).toBe(pid);
