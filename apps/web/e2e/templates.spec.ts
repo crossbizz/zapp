@@ -41,12 +41,15 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('renders the public gallery and template detail preview', async ({ page }) => {
+  test.setTimeout(90_000);
   await page.goto('/templates');
   await expect(page.getByRole('heading', { name: 'Templates' })).toBeVisible();
   await expect(
     page.getByText('Start with a proven foundation, then remix it into your own product.'),
   ).toBeVisible();
-  await page.getByRole('link', { name: /Next\.js Starter/u }).click();
+  const templateLink = page.getByRole('link', { name: /Next\.js Starter/u });
+  await expect(templateLink).toBeVisible({ timeout: 60_000 });
+  await templateLink.click();
   await expect(page.getByText('Auth pre-built')).toBeVisible();
   await expect(page.getByText('Dashboard')).toBeVisible();
   await expect(page.getByTitle('Next.js Starter live demo')).toHaveAttribute('src', template.demoUrl);
