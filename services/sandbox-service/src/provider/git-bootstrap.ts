@@ -301,8 +301,17 @@ export function createWorkspaceGitService(
           'get-url',
           'origin',
         ]);
-        if (origin.exitCode !== 0 || origin.stdout.trim() !== cleanCloneUrl) {
+        if (origin.exitCode !== 0) {
           throw new WorkspaceGitBootstrapError('find-origin', origin.exitCode, 'git_command_failed');
+        }
+        try {
+          validateCloneUrl(input, origin.stdout.trim());
+        } catch {
+          throw new WorkspaceGitBootstrapError(
+            'find-origin',
+            origin.exitCode,
+            'git_command_failed',
+          );
         }
       } else {
         await requireSuccess(options.commands, input, 'clone', [

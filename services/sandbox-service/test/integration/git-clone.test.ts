@@ -366,6 +366,94 @@ describe('WS-5 scoped-token Git bootstrap', () => {
     expect((await git(workspace, 'branch', '--show-current')).stdout.trim()).toBe(BRANCH_NAME);
   }, 30_000);
 
+  it('reattaches after a same-project origin hostname rotates without overwriting work', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-ws5-origin-rotation-'));
+    roots.push(root);
+    const { bare, workspace } = await createRepositoryFixture(root);
+    const commandsSeen: string[][] = [];
+    const tokens: GitTokenClient = {
+      mint: () =>
+        Promise.resolve({
+          token: 'origin-rotation-token-sentinel',
+          username: 'zt-origin-rotation',
+          cloneUrl: CLEAN_CLONE_URL,
+          expiresAt: '2026-08-09T00:05:00.000Z',
+        }),
+    };
+    const commands: WorkspaceGitCommandPort = {
+      async exec(input) {
+        commandsSeen.push([...input.args]);
+        const args = input.args.map((argument) => {
+          if (!argument.startsWith('url.https://')) return argument;
+          const separator = argument.indexOf('.insteadOf=');
+          const cleanUrl = argument.slice(separator + '.insteadOf='.length);
+          return `url.file://${bare}.insteadOf=${cleanUrl}`;
+        });
+        try {
+          const result = await git(workspace, ...args);
+          return {
+            exitCode: 0,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            durationMs: 1,
+            truncated: false,
+          };
+        } catch (error) {
+          const failure = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+          return {
+            exitCode: typeof failure.code === 'number' ? failure.code : 1,
+            stdout: typeof failure.stdout === 'string' ? failure.stdout : '',
+            stderr: typeof failure.stderr === 'string' ? failure.stderr : 'git failed',
+            durationMs: 1,
+            truncated: false,
+          };
+        }
+      },
+    };
+    const service = createWorkspaceGitService({ tokens, commands });
+    const input = {
+      ...IDS,
+      branchName: BRANCH_NAME,
+      operationKey: OPERATION_KEY,
+    } as const;
+
+    await service.bootstrap(input);
+    const rotatedOrigin = new URL(CLEAN_CLONE_URL);
+    rotatedOrigin.hostname = 'previous-development-tunnel.example';
+    await git(workspace, 'remote', 'set-url', 'origin', rotatedOrigin.toString());
+    await writeFile(join(workspace, 'uncommitted.ts'), 'export const preserved = true;\n');
+    commandsSeen.length = 0;
+
+    await service.bootstrap({
+      ...input,
+      operationKey: `op_${'c'.repeat(64)}`,
+    });
+
+    expect(commandsSeen.some((args) => args.includes('clone'))).toBe(false);
+    expect(await readFile(join(workspace, 'uncommitted.ts'), 'utf8')).toBe(
+      'export const preserved = true;\n',
+    );
+    expect((await git(workspace, 'remote', 'get-url', 'origin')).stdout.trim()).toBe(
+      CLEAN_CLONE_URL,
+    );
+
+    const foreignOrigin = new URL(CLEAN_CLONE_URL);
+    foreignOrigin.pathname = foreignOrigin.pathname.replace(
+      /proj_[^/]+\.git$/u,
+      `proj_${'z'.repeat(26)}.git`,
+    );
+    await git(workspace, 'remote', 'set-url', 'origin', foreignOrigin.toString());
+    await expect(
+      service.bootstrap({
+        ...input,
+        operationKey: `op_${'d'.repeat(64)}`,
+      }),
+    ).rejects.toMatchObject({
+      stage: 'find-origin',
+      reason: 'git_command_failed',
+    });
+  }, 30_000);
+
   it('boots the default branch of a brand-new empty project repository', async () => {
     const root = await mkdtemp(join(tmpdir(), 'zapp-ws5-empty-'));
     roots.push(root);

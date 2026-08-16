@@ -402,6 +402,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Prove the focused provider/control suites, package lint/typecheck, and a real Docker workspace whose dependency directory is absent.
 - [x] Commit: `fix(preview): install dependencies before dev startup`
 
+#### WEB-18-FIX-13 - origin-rotation-safe workspace recovery
+
+**Root cause:** durable local workspaces retained the correct project checkout and branch, but Git bootstrap compared the complete stored `origin` URL to the latest Git-service clone URL. Development tunnel rotation therefore rejected a valid same-project checkout at `find-origin`, hid its real source tree, and prevented preview recovery.
+**Files:** Modify `services/sandbox-service/src/provider/git-bootstrap.ts`, `services/sandbox-service/test/integration/git-clone.test.ts`, this plan, and `tasks/todo.md`. No generated project files, branch reset, public API contract, immutable image, or UI redesign is in scope.
+
+- [x] Add a failing durable-reattach regression proving a same-project origin hostname may rotate while uncommitted source remains intact, and a foreign project path remains rejected.
+- [x] Validate the stored origin structurally against the scoped organization/project repository identity, then scrub it to the current credential-free clone URL.
+- [x] Prove the focused Git bootstrap suite, sandbox lint/typecheck, and the affected real durable-volume recovery path.
+- [x] Commit: `fix(preview): recover workspaces after origin rotation`
+
 ---
 
 ## Testing strategy
@@ -415,6 +425,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-13 done — Confirmed the affected durable Docker volume still held its branch, source tree, dependencies, and uncommitted work but retained an obsolete development-tunnel Git origin; reattach now validates the scoped organization/project repository path independently of the rotating host, rejects foreign paths, and scrubs the origin to the current credential-free URL. The focused Git bootstrap suite passed 7 tests with 1 live-environment skip, sandbox lint/typecheck passed, and the full sandbox suite passed 210 tests with 19 provider-gated skips.
 - 2026-08-15 WEB-18-FIX-12 done — Serialized the execution-contract install command before every Docker/Modal dev-server start and restart, extended only preview startup deadlines, rejected install failures before launch, and proved the current locked Docker image installs missing Vite and serves the generated document through the real preview proxy; sandbox 209 passed with 19 provider-gated skips, focused control 7/7, affected lint/typecheck, and the dependency-empty live Docker acceptance passed 1/1.
 - 2026-08-15 WEB-18-FIX-11 done — Resolved `@zapp/ui` and its token stylesheet from source during Next development so cold verification cannot strand the live app after deleting package build output; the focused configuration regression passed 4/4, web lint/typecheck passed with one pre-existing image warning, and the real supervisor served the login page with `packages/ui/dist` absent.
 - 2026-08-15 WEB-18-FIX-10 done — Preserved local branch workspaces on the per-project Docker volume, pushed clean model-created heads, retained Vite HMR text frames, and proved a real TypeScript build plus stop/recreate recovery with the same Forgejo SHA, 12 source files, 9/9 generated tests, a restored file API, and a zero-page-error embedded preview; affected suites, lint/typecheck, all 135 browser tests, missing-credential skips, isolation/GATE-5, and the 94/94-task cold repository gate passed.
