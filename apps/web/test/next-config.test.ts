@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { after, before, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const environment: Record<string, string | undefined> = process.env;
 const originalNodeEnv = environment['NODE_ENV'];
@@ -52,6 +53,35 @@ void it('does not watch repository worktrees during local development', async ()
     '**/node_modules/**',
   ]);
   assert.equal(watchOptions.poll, 1_000);
+});
+
+void it('loads the UI package from source during development when build artifacts are absent', async () => {
+  const { default: nextConfig } = await import('../next.config.js');
+
+  assert.deepEqual(nextConfig.transpilePackages, ['@zapp/ui']);
+
+  const configureWebpack = nextConfig.webpack;
+  assert.equal(typeof configureWebpack, 'function');
+  assert.ok(configureWebpack);
+  const configured: unknown = configureWebpack(
+    { resolve: { alias: { react: '/existing/react.js' } }, watchOptions: {} },
+    { dev: true } as never,
+  );
+  assert.ok(configured !== null && typeof configured === 'object' && 'resolve' in configured);
+  const { resolve } = configured;
+  assert.ok(resolve !== null && typeof resolve === 'object' && 'alias' in resolve);
+  const { alias } = resolve;
+  assert.ok(alias !== null && typeof alias === 'object' && !Array.isArray(alias));
+  const aliasRecord = alias as Record<string, unknown>;
+  assert.equal(aliasRecord['react'], '/existing/react.js');
+  assert.equal(
+    aliasRecord['@zapp/ui$'],
+    fileURLToPath(new URL('../../../packages/ui/src/index.ts', import.meta.url)),
+  );
+  assert.equal(
+    aliasRecord['@zapp/ui/tokens.css$'],
+    fileURLToPath(new URL('../../../packages/ui/src/tokens.css', import.meta.url)),
+  );
 });
 
 void it('runs one signal-owning E2E supervisor with enough time to restore generated configuration', async () => {

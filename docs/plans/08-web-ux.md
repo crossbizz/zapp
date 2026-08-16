@@ -381,6 +381,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Commit: `fix(preview): preserve local workspaces across sleep`
 - [x] Commit: `fix(web): recover durable previews and agent failures`
 
+#### WEB-18-FIX-11 - stable local UI source resolution
+
+**Root cause:** `verify:cold` is allowed to remove every package `dist` directory, but the running Next development server resolved `@zapp/ui` and its token stylesheet only through `packages/ui/dist`. Cleaning those build artifacts therefore turned an otherwise healthy local stack into a raw Next `Internal Server Error` until the UI package rebuilt.
+**Files:** Modify `apps/web/next.config.ts`, `apps/web/test/next-config.test.ts`, this plan, and `tasks/todo.md`. No public API, UI redesign, package production export, desktop, or service behavior changes are in scope.
+
+- [x] Add a failing Next configuration regression that requires local development to resolve the UI entry point and token stylesheet from source while preserving existing aliases.
+- [x] Transpile the UI workspace package and map its development-only Webpack aliases to TypeScript/CSS source so local rendering is independent of disposable build artifacts.
+- [x] Restart the real local supervisor, prove the app still responds while `packages/ui/dist` is absent, and run affected web lint/typecheck/tests.
+- [x] Commit: `fix(web): keep local dev independent of package builds`
+
 ---
 
 ## Testing strategy
@@ -394,6 +404,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-11 done — Resolved `@zapp/ui` and its token stylesheet from source during Next development so cold verification cannot strand the live app after deleting package build output; the focused configuration regression passed 4/4, web lint/typecheck passed with one pre-existing image warning, and the real supervisor served the login page with `packages/ui/dist` absent.
 - 2026-08-15 WEB-18-FIX-10 done — Preserved local branch workspaces on the per-project Docker volume, pushed clean model-created heads, retained Vite HMR text frames, and proved a real TypeScript build plus stop/recreate recovery with the same Forgejo SHA, 12 source files, 9/9 generated tests, a restored file API, and a zero-page-error embedded preview; affected suites, lint/typecheck, all 135 browser tests, missing-credential skips, isolation/GATE-5, and the 94/94-task cold repository gate passed.
 - 2026-08-15 WEB-18-FIX-9 done — Recovered expired workspaces from their durable branch, automatically restarted sleeping previews without duplicate calls, persisted generated branch heads, made terminal agent failures explanatory, and stopped Next from watching its own output; focused API/worker suites and all 135 browser tests passed, with a live Docker preview returning the generated app through share, exchange, redemption, and proxy delivery.
 - 2026-08-15 WEB-18-FIX-8 done — Preserved Vite's HMR WebSocket subprotocol through the control-to-sandbox bridge; the real socket regression passed, a live Docker workspace negotiated and held `vite-hmr`, all 134 browser tests passed, and the repository gate ran against the restored local stack.
