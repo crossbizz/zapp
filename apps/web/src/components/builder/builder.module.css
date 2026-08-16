@@ -87,13 +87,15 @@
   overflow: auto;
 }
 
-.moreSurfacePanel { overflow: hidden; }
+.moreSurfacePanel {
+  overflow: hidden;
+}
 
 .moreLayout {
   display: grid;
   height: 100%;
   min-height: 0;
-  grid-template-columns: 14rem minmax(0, 1fr);
+  grid-template-columns: 13.25rem minmax(0, 1fr);
   background: var(--zapp-surface-canvas);
 }
 
@@ -101,18 +103,23 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 0.15rem;
-  padding: 1.5rem 0.75rem;
+  gap: 0.1rem;
+  padding: 1rem 0.65rem;
   border-right: 1px solid var(--zapp-border);
   background: var(--zapp-surface-raised);
 }
 
+.moreNavigationGroup {
+  display: grid;
+  gap: 0.1rem;
+}
+
 .moreNavigation button {
   display: flex;
-  min-height: 2rem;
+  min-height: 1.9rem;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.35rem 0.65rem;
+  gap: 0.5rem;
+  padding: 0.3rem 0.55rem;
   border: 0;
   border-radius: 0.45rem;
   color: var(--zapp-text-secondary);
@@ -123,28 +130,199 @@
   cursor: pointer;
 }
 
+.moreNavigation button svg,
+.cloudCards button > svg,
+.moreEmptyIcon svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
 .moreNavigation button[aria-selected='true'] {
   color: var(--zapp-text-primary);
   background: var(--zapp-surface-subtle);
   font-weight: 650;
 }
 
-.moreContent { min-width: 0; min-height: 0; overflow: auto; }
+.cloudNavigation {
+  display: grid;
+  gap: 0.05rem;
+  margin: 0.1rem 0 0.25rem 1rem;
+  padding-left: 0.45rem;
+  border-left: 1px solid var(--zapp-border);
+}
 
-.analytics { max-width: 58rem; margin: 0 auto; padding: 2.25rem; }
-.analytics header p { margin: 0 0 0.4rem; color: var(--zapp-text-muted); font-size: var(--zapp-text-12); font-weight: 700; letter-spacing: 0.12em; }
-.analytics header h2 { margin: 0; font-size: 1.5rem; }
-.analytics header span { display: block; margin-top: 0.35rem; color: var(--zapp-text-secondary); font-size: var(--zapp-text-14); }
-.metricGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-top: 1.5rem; }
-.metricGrid article { display: grid; gap: 0.45rem; padding: 1rem; border: 1px solid var(--zapp-border); border-radius: var(--zapp-radius-panel); background: var(--zapp-surface-raised); }
-.metricGrid span { color: var(--zapp-text-muted); font-size: var(--zapp-text-12); }
-.metricGrid strong { font-size: var(--zapp-text-16); text-transform: capitalize; }
+.cloudNavigation button {
+  min-height: 1.75rem;
+  padding-block: 0.2rem;
+  font-size: var(--zapp-text-12);
+}
+.cloudNavigation button svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
 
-.moreEmpty { display: grid; min-height: 22rem; place-content: center; justify-items: center; padding: 2rem; text-align: center; }
-.moreEmptyIcon { display: grid; width: 2.5rem; height: 2.5rem; place-items: center; border-radius: 0.65rem; color: var(--zapp-text-secondary); background: var(--zapp-surface-subtle); }
-.moreEmpty h2 { margin: 0.85rem 0 0.3rem; font-size: var(--zapp-text-16); }
-.moreEmpty p { max-width: 30rem; margin: 0; color: var(--zapp-text-secondary); font-size: var(--zapp-text-14); }
-.moreEmpty a { margin-top: 1rem; padding: 0.4rem 0.8rem; border: 1px solid var(--zapp-border); border-radius: var(--zapp-radius-pill); color: var(--zapp-text-primary); text-decoration: none; font-size: var(--zapp-text-12); font-weight: 650; }
+.moreContent {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.analytics,
+.cloudOverview {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 2rem;
+}
+.analytics header p {
+  margin: 0 0 0.4rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.analytics header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+.analytics header span {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+}
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+.metricGrid article {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  background: var(--zapp-surface-raised);
+}
+.metricGrid span {
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+}
+.metricGrid strong {
+  font-size: var(--zapp-text-16);
+  text-transform: capitalize;
+}
+
+.moreEmpty {
+  display: grid;
+  min-height: 22rem;
+  place-content: center;
+  justify-items: center;
+  padding: 2rem;
+  text-align: center;
+}
+.moreEmptyIcon {
+  display: grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border-radius: 0.65rem;
+  color: var(--zapp-text-secondary);
+  background: var(--zapp-surface-subtle);
+}
+.moreEmpty h2 {
+  margin: 0.85rem 0 0.3rem;
+  font-size: var(--zapp-text-16);
+}
+.moreEmpty p {
+  max-width: 30rem;
+  margin: 0;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+}
+.moreEmpty a {
+  margin-top: 1rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-pill);
+  color: var(--zapp-text-primary);
+  text-decoration: none;
+  font-size: var(--zapp-text-12);
+  font-weight: 650;
+}
+
+.cloudOverview header p {
+  margin: 0 0 0.35rem;
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-12);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.cloudOverview header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+.cloudOverview header span {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+}
+.cloudCards {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.35rem;
+}
+.cloudCards button {
+  display: grid;
+  min-height: 4.5rem;
+  grid-template-columns: 2rem 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  color: var(--zapp-text-primary);
+  background: var(--zapp-surface-raised);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cloudCards button:hover {
+  background: var(--zapp-surface-subtle);
+}
+.cloudCards button:focus-visible {
+  outline: 3px solid var(--zapp-focus);
+  outline-offset: 2px;
+}
+.cloudCards button > svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  justify-self: center;
+  color: var(--zapp-text-secondary);
+}
+.cloudCards button span {
+  display: grid;
+  gap: 0.15rem;
+}
+.cloudCards button strong {
+  font-size: var(--zapp-text-14);
+}
+.cloudCards button small {
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-12);
+}
+.cloudCards button b {
+  color: var(--zapp-text-muted);
+  font-size: var(--zapp-text-18);
+  font-weight: 400;
+}
 
 .filesView > p {
   margin: 0 0 0.75rem;
@@ -160,7 +338,13 @@
 }
 
 @media (max-width: 700px) {
-  .moreLayout { grid-template-columns: 10rem minmax(0, 1fr); }
-  .moreNavigation { padding-inline: 0.4rem; }
-  .metricGrid { grid-template-columns: 1fr; }
+  .moreLayout {
+    grid-template-columns: 10rem minmax(0, 1fr);
+  }
+  .moreNavigation {
+    padding-inline: 0.4rem;
+  }
+  .metricGrid {
+    grid-template-columns: 1fr;
+  }
 }

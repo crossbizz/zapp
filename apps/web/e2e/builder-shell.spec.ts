@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Request } from '@playwright/test';
 
-const apiBaseUrl = 'http://127.0.0.1:4100';
-const appBaseUrl = 'http://127.0.0.1:3100';
+const apiBaseUrl = `http://127.0.0.1:${process.env['ZAPP_WEB_E2E_API_PORT'] ?? '4100'}`;
+const appBaseUrl = `http://127.0.0.1:${process.env['ZAPP_WEB_E2E_APP_PORT'] ?? '3100'}`;
 const projectId = 'project-apollo';
 const conversationWidthStorageKey = `zapp:builder:conversation-width:${projectId}`;
 const defaultConversationWidth = 44;
@@ -200,6 +200,9 @@ test('loads a compact immersive builder with truthful header actions and surface
   await expect(page.getByRole('tab', { name: 'Preview' })).toBeFocused();
   await expect(page.getByRole('tab', { name: 'Preview' })).toHaveAttribute('aria-selected', 'true');
   await page.getByRole('tab', { name: 'More' }).click();
+  await expect(page.getByRole('tab', { name: 'More' })).toHaveText('More');
+  const moreNavigation = page.getByRole('tablist', { name: 'More project views' });
+  await expect(moreNavigation.getByText('◇', { exact: true })).toHaveCount(0);
   for (const tab of [
     'Analytics',
     'Cloud',
@@ -212,6 +215,18 @@ test('loads a compact immersive builder with truthful header actions and surface
   ]) {
     await expect(page.getByRole('tab', { exact: true, name: tab })).toBeVisible();
   }
+  await expect(moreNavigation.locator('svg')).toHaveCount(8);
+  await page.getByRole('tab', { exact: true, name: 'Cloud' }).click();
+  const cloudNavigation = page.getByRole('tablist', { name: 'Cloud project views' });
+  await expect(cloudNavigation.getByRole('tab', { exact: true, name: 'Overview' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  for (const tab of ['Overview', 'Secrets', 'Logs', 'Usage']) {
+    await expect(cloudNavigation.getByRole('tab', { exact: true, name: tab })).toBeVisible();
+  }
+  await cloudNavigation.getByRole('tab', { exact: true, name: 'Secrets' }).click();
+  await expect(page.getByRole('heading', { exact: true, name: 'Secrets' })).toBeVisible();
   await page.getByRole('tab', { name: 'Preview' }).click();
 
   expect(projectRequests).toHaveLength(1);
@@ -824,9 +839,21 @@ test('defaults to Conversation and switches to Workspace below 1024px', async ({
   );
 });
 
-test('omits repository actions when the repository record is absent', async ({
-  page,
-}) => {
+test('keeps the Lovable-style More hierarchy usable on a narrow workspace', async ({ page }) => {
+  await page.setViewportSize({ height: 820, width: 680 });
+  await openBuilder(page);
+
+  await page.getByRole('button', { name: 'Workspace', exact: true }).click();
+  await page.getByRole('tab', { name: 'More' }).click();
+  await expect(page.getByRole('tab', { name: 'More' })).toHaveText('More');
+  await page.getByRole('tab', { exact: true, name: 'Cloud' }).click();
+  await expect(page.getByRole('tablist', { name: 'Cloud project views' })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+});
+
+test('omits repository actions when the repository record is absent', async ({ page }) => {
   await mockProjectRead(page, { ...projectRead, repository: null });
   await signIn(page);
   await page.goto(`/projects/${projectId}`);

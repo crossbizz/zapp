@@ -422,6 +422,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Prove the focused configuration suite, web lint/typecheck, and a live port-3000 request while a production build replaces `.next`.
 - [x] Commit: `fix(web): isolate the live dev build cache`
 
+#### WEB-18-FIX-15 - Lovable surface hierarchy and More navigation parity
+
+**Root cause:** The compact builder shell still rendered its active More surface as an unlabeled icon, used the same placeholder diamond for every More navigation item, and flattened Cloud into a single logs screen. That removed the visual hierarchy and discoverability present in the approved Lovable references even though the underlying API-backed surfaces existed.
+**Files:** Modify `apps/web/src/components/builder/{SurfaceTabs,MoreView,builder.module.css}.tsx/css`, `apps/web/e2e/builder-shell.spec.ts`, this plan, and `tasks/todo.md`. No public API, generated project source, preview lifecycle, desktop, or service behavior changes are in scope.
+
+- [x] Add failing browser assertions that the active More tab has a visible label, the More navigation has distinct semantic icons instead of placeholder glyphs, and Cloud exposes Overview, Secrets, Logs, and Usage subviews.
+- [x] Render compact SVG icons and a quiet nested Cloud navigation hierarchy while retaining the existing public API-backed logs/settings content and truthful empty states.
+- [x] Verify the focused browser acceptance at desktop and mobile widths, web lint/typecheck, and the complete web suite.
+- [x] Commit: `fix(web): match Lovable builder surface hierarchy`
+
 ---
 
 ## Testing strategy
@@ -435,6 +445,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-15 done — Replaced placeholder More navigation with compact semantic icons, labeled the active surface, added Lovable-style nested Cloud navigation with truthful API-backed content, and passed 25/25 builder shell plus 136/136 browser tests, 37/37 web unit tests, lint/typecheck, desktop and 680px acceptance.
 - 2026-08-15 WEB-18-FIX-14 done — Isolated long-running Next development in ignored `.next-dev` output while preserving explicit E2E directories and the production `.next` contract; the focused configuration suite passed 4/4, web lint passed with one pre-existing image warning, typecheck and production build passed, and eight concurrent plus one post-build port-3000 probes all returned HTTP 200 while `.next` was deleted and rebuilt.
 - 2026-08-15 WEB-18-FIX-13 done — Confirmed the affected durable Docker volume still held its branch, source tree, dependencies, and uncommitted work but retained an obsolete development-tunnel Git origin; reattach now validates the scoped organization/project repository path independently of the rotating host, rejects foreign paths, and scrubs the origin to the current credential-free URL. The focused Git bootstrap suite passed 7 tests with 1 live-environment skip, sandbox lint/typecheck passed, and the full sandbox suite passed 210 tests with 19 provider-gated skips.
 - 2026-08-15 WEB-18-FIX-12 done — Serialized the execution-contract install command before every Docker/Modal dev-server start and restart, extended only preview startup deadlines, rejected install failures before launch, and proved the current locked Docker image installs missing Vite and serves the generated document through the real preview proxy; sandbox 209 passed with 19 provider-gated skips, focused control 7/7, affected lint/typecheck, and the dependency-empty live Docker acceptance passed 1/1.

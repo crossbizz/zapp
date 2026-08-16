@@ -208,7 +208,7 @@ export function SurfaceTabs({
           aria-label="More"
           aria-selected={moreActive}
           className={styles.surfaceTab}
-          data-compact-tab="icon"
+          data-compact-tab={moreActive ? 'labelled' : 'icon'}
           onClick={() => {
             onValueChange(moreActive ? value : 'health');
           }}
@@ -221,6 +221,7 @@ export function SurfaceTabs({
           <span className={styles.surfaceTabIcon}>
             <SurfaceIcon tab="more" />
           </span>
+          {moreActive ? <span>More</span> : null}
         </button>
       </div>
       <div
