@@ -619,12 +619,14 @@ export function Thread({
     connection,
     error: conversationError,
     events,
-    liveEvents,
     loading: eventsLoading,
     refresh: retryConversationEvents,
   } = useConversationEvents(conversation?.id, selectedRun, organizationId);
   const items = useMemo(() => threadItems(events), [events]);
-  const currentRunEvents = events.filter((event) => event.data.runId === selectedRun?.id);
+  const currentRunEvents = useMemo(
+    () => events.filter((event) => event.data.runId === selectedRun?.id),
+    [events, selectedRun?.id],
+  );
   const cancelled = currentRunEvents.some((event) => event.type === 'run.cancelled');
   const completed = currentRunEvents.some((event) => event.type === 'run.completed');
   const active =
@@ -648,8 +650,8 @@ export function Thread({
   );
 
   useEffect(() => {
-    onEventsChange(selectedRun?.id, liveEvents);
-  }, [liveEvents, onEventsChange, selectedRun?.id]);
+    onEventsChange(selectedRun?.id, currentRunEvents);
+  }, [currentRunEvents, onEventsChange, selectedRun?.id]);
 
   useEffect(() => {
     if (newThread) {

@@ -494,6 +494,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Show accepted busy-run user messages as **Queued** and transition only on the matching `message.applied`; merge history pages and active SSE by `(runId, sequence)` without duplicates or cross-tenant retained selection.
 - [x] Prove seeded multi-run history, terminal follow-up, explicit new-thread creation, queued-to-applied state, pagination, navigation restoration, retry states, and organization fencing in focused and full web suites. Commit: `feat(web): add durable project conversation history`
 
+#### WEB-19-FIX-1 - restore persisted preview lifecycle after conversation reload
+
+**Root cause:** WEB-19 correctly merged persisted conversation events with the active run stream for the visible transcript, but forwarded only live SSE events to Preview. After reload, a terminal conversation has no live stream, so Preview lost the selected run's durable workspace and commit lifecycle and incorrectly rendered sleeping, unavailable, or revisionless recovery states.
+**Files:** Modify `apps/web/src/components/conversation/Thread.tsx`, `apps/web/e2e/conversation.spec.ts`, this plan, and `tasks/todo.md`. No public API, preview recovery policy, workspace provider, generated project source, or visual redesign is in scope.
+
+- [x] Add a failing browser regression proving a terminal run with persisted preview lifecycle events and an empty live stream recreates and restarts its project workspace after reload.
+- [x] Forward the selected run's merged persisted and live events to Preview without leaking another run's lifecycle or reintroducing active-run workspace races.
+- [x] Prove the focused regression, complete web browser suite, web lint/typecheck, and the restored local stack health.
+- [x] Commit: `fix(preview): restore persisted conversation lifecycle`
+
 ### Task WEB-20 [M6]: Project-card deletion lifecycle
 
 **Files:** Modify project dashboard/card/API/styles, add exact-name confirmation dialog, Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-project-card-deletion.md`.
@@ -517,6 +527,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-16 WEB-19-FIX-1 done — Forwarded the selected run's merged durable and live events to Preview so terminal projects recover their workspace after reload; the TDD regression failed before and passed after, and the complete web and repository gates passed.
 - 2026-08-16 WEB-20 done — Added Owner-only exact-name project-card deletion, truthful queued/running/unknown/failed states with automatic recovery reconciliation, bounded tenant-fenced polling, isolated cleanup, accessible disclosure behavior, and fresh-key failed-row restart support in the public API; passed 22/22 project browser tests, 7/7 deletion API tests, web/control API gates, and the full repository gate.
 - 2026-08-16 WEB-19 done — Added tenant-scoped paginated project history, explicit new threads, same-thread successor continuity, queued/applied delivery state, safe ambiguous-admission handling, retryable history, legacy preview continuity, and passed 149/149 browser tests plus the full repository gate.
 - 2026-08-16 WEB-18-FIX-20 done — Made capability scans compatible with the immutable legacy workspace agent, restored the actual pnpm preview contract, replaced impossible revisionless wake attempts with a keyed same-conversation build retry, passed control API 13/13 and web 140/140, rendered the real signed-in Docker preview and source tree, and passed the 94/94-task cold repository gate.

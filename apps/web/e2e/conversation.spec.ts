@@ -88,6 +88,7 @@ interface EventInput {
     | 'message.user'
     | 'phase.completed'
     | 'phase.started'
+    | 'preview.starting'
     | 'run.cancelled'
     | 'tool.completed'
     | 'tool.started';
@@ -1437,6 +1438,131 @@ test('keeps prior runs visible when a terminal conversation receives a follow-up
   await expect(page.getByText(priorRequest, { exact: true })).toBeVisible();
   await expect(page.getByText(priorAnswer, { exact: true })).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`conversation=${conversationId}`));
+});
+
+test('restores a terminal preview from persisted conversation events after reload', async ({
+  page,
+}) => {
+  const failedRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:05:00.000Z',
+    status: 'failed' as const,
+  };
+  const workspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FZ';
+  let restartRequests = 0;
+  let workspaceCreates = 0;
+
+  await mockBuilder(page, [failedRun], false);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        ...projectRead,
+        branches: projectRead.branches.map((branch) => ({ ...branch, headCommitSha: null })),
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/conversations*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            createdAt: failedRun.startedAt,
+            id: conversationId,
+            latestRun: { id: runId, status: 'failed' },
+            projectId,
+            runCount: 1,
+            title: 'Failed preview fixture',
+            updatedAt: failedRun.completedAt,
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/conversations/${conversationId}/events*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        items: [
+          {
+            event: eventData({
+              payload: { action: 'start', workspaceId },
+              sequence: 1,
+              type: 'preview.starting',
+            }),
+            runNumber: 1,
+          },
+        ],
+        nextCursor: null,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    await route.fulfill({ body: '', headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    if (route.request().method() === 'POST') {
+      workspaceCreates += 1;
+      await route.fulfill({
+        body: JSON.stringify({
+          workspace: {
+            branchId,
+            createdAt: '2026-08-10T12:06:00.000Z',
+            id: workspaceId,
+            lastActiveAt: '2026-08-10T12:06:00.000Z',
+            organizationId,
+            projectId,
+            provider: 'docker',
+            providerWorkspaceId: 'provider-restored-preview',
+            resourceProfile: 'standard',
+            snapshotRef: null,
+            status: 'ready',
+            terminatedAt: null,
+          },
+        }),
+        headers: corsHeaders(),
+        status: 201,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({ workspaces: [] }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(
+    `${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/restart`,
+    async (route) => {
+      restartRequests += 1;
+      await route.fulfill({ body: '{}', headers: corsHeaders(), status: 200 });
+    },
+  );
+  await page.route(`${apiBaseUrl}/v1/workspaces/${workspaceId}/dev-server/logs*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        entries: [],
+        failureId: null,
+        nextCursor: 0,
+        state: 'starting',
+        truncated: false,
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?conversation=${conversationId}`);
+
+  await expect.poll(() => workspaceCreates).toBe(1);
+  await expect.poll(() => restartRequests).toBe(1);
+  await expect(page.getByRole('heading', { name: 'Build needs another run' })).toHaveCount(0);
 });
 
 test('selects project history through the URL and offers an explicit empty new thread', async ({
