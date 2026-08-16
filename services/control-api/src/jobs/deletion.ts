@@ -1,8 +1,4 @@
-import {
-  DeleteObjectsCommand,
-  ListObjectsV2Command,
-  S3Client,
-} from '@aws-sdk/client-s3';
+import { DeleteObjectsCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { idSchema } from '@zapp/contracts';
 import { createServiceTokenSigner, type ServiceTokenConfig } from '@zapp/config';
 import { organizations, projectDeletions, projects, type Database } from '@zapp/db';
@@ -98,10 +94,7 @@ export interface DeletionTargetPort {
     readonly projectId: string;
     readonly operationKey: string;
   }): Promise<void>;
-  absent(input: {
-    readonly organizationId: string;
-    readonly projectId: string;
-  }): Promise<boolean>;
+  absent(input: { readonly organizationId: string; readonly projectId: string }): Promise<boolean>;
 }
 
 export interface ProjectDeletionJob {
@@ -132,9 +125,12 @@ export function createProjectDeletionJob(options: {
   readonly leaseMs?: number;
 }): ProjectDeletionJob {
   const workerId = z.string().trim().min(1).max(128).parse(options.workerId);
-  const leaseMs = z.number().int().min(1_000).max(15 * 60_000).parse(
-    options.leaseMs ?? DEFAULT_LEASE_MS,
-  );
+  const leaseMs = z
+    .number()
+    .int()
+    .min(1_000)
+    .max(15 * 60_000)
+    .parse(options.leaseMs ?? DEFAULT_LEASE_MS);
   const ports: Record<ProjectDeletionTarget, DeletionTargetPort> = {
     snapshots: options.snapshots,
     git: options.git,
@@ -163,8 +159,7 @@ export function createProjectDeletionJob(options: {
         }
         return { kind: target === 'postgres' ? 'completed' : 'advanced', target };
       } catch (error) {
-        const code =
-          error instanceof DeletionTargetError ? error.code : 'target_delete_failed';
+        const code = error instanceof DeletionTargetError ? error.code : 'target_delete_failed';
         try {
           await options.store.fail(claim.projectId, code, workerId, now);
         } catch {
@@ -184,7 +179,12 @@ export function createProjectDeletionLifecycle(options: {
   readonly timers?: DeletionTimers;
 }) {
   const now = options.now ?? (() => new Date());
-  const intervalMs = z.number().int().min(100).max(60_000).parse(options.intervalMs ?? 1_000);
+  const intervalMs = z
+    .number()
+    .int()
+    .min(100)
+    .max(60_000)
+    .parse(options.intervalMs ?? 1_000);
   const timers =
     options.timers ??
     ({
@@ -229,7 +229,12 @@ export function createDatabaseDeletionStore(database: Database): DeletionStore {
     async claim(rawWorkerId, rawNow, rawLeaseMs) {
       const workerId = z.string().trim().min(1).max(128).parse(rawWorkerId);
       const now = validDate(rawNow);
-      const leaseMs = z.number().int().min(1_000).max(15 * 60_000).parse(rawLeaseMs);
+      const leaseMs = z
+        .number()
+        .int()
+        .min(1_000)
+        .max(15 * 60_000)
+        .parse(rawLeaseMs);
       return await database.transaction(async (tx) => {
         const [candidate] = await tx
           .select()
@@ -307,7 +312,10 @@ export function createDatabaseDeletionStore(database: Database): DeletionStore {
     },
     async fail(rawProjectId, rawErrorCode, rawWorkerId, rawNow) {
       const projectId = idSchema('proj').parse(rawProjectId);
-      const errorCode = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/u).parse(rawErrorCode);
+      const errorCode = z
+        .string()
+        .regex(/^[a-z][a-z0-9_]{0,63}$/u)
+        .parse(rawErrorCode);
       const workerId = z.string().trim().min(1).max(128).parse(rawWorkerId);
       const now = validDate(rawNow);
       const updated = await database
@@ -341,6 +349,38 @@ export function createDatabaseProjectDeletionRequestStore(
     async enqueue(rawInput) {
       const input = DeletionRequestSchema.parse(rawInput);
       return await database.transaction(async (tx) => {
+        const resolveExisting = async (row: typeof projectDeletions.$inferSelect) => {
+          const existing = existingDeletion(row, input);
+          if (existing.kind !== 'restart') return existing;
+          const [restarted] = await tx
+            .update(projectDeletions)
+            .set({
+              attempts: 0,
+              completedAt: null,
+              lastErrorCode: null,
+              leaseExpiresAt: null,
+              leaseOwner: null,
+              nextAttemptAt: input.now,
+              operationKey: input.operationKey,
+              requestedAt: input.now,
+              requestedBy: input.requestedBy,
+              requestFingerprint: input.requestFingerprint,
+              status: 'queued',
+              updatedAt: input.now,
+            })
+            .where(
+              and(
+                eq(projectDeletions.projectId, input.projectId),
+                eq(projectDeletions.organizationId, input.organizationId),
+                eq(projectDeletions.status, 'failed'),
+              ),
+            )
+            .returning();
+          if (restarted === undefined) throw new Error('failed deletion restart lost its row lock');
+          const deletion = deletionView(restarted);
+          await input.audit(tx, deletion);
+          return { kind: 'accepted', deletion } as const;
+        };
         const [persisted] = await tx
           .select()
           .from(projectDeletions)
@@ -350,8 +390,9 @@ export function createDatabaseProjectDeletionRequestStore(
               eq(projectDeletions.organizationId, input.organizationId),
             ),
           )
-          .limit(1);
-        if (persisted !== undefined) return existingDeletion(persisted, input);
+          .limit(1)
+          .for('update');
+        if (persisted !== undefined) return await resolveExisting(persisted);
         const [project] = await tx
           .select({ id: projects.id })
           .from(projects)
@@ -372,8 +413,9 @@ export function createDatabaseProjectDeletionRequestStore(
               eq(projectDeletions.organizationId, input.organizationId),
             ),
           )
-          .limit(1);
-        if (existing !== undefined) return existingDeletion(existing, input);
+          .limit(1)
+          .for('update');
+        if (existing !== undefined) return await resolveExisting(existing);
         const [created] = await tx
           .insert(projectDeletions)
           .values({
@@ -460,7 +502,8 @@ export function createDatabaseProjectDeletionRequestStore(
               updatedAt: input.now,
             })
             .returning();
-          if (created === undefined) throw new Error('organization deletion insert returned no row');
+          if (created === undefined)
+            throw new Error('organization deletion insert returned no row');
           const deletion = deletionView(created);
           await input.audit(tx, deletion);
           deletions.push(deletion);
@@ -582,10 +625,7 @@ export function createPostgresProjectDeletionTarget(database: Database): Deletio
       await database
         .delete(projects)
         .where(
-          and(
-            eq(projects.id, input.projectId),
-            eq(projects.organizationId, input.organizationId),
-          ),
+          and(eq(projects.id, input.projectId), eq(projects.organizationId, input.organizationId)),
         );
     },
     async absent(rawInput) {
@@ -594,10 +634,7 @@ export function createPostgresProjectDeletionTarget(database: Database): Deletio
         .select({ id: projects.id })
         .from(projects)
         .where(
-          and(
-            eq(projects.id, input.projectId),
-            eq(projects.organizationId, input.organizationId),
-          ),
+          and(eq(projects.id, input.projectId), eq(projects.organizationId, input.organizationId)),
         )
         .limit(1);
       return row === undefined;
@@ -652,9 +689,7 @@ export function createS3ProjectDeletionTarget(
               Bucket: bucket,
               Prefix: prefix,
               MaxKeys: 1_000,
-              ...(continuationToken === undefined
-                ? {}
-                : { ContinuationToken: continuationToken }),
+              ...(continuationToken === undefined ? {} : { ContinuationToken: continuationToken }),
             }),
           ),
         );
@@ -731,7 +766,10 @@ export function createGitProjectDeletionTarget(options: {
         },
       );
       if (response.status !== 200) throw new Error('git absence probe was refused');
-      return !z.object({ exists: z.boolean() }).strict().parse(await response.json()).exists;
+      return !z
+        .object({ exists: z.boolean() })
+        .strict()
+        .parse(await response.json()).exists;
     },
   };
 }
@@ -774,7 +812,12 @@ export function createSandboxSnapshotDeletionTarget(options: {
         headers: { 'idempotency-key': operationKeyOf(rawInput) },
       });
       if (response.status !== 200) throw new Error('snapshot deletion was refused');
-      if (!z.object({ absent: z.literal(true) }).strict().safeParse(await response.json()).success) {
+      if (
+        !z
+          .object({ absent: z.literal(true) })
+          .strict()
+          .safeParse(await response.json()).success
+      ) {
         throw new Error('snapshot deletion did not verify absence');
       }
     },
@@ -782,7 +825,10 @@ export function createSandboxSnapshotDeletionTarget(options: {
       const input = deletionScope(rawInput);
       const response = await request(input, 'absent', { method: 'GET' });
       if (response.status !== 200) throw new Error('snapshot absence probe was refused');
-      return z.object({ absent: z.boolean() }).strict().parse(await response.json()).absent;
+      return z
+        .object({ absent: z.boolean() })
+        .strict()
+        .parse(await response.json()).absent;
     },
   };
 }
@@ -803,7 +849,9 @@ function claimView(row: typeof projectDeletions.$inferSelect): ClaimedProjectDel
   });
 }
 
-function verifiedColumn(target: ProjectDeletionTarget): Partial<typeof projectDeletions.$inferInsert> {
+function verifiedColumn(
+  target: ProjectDeletionTarget,
+): Partial<typeof projectDeletions.$inferInsert> {
   switch (target) {
     case 'snapshots':
       return { snapshotsStatus: 'verified' };
@@ -891,20 +939,39 @@ function deletionView(row: typeof projectDeletions.$inferSelect): ProjectDeletio
   });
 }
 
+export function decideExistingProjectDeletion(
+  row: Pick<
+    typeof projectDeletions.$inferSelect,
+    'operationKey' | 'requestFingerprint' | 'requestedBy' | 'status'
+  >,
+  input: Pick<
+    z.infer<typeof DeletionRequestSchema>,
+    'operationKey' | 'requestFingerprint' | 'requestedBy'
+  >,
+): 'conflict' | 'replay' | 'restart' {
+  if (
+    row.requestedBy === input.requestedBy &&
+    row.operationKey === input.operationKey &&
+    row.requestFingerprint === input.requestFingerprint
+  ) {
+    return 'replay';
+  }
+  return row.status === 'failed' && row.operationKey !== input.operationKey
+    ? 'restart'
+    : 'conflict';
+}
+
 function existingDeletion(
   row: typeof projectDeletions.$inferSelect,
   input: z.infer<typeof DeletionRequestSchema>,
 ):
   | { readonly kind: 'replay'; readonly deletion: ProjectDeletionStatus }
+  | { readonly kind: 'restart' }
   | { readonly kind: 'conflict' } {
-  if (
-    row.requestedBy !== input.requestedBy ||
-    row.operationKey !== input.operationKey ||
-    row.requestFingerprint !== input.requestFingerprint
-  ) {
-    return { kind: 'conflict' };
-  }
-  return { kind: 'replay', deletion: deletionView(row) };
+  const decision = decideExistingProjectDeletion(row, input);
+  return decision === 'replay'
+    ? { kind: 'replay', deletion: deletionView(row) }
+    : { kind: decision };
 }
 
 function projectNotFound(): ApiError {

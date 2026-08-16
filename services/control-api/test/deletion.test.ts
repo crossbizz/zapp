@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   createProjectDeletionJob,
+  decideExistingProjectDeletion,
   type ClaimedProjectDeletion,
   type DeletionStore,
   type ProjectDeletionRequestStore,
@@ -72,6 +73,7 @@ class MemoryDeletionStore implements DeletionStore {
 class MemoryRequestStore implements ProjectDeletionRequestStore {
   readonly projects = new Set<string>();
   readonly rows = new Map<string, ProjectDeletionStatus>();
+  readonly operationKeys = new Map<string, string>();
   calls = 0;
 
   async enqueue(input: Parameters<ProjectDeletionRequestStore['enqueue']>[0]) {
@@ -80,7 +82,22 @@ class MemoryRequestStore implements ProjectDeletionRequestStore {
       return { kind: 'not_found' as const };
     }
     const existing = this.rows.get(input.projectId);
-    if (existing !== undefined) return { kind: 'replay' as const, deletion: existing };
+    if (existing !== undefined) {
+      if (this.operationKeys.get(input.projectId) === input.operationKey) {
+        return { kind: 'replay' as const, deletion: existing };
+      }
+      if (existing.status !== 'failed') return { kind: 'conflict' as const };
+      const restarted: ProjectDeletionStatus = {
+        ...existing,
+        completedAt: null,
+        requestedAt: input.now.toISOString(),
+        status: 'queued',
+      };
+      await input.audit(NO_TRANSACTION, restarted);
+      this.operationKeys.set(input.projectId, input.operationKey);
+      this.rows.set(input.projectId, restarted);
+      return { kind: 'accepted' as const, deletion: restarted };
+    }
     const deletion: ProjectDeletionStatus = {
       projectId: input.projectId,
       status: 'queued',
@@ -89,6 +106,7 @@ class MemoryRequestStore implements ProjectDeletionRequestStore {
       completedAt: null,
     };
     await input.audit(NO_TRANSACTION, deletion);
+    this.operationKeys.set(input.projectId, input.operationKey);
     this.rows.set(input.projectId, deletion);
     return { kind: 'accepted' as const, deletion };
   }
@@ -99,7 +117,9 @@ class MemoryRequestStore implements ProjectDeletionRequestStore {
     );
   }
 
-  async enqueueOrganization(input: Parameters<ProjectDeletionRequestStore['enqueueOrganization']>[0]) {
+  async enqueueOrganization(
+    input: Parameters<ProjectDeletionRequestStore['enqueueOrganization']>[0],
+  ) {
     const projectIds = [...this.projects]
       .filter((key) => key.startsWith(`${input.organizationId}:`))
       .map((key) => key.slice(input.organizationId.length + 1));
@@ -209,6 +229,34 @@ describe('CP-17 verified project deletion job', () => {
   });
 });
 
+describe('CP-17 deletion request retries', () => {
+  it('accepts a fresh key only after an explicit failed state', () => {
+    const request = {
+      operationKey: 'delete-project-retry-0002',
+      requestFingerprint: 'fingerprint-0002',
+      requestedBy: newId('user'),
+    };
+    const existing = {
+      operationKey: 'delete-project-retry-0001',
+      requestFingerprint: 'fingerprint-0001',
+      requestedBy: newId('user'),
+      status: 'failed' as const,
+    };
+
+    expect(decideExistingProjectDeletion(existing, request)).toBe('restart');
+    expect(decideExistingProjectDeletion({ ...existing, status: 'running' }, request)).toBe(
+      'conflict',
+    );
+    expect(
+      decideExistingProjectDeletion(existing, {
+        operationKey: existing.operationKey,
+        requestFingerprint: existing.requestFingerprint,
+        requestedBy: existing.requestedBy,
+      }),
+    ).toBe('replay');
+  });
+});
+
 describe('CP-17 public project deletion API', () => {
   it('is Owner-only, idempotency-keyed, tenant-safe, auditable, and pollable', async () => {
     const tenantData = new InMemoryTenantData();
@@ -271,6 +319,25 @@ describe('CP-17 public project deletion API', () => {
     });
     expect(status.statusCode, status.body).toBe(200);
     expect(status.json()).toMatchObject({ deletion: { projectId, status: 'queued' } });
+
+    const originalOperationKey = deletions.operationKeys.get(projectId);
+    const existingDeletion = deletions.rows.get(projectId);
+    expect(existingDeletion).toBeDefined();
+    if (existingDeletion === undefined) throw new Error('expected deletion fixture');
+    deletions.rows.set(projectId, {
+      ...existingDeletion,
+      status: 'failed',
+    });
+    const retried = await built.app.inject({
+      ...request,
+      headers: {
+        ...tenantHeaders,
+        [IdempotencyHeader]: 'delete-project-retry-0001',
+      },
+    });
+    expect(retried.statusCode, retried.body).toBe(202);
+    expect(retried.json()).toMatchObject({ deletion: { projectId, status: 'queued' } });
+    expect(deletions.operationKeys.get(projectId)).not.toBe(originalOperationKey);
 
     const builder = await signIn(built, {
       externalId: 'deletion-builder',

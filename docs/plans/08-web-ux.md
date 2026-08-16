@@ -499,10 +499,10 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Files:** Modify project dashboard/card/API/styles, add exact-name confirmation dialog, Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-project-card-deletion.md`.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Add an Owner-only accessible card overflow action for every project; Builders/Viewers never receive it, and exact project-name confirmation is mandatory.
-- [ ] Reuse CP-17's public keyed deletion request/status API, keep the key stable while outcome is unknown, and show truthful queued/running/failed/retry states until completion or a fresh scoped list omits the project.
-- [ ] Keep other cards usable, clean only the deleted project's thumbnail/state, and abort timers/requests plus clear stale state on organization changes.
-- [ ] Prove permission visibility, headers/idempotency, confirmation, bounded polling, retry-key rotation, multi-card isolation, and organization fencing in focused and full web suites. Commit: `feat(web): add project-card deletion`
+- [x] Add an Owner-only accessible card overflow action for every project; Builders/Viewers never receive it, and exact project-name confirmation is mandatory.
+- [x] Reuse CP-17's public keyed deletion request/status API, keep the key stable while outcome is unknown, and show truthful queued/running/failed/retry states until completion or a fresh scoped list omits the project.
+- [x] Keep other cards usable, clean only the deleted project's thumbnail/state, and abort timers/requests plus clear stale state on organization changes.
+- [x] Prove permission visibility, headers/idempotency, confirmation, bounded polling, retry-key rotation, multi-card isolation, and organization fencing in focused and full web suites. Commit: `feat(web): add project-card deletion`
 
 ---
 
@@ -517,6 +517,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-16 WEB-20 done — Added Owner-only exact-name project-card deletion, truthful queued/running/unknown/failed states with automatic recovery reconciliation, bounded tenant-fenced polling, isolated cleanup, accessible disclosure behavior, and fresh-key failed-row restart support in the public API; passed 22/22 project browser tests, 7/7 deletion API tests, web/control API gates, and the full repository gate.
 - 2026-08-16 WEB-19 done — Added tenant-scoped paginated project history, explicit new threads, same-thread successor continuity, queued/applied delivery state, safe ambiguous-admission handling, retryable history, legacy preview continuity, and passed 149/149 browser tests plus the full repository gate.
 - 2026-08-16 WEB-18-FIX-20 done — Made capability scans compatible with the immutable legacy workspace agent, restored the actual pnpm preview contract, replaced impossible revisionless wake attempts with a keyed same-conversation build retry, passed control API 13/13 and web 140/140, rendered the real signed-in Docker preview and source tree, and passed the 94/94-task cold repository gate.
 - 2026-08-16 WEB-18-FIX-19 done — Isolated the canonical port 3000 Next process in `.next-dev`, proved a clean local startup and the 140/140 browser suite, and passed the 94/94-task cold repository gate.

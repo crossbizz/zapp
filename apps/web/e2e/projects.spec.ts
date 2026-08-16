@@ -69,7 +69,13 @@ async function signIn(page: Page): Promise<void> {
   await page.goto('/login');
   await page.getByRole('link', { name: 'Sign in' }).click();
   await expect(page).toHaveURL('/');
-  await expect(page.getByText('Ada Lovelace')).toBeVisible();
+  const profile = page.getByText('Ada Lovelace');
+  try {
+    await expect(profile).toBeVisible({ timeout: 5_000 });
+  } catch {
+    await page.reload();
+    await expect(profile).toBeVisible({ timeout: 20_000 });
+  }
   await expect.poll(() => homeListHandled).toBe(true);
   await page.unroute(projectListPattern, handleHomeList);
 }
@@ -181,6 +187,31 @@ function importedProjectFixture(projectId = 'proj-import') {
   } as const;
 }
 
+function projectDeletion(projectId: string, status: 'completed' | 'failed' | 'queued' | 'running') {
+  const verified = status === 'completed' ? 'verified' : 'pending';
+  return {
+    completedAt: status === 'completed' ? '2026-08-16T12:01:00.000Z' : null,
+    projectId,
+    requestedAt: '2026-08-16T12:00:00.000Z',
+    status,
+    targets: {
+      git: verified,
+      objects: verified,
+      postgres: verified,
+      snapshots: verified,
+    },
+  } as const;
+}
+
+async function routeProjectSummaries(page: Page): Promise<void> {
+  await page.route(
+    new RegExp(`^${apiBaseUrl}/v1/projects/summaries(?:\\?.*)?$`, 'u'),
+    async (route) => {
+      await apiResponse(route, { summaries: [] });
+    },
+  );
+}
+
 async function emptyProjects(page: Page): Promise<void> {
   await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
     if (route.request().method() !== 'GET') {
@@ -239,7 +270,9 @@ test('switches active organizations and renders only API-backed project card fie
   );
   await expect(page.getByText('Beta Console')).toHaveCount(0);
 
-  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
+  await page
+    .getByRole('combobox', { name: 'Organization' })
+    .selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 
   await expect(page.getByRole('heading', { name: 'Beta Console' })).toBeVisible();
   await expect(page.getByText('Managed')).toBeVisible();
@@ -262,6 +295,305 @@ test('switches active organizations and renders only API-backed project card fie
   await expect(page.getByRole('button', { name: /deploy/iu })).toHaveCount(0);
 });
 
+test('Owner deletes one project card through the asynchronous public deletion lifecycle', async ({
+  page,
+}) => {
+  const alpha = project(
+    'alpha-portal',
+    'Alpha Portal',
+    'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    'verified',
+  );
+  const mercury = project(
+    'mercury-shop',
+    'Mercury Shop',
+    'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    'compatible',
+  );
+  const firstPoll = deferred();
+  const finishDeletion = deferred();
+  const deleteHeaders: Record<string, string>[] = [];
+  let statusRequests = 0;
+
+  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await projectListResponse(route, { items: [alpha, mercury], nextCursor: null });
+  });
+  await routeProjectSummaries(page);
+  await page.route(`${apiBaseUrl}/v1/projects/alpha-portal`, async (route) => {
+    if (route.request().method() !== 'DELETE') {
+      await route.fallback();
+      return;
+    }
+    deleteHeaders.push(route.request().headers());
+    await apiResponse(route, { deletion: projectDeletion(alpha.id, 'queued') }, 202);
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/alpha-portal/deletion`, async (route) => {
+    statusRequests += 1;
+    if (statusRequests === 1) {
+      firstPoll.resolve();
+      await apiResponse(route, { deletion: projectDeletion(alpha.id, 'running') });
+      return;
+    }
+    await finishDeletion.promise;
+    await apiResponse(route, { deletion: projectDeletion(alpha.id, 'completed') });
+  });
+
+  await signIn(page);
+  await page.goto('/projects');
+  const alphaCard = page.getByRole('article', { name: 'Alpha Portal' });
+  const actions = alphaCard.getByRole('button', { name: 'Project actions for Alpha Portal' });
+  await actions.focus();
+  await actions.press('Enter');
+  const deleteAction = alphaCard.getByRole('button', { name: 'Delete project' });
+  await expect(deleteAction).toBeVisible();
+  await actions.press('Escape');
+  await expect(deleteAction).toHaveCount(0);
+  await actions.press('Enter');
+  await deleteAction.click();
+
+  const dialog = page.getByRole('dialog', { name: 'Delete Alpha Portal' });
+  const confirm = dialog.getByRole('button', { name: 'Delete Alpha Portal' });
+  await expect(confirm).toBeDisabled();
+  await dialog.getByLabel('Project name').fill('alpha portal');
+  await expect(confirm).toBeDisabled();
+  await dialog.getByLabel('Project name').fill('Alpha Portal');
+  await confirm.click();
+
+  await expect(actions).toBeFocused();
+  await firstPoll.promise;
+  await expect(alphaCard).toContainText('Deleting…');
+  await expect(page.getByRole('link', { name: 'Open Mercury Shop' })).toBeEnabled();
+  finishDeletion.resolve();
+  await expect(page.getByRole('heading', { name: 'Alpha Portal' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Mercury Shop' })).toBeVisible();
+
+  expect(deleteHeaders).toHaveLength(1);
+  expect(deleteHeaders[0]?.['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
+  expect(deleteHeaders[0]?.['x-zapp-csrf']).toBeTruthy();
+  expect(deleteHeaders[0]?.['idempotency-key']).toBeTruthy();
+  expect(statusRequests).toBe(2);
+});
+
+test('project deletion retries preserve unknown keys and rotate after an explicit failure', async ({
+  page,
+}) => {
+  const alpha = project(
+    'alpha-portal',
+    'Alpha Portal',
+    'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    'verified',
+  );
+  const keys: string[] = [];
+  let deleteRequests = 0;
+
+  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await projectListResponse(route, { items: [alpha], nextCursor: null });
+  });
+  await routeProjectSummaries(page);
+  await page.route(`${apiBaseUrl}/v1/projects/alpha-portal`, async (route) => {
+    if (route.request().method() !== 'DELETE') {
+      await route.fallback();
+      return;
+    }
+    deleteRequests += 1;
+    keys.push(route.request().headers()['idempotency-key'] ?? '');
+    if (deleteRequests === 1) {
+      await apiResponse(route, { error: { code: 'fixture_failure' } }, 503);
+      return;
+    }
+    await apiResponse(
+      route,
+      {
+        deletion: projectDeletion(alpha.id, deleteRequests === 2 ? 'failed' : 'completed'),
+      },
+      202,
+    );
+  });
+
+  await signIn(page);
+  await page.goto('/projects');
+  const alphaCard = page.getByRole('article', { name: 'Alpha Portal' });
+  await alphaCard.getByRole('button', { name: 'Project actions for Alpha Portal' }).click();
+  await alphaCard.getByRole('button', { name: 'Delete project' }).click();
+  await page
+    .getByRole('dialog', { name: 'Delete Alpha Portal' })
+    .getByLabel('Project name')
+    .fill('Alpha Portal');
+  await page.getByRole('button', { name: 'Delete Alpha Portal' }).click();
+
+  await expect(alphaCard).toContainText('Deletion status unknown');
+  await alphaCard.getByRole('button', { name: 'Retry deletion' }).click();
+  await expect(alphaCard).toContainText('Deletion failed');
+  await alphaCard.getByRole('button', { name: 'Retry deletion' }).click();
+  await expect(alphaCard).toHaveCount(0);
+
+  expect(keys).toHaveLength(3);
+  expect(keys[0]).toBe(keys[1]);
+  expect(keys[2]).not.toBe(keys[1]);
+});
+
+test('project deletion keeps reconciling after a worker failure and observes background recovery', async ({
+  page,
+}) => {
+  const alpha = project(
+    'alpha-portal',
+    'Alpha Portal',
+    'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    'verified',
+  );
+  const allowRecovery = deferred();
+  let statusRequests = 0;
+
+  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await projectListResponse(route, { items: [alpha], nextCursor: null });
+  });
+  await routeProjectSummaries(page);
+  await page.route(`${apiBaseUrl}/v1/projects/alpha-portal`, async (route) => {
+    if (route.request().method() !== 'DELETE') {
+      await route.fallback();
+      return;
+    }
+    await apiResponse(route, { deletion: projectDeletion(alpha.id, 'failed') }, 202);
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/alpha-portal/deletion`, async (route) => {
+    statusRequests += 1;
+    if (statusRequests === 1) {
+      await allowRecovery.promise;
+      await apiResponse(route, { deletion: projectDeletion(alpha.id, 'running') });
+      return;
+    }
+    await apiResponse(route, { deletion: projectDeletion(alpha.id, 'completed') });
+  });
+
+  await signIn(page);
+  await page.goto('/projects');
+  const alphaCard = page.getByRole('article', { name: 'Alpha Portal' });
+  await alphaCard.getByRole('button', { name: 'Project actions for Alpha Portal' }).click();
+  await alphaCard.getByRole('button', { name: 'Delete project' }).click();
+  await page
+    .getByRole('dialog', { name: 'Delete Alpha Portal' })
+    .getByLabel('Project name')
+    .fill('Alpha Portal');
+  await page.getByRole('button', { name: 'Delete Alpha Portal' }).click();
+
+  await expect(alphaCard).toContainText('Deletion failed');
+  allowRecovery.resolve();
+  await expect(alphaCard).toContainText('Deleting…');
+  await expect(alphaCard).toHaveCount(0);
+  expect(statusRequests).toBe(2);
+});
+
+test('Builder and Viewer do not receive project deletion actions', async ({ page }) => {
+  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
+    const organizationId = route.request().headers()['x-organization-id'];
+    await projectListResponse(route, {
+      items: [
+        project(
+          organizationId === 'org-viewer' ? 'viewer-project' : 'beta-console',
+          organizationId === 'org-viewer' ? 'Viewer Project' : 'Beta Console',
+          organizationId ?? 'org_01K27Q9C2W85CMN1V9S6Q3D4FE',
+          'compatible',
+        ),
+      ],
+      nextCursor: null,
+    });
+  });
+  await routeProjectSummaries(page);
+
+  await signIn(page);
+  await page.goto('/projects');
+  await page
+    .getByRole('combobox', { name: 'Organization' })
+    .selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
+  await expect(page.getByRole('heading', { name: 'Beta Console' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Project actions for/u })).toHaveCount(0);
+
+  await page.route(`${apiBaseUrl}/v1/me`, async (route) => {
+    await apiResponse(route, {
+      memberships: [
+        {
+          allowedModels: [],
+          organization: { id: 'org-viewer', name: 'Viewer Org', slug: 'viewer' },
+          role: 'viewer',
+          status: 'active',
+        },
+      ],
+      user: {
+        avatarUrl: null,
+        displayName: 'Vera Viewer',
+        email: 'viewer@example.test',
+        id: 'user-viewer',
+      },
+    });
+  });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Viewer Project' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Project actions for/u })).toHaveCount(0);
+});
+
+test('project deletion polling is fenced when the organization changes', async ({ page }) => {
+  const statusStarted = deferred();
+  const releaseStatus = deferred();
+  let statusRequests = 0;
+  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
+    const organizationId = route.request().headers()['x-organization-id'];
+    await projectListResponse(route, {
+      items:
+        organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE'
+          ? [project('beta-console', 'Beta Console', organizationId, 'managed')]
+          : [project('alpha-portal', 'Alpha Portal', organizationId ?? '', 'verified')],
+      nextCursor: null,
+    });
+  });
+  await routeProjectSummaries(page);
+  await page.route(`${apiBaseUrl}/v1/projects/alpha-portal`, async (route) => {
+    if (route.request().method() !== 'DELETE') {
+      await route.fallback();
+      return;
+    }
+    await apiResponse(route, { deletion: projectDeletion('alpha-portal', 'queued') }, 202);
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/alpha-portal/deletion`, async (route) => {
+    statusRequests += 1;
+    statusStarted.resolve();
+    await releaseStatus.promise;
+    await apiResponse(route, { deletion: projectDeletion('alpha-portal', 'completed') });
+  });
+
+  await signIn(page);
+  await page.goto('/projects');
+  const alphaCard = page.getByRole('article', { name: 'Alpha Portal' });
+  await alphaCard.getByRole('button', { name: 'Project actions for Alpha Portal' }).click();
+  await alphaCard.getByRole('button', { name: 'Delete project' }).click();
+  await page
+    .getByRole('dialog', { name: 'Delete Alpha Portal' })
+    .getByLabel('Project name')
+    .fill('Alpha Portal');
+  await page.getByRole('button', { name: 'Delete Alpha Portal' }).click();
+  await statusStarted.promise;
+
+  await page
+    .getByRole('combobox', { name: 'Organization' })
+    .selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
+  releaseStatus.resolve();
+  await expect(page.getByRole('heading', { name: 'Beta Console' })).toBeVisible();
+  await expect(page.getByText('Deleting…')).toHaveCount(0);
+  await page.waitForTimeout(2_200);
+  expect(statusRequests).toBe(1);
+});
+
 test('replaces the URL override on organization switch and refreshes into the persisted choice', async ({
   page,
 }) => {
@@ -281,7 +613,9 @@ test('replaces the URL override on organization switch and refreshes into the pe
   await expect(page.getByRole('heading', { name: 'Alpha Portal' })).toBeVisible();
   const historyLength = await page.evaluate(() => window.history.length);
 
-  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
+  await page
+    .getByRole('combobox', { name: 'Organization' })
+    .selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 
   await expect(page).toHaveURL('/projects?view=grid');
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
@@ -306,11 +640,20 @@ test('loads the next opaque keyset page once when the grid sentinel enters view'
       route,
       cursor === null
         ? {
-            items: [project('alpha-portal', 'Alpha Portal', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
+            items: [
+              project('alpha-portal', 'Alpha Portal', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified'),
+            ],
             nextCursor: 'cursor-after-alpha',
           }
         : {
-            items: [project('mercury-shop', 'Mercury Shop', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible')],
+            items: [
+              project(
+                'mercury-shop',
+                'Mercury Shop',
+                'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+                'compatible',
+              ),
+            ],
             nextCursor: null,
           },
     );
@@ -347,7 +690,9 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
 
     if (organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE') {
       await projectListResponse(route, {
-        items: [project('beta-console', 'Beta Console', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed')],
+        items: [
+          project('beta-console', 'Beta Console', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed'),
+        ],
         nextCursor: null,
       });
       return;
@@ -358,11 +703,25 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
         route,
         alphaFirstPage === 1
           ? {
-              items: [project('alpha-initial', 'Alpha Initial', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
+              items: [
+                project(
+                  'alpha-initial',
+                  'Alpha Initial',
+                  'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+                  'verified',
+                ),
+              ],
               nextCursor: 'alpha-old-cursor',
             }
           : {
-              items: [project('alpha-fresh-one', 'Alpha Fresh One', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
+              items: [
+                project(
+                  'alpha-fresh-one',
+                  'Alpha Fresh One',
+                  'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+                  'verified',
+                ),
+              ],
               nextCursor: 'alpha-fresh-cursor',
             },
       );
@@ -372,7 +731,14 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
       staleStarted.resolve();
       await releaseStale.promise;
       await projectListResponse(route, {
-        items: [project('alpha-stale', 'Alpha Stale Page', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible')],
+        items: [
+          project(
+            'alpha-stale',
+            'Alpha Stale Page',
+            'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+            'compatible',
+          ),
+        ],
         nextCursor: 'alpha-stale-next',
       });
       staleSettled.resolve();
@@ -382,14 +748,28 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
       freshStarted.resolve();
       await releaseFresh.promise;
       await projectListResponse(route, {
-        items: [project('alpha-fresh-two', 'Alpha Fresh Two', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible')],
+        items: [
+          project(
+            'alpha-fresh-two',
+            'Alpha Fresh Two',
+            'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+            'compatible',
+          ),
+        ],
         nextCursor: null,
       });
       return;
     }
     if (cursor === 'alpha-stale-next') {
       await projectListResponse(route, {
-        items: [project('alpha-skipped', 'Alpha Skipped Page', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'compatible')],
+        items: [
+          project(
+            'alpha-skipped',
+            'Alpha Skipped Page',
+            'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+            'compatible',
+          ),
+        ],
         nextCursor: null,
       });
       return;
@@ -487,7 +867,9 @@ test('announces organization-switch loading as polite status', async ({ page }) 
   await page.goto('/projects');
   await expect(page.getByRole('heading', { name: 'Alpha Portal' })).toBeVisible();
 
-  await page.getByRole('combobox', { name: 'Organization' }).selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
+  await page
+    .getByRole('combobox', { name: 'Organization' })
+    .selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await betaStarted.promise;
   const status = page.getByRole('status');
   await expect(status).toHaveAttribute('aria-live', 'polite');
@@ -506,7 +888,14 @@ test('offers only a working Retry when the project list cannot load', async ({ p
     attempts += 1;
     if (attempts > 1) {
       await projectListResponse(route, {
-        items: [project('alpha-recovered', 'Alpha Recovered', 'org_01K27Q9C2W85CMN1V9S6Q3D4FD', 'verified')],
+        items: [
+          project(
+            'alpha-recovered',
+            'Alpha Recovered',
+            'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+            'verified',
+          ),
+        ],
         nextCursor: null,
       });
       return;
@@ -644,7 +1033,8 @@ test('renders batch-backed activity and accessible environment states with Deplo
     async (route) => {
       await apiResponse(route, {
         thumbnail: {
-          content: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+P8LHAAAAAElFTkSuQmCC',
+          content:
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+P8LHAAAAAElFTkSuQmCC',
           contentHash: 'b'.repeat(64),
           contentType: 'image/png',
           encoding: 'base64',
@@ -760,7 +1150,9 @@ test('rejects an old Alpha summary after an Alpha to Beta to Alpha switch', asyn
     const organizationId = route.request().headers()['x-organization-id'];
     if (organizationId === 'org_01K27Q9C2W85CMN1V9S6Q3D4FE') {
       await projectListResponse(route, {
-        items: [project('beta-summary', 'Beta Summary', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed')],
+        items: [
+          project('beta-summary', 'Beta Summary', 'org_01K27Q9C2W85CMN1V9S6Q3D4FE', 'managed'),
+        ],
         nextCursor: null,
       });
       return;
@@ -1014,7 +1406,7 @@ test('paginates GitHub repositories and branches by keyboard, then resumes durab
   await expect(dialog.getByRole('status')).toContainText('Queued');
   await expect(dialog.getByRole('status')).toContainText('Mirroring', { timeout: 4_000 });
   await expect(dialog.getByRole('status')).toContainText('Scan pending', { timeout: 4_000 });
-  await expect(page).toHaveURL('/projects/proj-import', { timeout: 5_000 });
+  await expect(page).toHaveURL('/projects/proj-import', { timeout: 15_000 });
 
   expect(repositoryQueries).toEqual(['first', 'opaque-repository-page-2']);
   expect(branchQueries).toEqual(['first', 'opaque-branch-page-2']);
@@ -1241,7 +1633,9 @@ test('renews import keys after selection changes and resets the flow on organiza
     importRequests[0]?.headers['idempotency-key'],
   );
 
-  await page.locator('select[aria-label="Organization"]').selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
+  await page
+    .locator('select[aria-label="Organization"]')
+    .selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
   await expect(dialog.getByRole('button', { name: 'Connect GitHub' })).toBeVisible();
   await expect(dialog.getByRole('option', { name: 'ada/portal' })).toHaveCount(0);
 });

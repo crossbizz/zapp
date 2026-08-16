@@ -317,7 +317,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] CP-28 Durable project conversations and public history
 - [x] AR-25 Safe queued-message application
 - [x] WEB-19 Project conversation history and new threads
-- [ ] WEB-20 Project-card deletion lifecycle
+- [x] WEB-20 Project-card deletion lifecycle
 - [x] M6-GATE-FIX-1 Bound preview-proxy browser cleanup under cold-gate contention
 - [x] OPS-13-FIX-1 Narrow child-process runtime owners in Semgrep
 - [x] OPS-13-FIX-2 Admit the local Docker sandbox command owner in Semgrep

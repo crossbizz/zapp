@@ -16,6 +16,8 @@ export type CreateRunInput =
   paths['/v1/projects/{projectId}/runs']['post']['requestBody']['content']['application/json'];
 export type ListProjectsQuery = NonNullable<paths['/v1/projects']['get']['parameters']['query']>;
 export type ProjectSummariesQuery = paths['/v1/projects/summaries']['get']['parameters']['query'];
+export type ProjectDeletionData =
+  paths['/v1/projects/{projectId}/deletion']['get']['responses'][200]['content']['application/json']['deletion'];
 export type CompleteGitHubInstallInput =
   paths['/v1/integrations/github/install']['post']['requestBody']['content']['application/json'];
 export type ListGitHubRepositoriesQuery =
@@ -216,11 +218,19 @@ export function createControlPlaneClient(organizationId?: string) {
         headers: headers(true, true, idempotencyKey),
         body,
       }),
-    deleteProject: (projectId: string, idempotencyKey?: string) =>
+    deleteProject: (projectId: string, idempotencyKey?: string, signal?: AbortSignal) =>
       client.request('/v1/projects/{projectId}', {
         method: 'DELETE',
         path: { projectId },
         headers: requiredKeyHeaders(idempotencyKey),
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    getProjectDeletion: (projectId: string, signal?: AbortSignal) =>
+      client.request('/v1/projects/{projectId}/deletion', {
+        method: 'GET',
+        path: { projectId },
+        headers: headers(),
+        ...(signal === undefined ? {} : { signal }),
       }),
     listProjectSecrets: (projectId: string, signal?: AbortSignal) =>
       client.request('/v1/projects/{projectId}/secrets', {

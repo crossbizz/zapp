@@ -1,21 +1,20 @@
 'use client';
 
+import { ZappApiError } from '@zapp/api-client';
 import { Button, EmptyState } from '@zapp/ui';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { useAppSession, type ReadyAppSession } from '../../hooks/useAppSession';
-import { createControlPlaneClient } from '../../lib/api';
+import { createControlPlaneClient, type ProjectDeletionData } from '../../lib/api';
 import { appSessionStorageKey } from '../../lib/app-session';
 import { AppShell } from '../shell/AppShell';
 import styles from './projects.module.css';
-import {
-  GitHubImportDialog,
-  type GitHubInstallCallback,
-} from './GitHubImportDialog';
+import { GitHubImportDialog, type GitHubInstallCallback } from './GitHubImportDialog';
+import { DeleteProjectDialog } from './DeleteProjectDialog';
 import { NewProjectDialog } from './NewProjectDialog';
-import { ProjectCard } from './ProjectCard';
+import { ProjectCard, type ProjectDeletionState } from './ProjectCard';
 import { decodeThumbnail, revokeThumbnail } from './project-thumbnail';
 
 type ProjectPage = Awaited<ReturnType<ReturnType<typeof createControlPlaneClient>['listProjects']>>;
@@ -26,6 +25,21 @@ type ProjectSummaryPage = Awaited<
 type ProjectSummary = ProjectSummaryPage['summaries'][number];
 
 const PAGE_SIZE = 24;
+const DELETION_POLL_DELAYS_MS = [500, 1_000, 2_000] as const;
+const MAX_DELETION_POLLS = 30;
+
+interface DeletionDialogTarget {
+  readonly project: Project;
+  readonly returnFocusElement: HTMLButtonElement;
+}
+
+interface DeletionPollInput {
+  readonly attempt: number;
+  readonly generation: number;
+  readonly operationKey: string;
+  readonly organizationId: string;
+  readonly projectId: string;
+}
 
 interface RetryFailureProps {
   readonly description: string;
@@ -63,6 +77,8 @@ export function ProjectsDashboard(): ReactElement {
   const [thumbnailUrls, setThumbnailUrls] = useState<ReadonlyMap<string, string>>(new Map());
   const [summaryFailedIds, setSummaryFailedIds] = useState<ReadonlySet<string>>(new Set());
   const [summaryLoadingIds, setSummaryLoadingIds] = useState<ReadonlySet<string>>(new Set());
+  const [deletions, setDeletions] = useState<ReadonlyMap<string, ProjectDeletionState>>(new Map());
+  const [deletionDialogTarget, setDeletionDialogTarget] = useState<DeletionDialogTarget>();
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadingMoreRef = useRef(false);
   const activeOrganizationRef = useRef(organizationId);
@@ -70,6 +86,9 @@ export function ProjectsDashboard(): ReactElement {
   const paginationAbortRef = useRef<AbortController | undefined>(undefined);
   const summaryAbortControllersRef = useRef<Set<AbortController>>(new Set());
   const thumbnailUrlsRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const deletionControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const deletionTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const pollDeletionRef = useRef<(input: DeletionPollInput) => void>(() => undefined);
 
   activeOrganizationRef.current = organizationId;
 
@@ -87,12 +106,48 @@ export function ProjectsDashboard(): ReactElement {
     setThumbnailUrls(next);
   }, []);
 
+  const removeThumbnailUrl = useCallback((projectId: string): void => {
+    const previous = thumbnailUrlsRef.current.get(projectId);
+    if (previous !== undefined) revokeThumbnail(previous);
+    const next = new Map(thumbnailUrlsRef.current);
+    next.delete(projectId);
+    thumbnailUrlsRef.current = next;
+    setThumbnailUrls(next);
+  }, []);
+
+  const stopDeletionOperation = useCallback((projectId: string): void => {
+    deletionControllersRef.current.get(projectId)?.abort();
+    deletionControllersRef.current.delete(projectId);
+    const timer = deletionTimersRef.current.get(projectId);
+    if (timer !== undefined) clearTimeout(timer);
+    deletionTimersRef.current.delete(projectId);
+  }, []);
+
+  const clearDeletionOperations = useCallback((): void => {
+    for (const controller of deletionControllersRef.current.values()) controller.abort();
+    deletionControllersRef.current.clear();
+    for (const timer of deletionTimersRef.current.values()) clearTimeout(timer);
+    deletionTimersRef.current.clear();
+    setDeletions(new Map());
+    setDeletionDialogTarget(undefined);
+  }, []);
+
   useEffect(() => {
     if (session.snapshot.status !== 'ready') return;
     const selectedId = session.snapshot.membership.organization.id;
     activeOrganizationRef.current = selectedId;
     setOrganizationId((current) => current ?? selectedId);
   }, [session.snapshot]);
+
+  useEffect(() => {
+    clearDeletionOperations();
+    return () => {
+      for (const controller of deletionControllersRef.current.values()) controller.abort();
+      deletionControllersRef.current.clear();
+      for (const timer of deletionTimersRef.current.values()) clearTimeout(timer);
+      deletionTimersRef.current.clear();
+    };
+  }, [clearDeletionOperations, organizationId]);
 
   const clearGitHubCallback = useCallback((): void => {
     setGitHubCallback(undefined);
@@ -343,6 +398,310 @@ export function ProjectsDashboard(): ReactElement {
     };
   }, [loadNextPage, nextCursor]);
 
+  const removeDeletedProject = useCallback(
+    (projectId: string): void => {
+      stopDeletionOperation(projectId);
+      removeThumbnailUrl(projectId);
+      setProjects((current) => current.filter((item) => item.id !== projectId));
+      setSummaries((current) => {
+        const next = new Map(current);
+        next.delete(projectId);
+        return next;
+      });
+      setSummaryFailedIds((current) => {
+        const next = new Set(current);
+        next.delete(projectId);
+        return next;
+      });
+      setSummaryLoadingIds((current) => {
+        const next = new Set(current);
+        next.delete(projectId);
+        return next;
+      });
+      setDeletions((current) => {
+        const next = new Map(current);
+        next.delete(projectId);
+        return next;
+      });
+      setDeletionDialogTarget((current) =>
+        current?.project.id === projectId ? undefined : current,
+      );
+    },
+    [removeThumbnailUrl, stopDeletionOperation],
+  );
+
+  const deletionScopeIsCurrent = useCallback(
+    (requestedOrganization: string, generation: number): boolean =>
+      activeOrganizationRef.current === requestedOrganization &&
+      requestGenerationRef.current === generation,
+    [],
+  );
+
+  const scheduleDeletionPoll = useCallback(
+    (input: DeletionPollInput): void => {
+      if (!deletionScopeIsCurrent(input.organizationId, input.generation)) return;
+      const previous = deletionTimersRef.current.get(input.projectId);
+      if (previous !== undefined) clearTimeout(previous);
+      const delay =
+        DELETION_POLL_DELAYS_MS[Math.min(input.attempt, DELETION_POLL_DELAYS_MS.length - 1)] ??
+        DELETION_POLL_DELAYS_MS[DELETION_POLL_DELAYS_MS.length - 1];
+      const timer = setTimeout(() => {
+        if (deletionTimersRef.current.get(input.projectId) !== timer) return;
+        deletionTimersRef.current.delete(input.projectId);
+        pollDeletionRef.current(input);
+      }, delay);
+      deletionTimersRef.current.set(input.projectId, timer);
+    },
+    [deletionScopeIsCurrent],
+  );
+
+  const projectIsOmittedFromFreshList = useCallback(
+    async (
+      projectId: string,
+      requestedOrganization: string,
+      generation: number,
+      signal: AbortSignal,
+    ): Promise<boolean> => {
+      let cursor: string | undefined;
+      for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+        const page = await createControlPlaneClient(requestedOrganization).listProjects(
+          {
+            ...(cursor === undefined ? {} : { cursor }),
+            limit: 100,
+          },
+          signal,
+        );
+        if (
+          signal.aborted ||
+          !deletionScopeIsCurrent(requestedOrganization, generation) ||
+          page.items.some((item) => item.id === projectId)
+        ) {
+          return false;
+        }
+        if (page.nextCursor === null) return true;
+        cursor = page.nextCursor;
+      }
+      return false;
+    },
+    [deletionScopeIsCurrent],
+  );
+
+  const applyDeletionStatus = useCallback(
+    (
+      deletion: ProjectDeletionData,
+      input: Omit<DeletionPollInput, 'attempt'>,
+      nextAttempt: number,
+    ): void => {
+      if (!deletionScopeIsCurrent(input.organizationId, input.generation)) return;
+      if (deletion.status === 'completed') {
+        removeDeletedProject(input.projectId);
+        return;
+      }
+      if (deletion.status === 'failed') {
+        setDeletions((current) =>
+          new Map(current).set(input.projectId, {
+            message: 'The deletion worker reported a failure.',
+            operationKey: input.operationKey,
+            retryUsesSameKey: false,
+            status: 'failed',
+          }),
+        );
+        scheduleDeletionPoll({ ...input, attempt: nextAttempt });
+        return;
+      }
+      setDeletions((current) =>
+        new Map(current).set(input.projectId, {
+          operationKey: input.operationKey,
+          status: deletion.status === 'running' ? 'running' : 'queued',
+        }),
+      );
+      scheduleDeletionPoll({ ...input, attempt: nextAttempt });
+    },
+    [deletionScopeIsCurrent, removeDeletedProject, scheduleDeletionPoll],
+  );
+
+  const pollDeletion = useCallback(
+    async (input: DeletionPollInput): Promise<void> => {
+      if (!deletionScopeIsCurrent(input.organizationId, input.generation)) return;
+      if (input.attempt >= MAX_DELETION_POLLS) {
+        setDeletions((current) =>
+          new Map(current).set(input.projectId, {
+            message: 'Deletion status timed out. Retry to reconcile the existing request.',
+            operationKey: input.operationKey,
+            status: 'reconciling',
+          }),
+        );
+        return;
+      }
+
+      const controller = new AbortController();
+      deletionControllersRef.current.set(input.projectId, controller);
+      try {
+        const response = await createControlPlaneClient(input.organizationId).getProjectDeletion(
+          input.projectId,
+          controller.signal,
+        );
+        if (
+          controller.signal.aborted ||
+          deletionControllersRef.current.get(input.projectId) !== controller ||
+          !deletionScopeIsCurrent(input.organizationId, input.generation)
+        ) {
+          return;
+        }
+        deletionControllersRef.current.delete(input.projectId);
+        applyDeletionStatus(response.deletion, input, input.attempt + 1);
+      } catch (error) {
+        if (
+          controller.signal.aborted ||
+          deletionControllersRef.current.get(input.projectId) !== controller ||
+          !deletionScopeIsCurrent(input.organizationId, input.generation)
+        ) {
+          return;
+        }
+        if (error instanceof ZappApiError && error.status === 404) {
+          const omitted = await projectIsOmittedFromFreshList(
+            input.projectId,
+            input.organizationId,
+            input.generation,
+            controller.signal,
+          ).catch(() => false);
+          if (omitted && deletionScopeIsCurrent(input.organizationId, input.generation)) {
+            removeDeletedProject(input.projectId);
+            return;
+          }
+        }
+        if (deletionControllersRef.current.get(input.projectId) !== controller) return;
+        deletionControllersRef.current.delete(input.projectId);
+        scheduleDeletionPoll({ ...input, attempt: input.attempt + 1 });
+      }
+    },
+    [
+      applyDeletionStatus,
+      deletionScopeIsCurrent,
+      projectIsOmittedFromFreshList,
+      removeDeletedProject,
+      scheduleDeletionPoll,
+    ],
+  );
+
+  pollDeletionRef.current = (input): void => {
+    void pollDeletion(input);
+  };
+
+  const requestProjectDeletion = useCallback(
+    async (
+      project: Project,
+      operationKey: string,
+      reconciliationKey = operationKey,
+    ): Promise<void> => {
+      const requestedOrganization = project.organizationId;
+      const generation = requestGenerationRef.current;
+      stopDeletionOperation(project.id);
+      const controller = new AbortController();
+      deletionControllersRef.current.set(project.id, controller);
+      setDeletions((current) =>
+        new Map(current).set(project.id, { operationKey, status: 'requesting' }),
+      );
+      try {
+        const response = await createControlPlaneClient(requestedOrganization).deleteProject(
+          project.id,
+          operationKey,
+          controller.signal,
+        );
+        if (
+          controller.signal.aborted ||
+          deletionControllersRef.current.get(project.id) !== controller ||
+          !deletionScopeIsCurrent(requestedOrganization, generation)
+        ) {
+          return;
+        }
+        deletionControllersRef.current.delete(project.id);
+        applyDeletionStatus(
+          response.deletion,
+          {
+            generation,
+            operationKey,
+            organizationId: requestedOrganization,
+            projectId: project.id,
+          },
+          0,
+        );
+      } catch (error) {
+        if (
+          controller.signal.aborted ||
+          deletionControllersRef.current.get(project.id) !== controller ||
+          !deletionScopeIsCurrent(requestedOrganization, generation)
+        ) {
+          return;
+        }
+        deletionControllersRef.current.delete(project.id);
+        if (error instanceof ZappApiError && error.status === 409) {
+          setDeletions((current) =>
+            new Map(current).set(project.id, {
+              operationKey: reconciliationKey,
+              status: 'queued',
+            }),
+          );
+          scheduleDeletionPoll({
+            attempt: 0,
+            generation,
+            operationKey: reconciliationKey,
+            organizationId: requestedOrganization,
+            projectId: project.id,
+          });
+          return;
+        }
+        setDeletions((current) =>
+          new Map(current).set(project.id, {
+            message: 'The request outcome could not be confirmed.',
+            operationKey,
+            status: 'reconciling',
+          }),
+        );
+      }
+    },
+    [applyDeletionStatus, deletionScopeIsCurrent, scheduleDeletionPoll, stopDeletionOperation],
+  );
+
+  const beginDelete = useCallback(
+    (project: Project, returnFocusElement: HTMLButtonElement): void => {
+      setDeletionDialogTarget({ project, returnFocusElement });
+      setDeletions((current) => new Map(current).set(project.id, { status: 'confirming' }));
+    },
+    [],
+  );
+
+  const cancelDelete = useCallback((): void => {
+    const projectId = deletionDialogTarget?.project.id;
+    if (projectId === undefined) return;
+    setDeletions((current) => {
+      const next = new Map(current);
+      if (next.get(projectId)?.status === 'confirming') next.delete(projectId);
+      return next;
+    });
+  }, [deletionDialogTarget]);
+
+  const confirmDelete = useCallback((): void => {
+    const project = deletionDialogTarget?.project;
+    if (project === undefined) return;
+    void requestProjectDeletion(project, crypto.randomUUID());
+  }, [deletionDialogTarget, requestProjectDeletion]);
+
+  const retryDelete = useCallback(
+    (project: Project): void => {
+      const state = deletions.get(project.id);
+      if (state?.status !== 'failed' && state?.status !== 'reconciling') return;
+      void requestProjectDeletion(
+        project,
+        state.status === 'reconciling' || state.retryUsesSameKey
+          ? state.operationKey
+          : crypto.randomUUID(),
+        state.operationKey,
+      );
+    },
+    [deletions, requestProjectDeletion],
+  );
+
   if (session.snapshot.status === 'error') {
     return (
       <main className={styles.dashboard}>
@@ -401,6 +760,7 @@ export function ProjectsDashboard(): ReactElement {
   const switchOrganization = (selectedId: string): void => {
     localStorage.setItem(appSessionStorageKey(readySession.profile.user.id), selectedId);
     requestGenerationRef.current += 1;
+    clearDeletionOperations();
     paginationAbortRef.current?.abort();
     paginationAbortRef.current = undefined;
     for (const summaryController of summaryAbortControllersRef.current) summaryController.abort();
@@ -432,71 +792,95 @@ export function ProjectsDashboard(): ReactElement {
       recentProjects={projects}
       session={shellSession}
     >
-    <div className={styles.dashboard}>
-      <header className={styles.header}>
-        <div>
-          <p className={styles.eyebrow}>Workspace</p>
-          <h1>Projects</h1>
-        </div>
-        <div className={styles.headerActions}>
-          <Link className={styles.templateLink} href="/templates">Browse templates</Link>
-          <GitHubImportDialog
-            callback={githubCallback}
-            onCallbackConsumed={clearGitHubCallback}
-            onOpenChange={setGitHubImportOpen}
-            open={githubImportOpen}
-            organizationId={organizationId}
-          />
-          <NewProjectDialog allowedModels={allowedModels} organizationId={organizationId} />
-        </div>
-      </header>
-
-      {projectsFailed ? (
-        <RetryFailure
-          description="The tenant-scoped project list request did not complete."
-          onRetry={() => {
-            setProjectsAttempt((value) => value + 1);
-          }}
-          title="We could not load projects."
-        />
-      ) : projectsLoading ? (
-        <p aria-live="polite" className={styles.loading} role="status">
-          Loading projects…
-        </p>
-      ) : projects.length === 0 && nextCursor === null ? (
-        <EmptyState
-          className={styles.emptyState}
-          description="Start from a prompt and zapp will create the project and its first build."
-          title="No projects yet"
-        >
-          <NewProjectDialog allowedModels={allowedModels} organizationId={organizationId} />
-        </EmptyState>
-      ) : (
-        <section aria-label="Projects" className={styles.grid}>
-          {projects.map((projectItem) => (
-            <ProjectCard
-              key={projectItem.id}
-              loadingSummary={summaryLoadingIds.has(projectItem.id)}
-              onRetrySummary={() => {
-                void loadSummaries([projectItem.id], organizationId, requestGenerationRef.current);
-              }}
-              project={projectItem}
-              summary={summaries.get(projectItem.id)}
-              summaryFailed={summaryFailedIds.has(projectItem.id)}
-              thumbnailUrl={thumbnailUrls.get(projectItem.id)}
+      <div className={styles.dashboard}>
+        <header className={styles.header}>
+          <div>
+            <p className={styles.eyebrow}>Workspace</p>
+            <h1>Projects</h1>
+          </div>
+          <div className={styles.headerActions}>
+            <Link className={styles.templateLink} href="/templates">
+              Browse templates
+            </Link>
+            <GitHubImportDialog
+              callback={githubCallback}
+              onCallbackConsumed={clearGitHubCallback}
+              onOpenChange={setGitHubImportOpen}
+              open={githubImportOpen}
+              organizationId={organizationId}
             />
-          ))}
-        </section>
-      )}
-      {nextCursor === undefined || nextCursor === null ? null : (
-        <div aria-hidden="true" className={styles.sentinel} ref={sentinelRef} />
-      )}
-      {loadingMore ? (
-        <p aria-live="polite" className={styles.paginationStatus} role="status">
-          Loading more projects…
-        </p>
-      ) : null}
-    </div>
+            <NewProjectDialog allowedModels={allowedModels} organizationId={organizationId} />
+          </div>
+        </header>
+
+        {projectsFailed ? (
+          <RetryFailure
+            description="The tenant-scoped project list request did not complete."
+            onRetry={() => {
+              setProjectsAttempt((value) => value + 1);
+            }}
+            title="We could not load projects."
+          />
+        ) : projectsLoading ? (
+          <p aria-live="polite" className={styles.loading} role="status">
+            Loading projects…
+          </p>
+        ) : projects.length === 0 && nextCursor === null ? (
+          <EmptyState
+            className={styles.emptyState}
+            description="Start from a prompt and zapp will create the project and its first build."
+            title="No projects yet"
+          >
+            <NewProjectDialog allowedModels={allowedModels} organizationId={organizationId} />
+          </EmptyState>
+        ) : (
+          <section aria-label="Projects" className={styles.grid}>
+            {projects.map((projectItem) => (
+              <ProjectCard
+                canDelete={selectedMembership.role === 'owner'}
+                deletionState={deletions.get(projectItem.id) ?? { status: 'idle' }}
+                key={projectItem.id}
+                loadingSummary={summaryLoadingIds.has(projectItem.id)}
+                onDelete={(returnFocusElement) => {
+                  beginDelete(projectItem, returnFocusElement);
+                }}
+                onRetryDelete={() => {
+                  retryDelete(projectItem);
+                }}
+                onRetrySummary={() => {
+                  void loadSummaries(
+                    [projectItem.id],
+                    organizationId,
+                    requestGenerationRef.current,
+                  );
+                }}
+                project={projectItem}
+                summary={summaries.get(projectItem.id)}
+                summaryFailed={summaryFailedIds.has(projectItem.id)}
+                thumbnailUrl={thumbnailUrls.get(projectItem.id)}
+              />
+            ))}
+          </section>
+        )}
+        {deletionDialogTarget === undefined ? null : (
+          <DeleteProjectDialog
+            busy={deletions.get(deletionDialogTarget.project.id)?.status === 'requesting'}
+            onCancel={cancelDelete}
+            onConfirm={confirmDelete}
+            open={deletions.get(deletionDialogTarget.project.id)?.status === 'confirming'}
+            projectName={deletionDialogTarget.project.name}
+            returnFocusElement={deletionDialogTarget.returnFocusElement}
+          />
+        )}
+        {nextCursor === undefined || nextCursor === null ? null : (
+          <div aria-hidden="true" className={styles.sentinel} ref={sentinelRef} />
+        )}
+        {loadingMore ? (
+          <p aria-live="polite" className={styles.paginationStatus} role="status">
+            Loading more projects…
+          </p>
+        ) : null}
+      </div>
     </AppShell>
   );
 }

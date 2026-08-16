@@ -4,7 +4,7 @@
 
 **Goal:** Let project Owners safely delete any project from its dashboard card while showing the existing asynchronous deletion lifecycle truthfully.
 
-**Architecture:** Reuse the existing owner-only `/v1` deletion request and status API. Keep network and polling state in `ProjectsDashboard`, confirmation content in a focused dialog, and presentation/disabled state in `ProjectCard`; remove a card only after the server reports completion or the tenant-scoped list no longer contains it.
+**Architecture:** Reuse the existing owner-only `/v1` deletion request and status API, extending its failed-row contract so an explicit retry can safely claim a fresh key under a tenant-scoped lock. Keep network and polling state in `ProjectsDashboard`, confirmation content in a focused dialog, and presentation/disabled state in `ProjectCard`; remove a card only after the server reports completion or the tenant-scoped list no longer contains it.
 
 **Tech Stack:** TypeScript 5.6, generated `@zapp/api-client`, Next.js 15, React 19, `@zapp/ui`, Playwright.
 
@@ -30,6 +30,8 @@
 - Modify: `apps/web/src/components/projects/ProjectsDashboard.tsx`
 - Modify: `apps/web/src/components/projects/projects.module.css`
 - Test: `apps/web/e2e/projects.spec.ts`
+- Modify: `services/control-api/src/jobs/deletion.ts`
+- Test: `services/control-api/test/deletion.test.ts`
 - Modify: `docs/plans/08-web-ux.md`
 - Modify: `tasks/todo.md`
 
@@ -37,13 +39,13 @@
 - Consumes: existing `deleteProject(projectId, key)`, public `GET /v1/projects/:projectId/deletion`, ready session membership role, project-card thumbnail cleanup helpers.
 - Produces: `DeleteProjectDialog`, per-project `ProjectDeletionState`, Owner-only card overflow action, bounded deletion polling.
 
-- [ ] **Step 1: Write failing Owner/RBAC/confirmation Playwright tests**
+- [x] **Step 1: Write failing Owner/RBAC/confirmation Playwright tests**
 
 ```ts
 test('Owner deletes one project card through the asynchronous public lifecycle', async ({ page }) => {
   await openProjectsAs(page, 'Owner');
   await page.getByRole('button', { name: 'Project actions for Alpha Portal' }).click();
-  await page.getByRole('menuitem', { name: 'Delete project' }).click();
+  await page.getByRole('button', { name: 'Delete project' }).click();
   await expect(page.getByRole('button', { name: 'Delete Alpha Portal' })).toBeDisabled();
   await page.getByLabel('Project name').fill('Alpha Portal');
   await page.getByRole('button', { name: 'Delete Alpha Portal' }).click();
@@ -59,13 +61,13 @@ test('Builder and Viewer do not receive project deletion actions', async ({ page
 
 Add assertions for request organization/CSRF/idempotency headers, queued→running polling without duplicate timers, failed→Retry with a new key, other cards remaining usable, and organization-switch abort fencing.
 
-- [ ] **Step 2: Run focused project tests to verify RED**
+- [x] **Step 2: Run focused project tests to verify RED**
 
 Run: `pnpm --filter @zapp/web exec playwright test e2e/projects.spec.ts --grep "delete|deletion"`
 
 Expected: FAIL because project cards have no deletion action or lifecycle state.
 
-- [ ] **Step 3: Add the typed status wrapper and confirmation dialog**
+- [x] **Step 3: Add the typed status wrapper and confirmation dialog**
 
 ```ts
 export type ProjectDeletionState =
@@ -73,12 +75,13 @@ export type ProjectDeletionState =
   | { readonly status: 'confirming' }
   | { readonly status: 'requesting'; readonly operationKey: string }
   | { readonly status: 'queued' | 'running'; readonly operationKey: string }
+  | { readonly status: 'reconciling'; readonly operationKey: string; readonly message: string }
   | { readonly status: 'failed'; readonly message: string };
 ```
 
 `DeleteProjectDialog` receives `{ projectName, open, busy, error, onCancel, onConfirm }`, owns the controlled exact-name field, resets it on close/project change, uses `role="dialog"`/`aria-modal="true"`, and returns focus to the card action trigger.
 
-- [ ] **Step 4: Wire Owner-only card actions and dashboard orchestration**
+- [x] **Step 4: Wire Owner-only card actions and dashboard orchestration**
 
 ```tsx
 <ProjectCard
@@ -90,25 +93,25 @@ export type ProjectDeletionState =
 />
 ```
 
-On confirmation, call the existing DELETE route with a stable key, set the accepted server status, and poll status at bounded 500 ms → 1 s → 2 s intervals. On completion, revoke/remove only the target thumbnail, summary, error, loading, and project entries. Abort all timers/controllers and clear deletion state when the organization generation changes.
+On confirmation, call the existing DELETE route with a stable key, set the accepted server status, and poll status at bounded 500 ms → 1 s → 2 s intervals. Continue reconciling an explicit worker failure because the worker may recover automatically; allow a fresh-key retry only while the row is still failed. On completion, revoke/remove only the target thumbnail, summary, error, loading, and project entries. Abort all timers/controllers and clear deletion state when the organization generation changes.
 
-- [ ] **Step 5: Run project suite to verify GREEN**
+- [x] **Step 5: Run project suite to verify GREEN**
 
 Run: `pnpm --filter @zapp/web exec playwright test e2e/projects.spec.ts`
 
 Expected: all dashboard pagination, import, thumbnail, summary retry, and deletion tests pass.
 
-- [ ] **Step 6: Run web gates**
+- [x] **Step 6: Run web gates**
 
 Run: `pnpm --filter @zapp/web lint && pnpm --filter @zapp/web typecheck && pnpm --filter @zapp/web build && git diff --check`
 
 Expected: lint, typecheck, production build, and whitespace checks pass.
 
-- [ ] **Step 7: Record and commit WEB-20**
+- [x] **Step 7: Record and commit WEB-20**
 
 Append the WEB-20 execution-log line, check WEB-20 in `tasks/todo.md`, and commit:
 
 ```bash
-git add apps/web/src/lib/api.ts apps/web/src/components/projects apps/web/e2e/projects.spec.ts docs/plans/08-web-ux.md tasks/todo.md
+git add apps/web/src/lib/api.ts apps/web/src/components/projects apps/web/e2e/projects.spec.ts services/control-api/src/jobs/deletion.ts services/control-api/test/deletion.test.ts docs/plans/08-web-ux.md tasks/todo.md
 git commit -m "feat(web): add project-card deletion"
 ```
