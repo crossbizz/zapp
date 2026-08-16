@@ -48,8 +48,9 @@ describe('VF-11 Playwright browser-agent driver', () => {
 
   afterAll(async () => {
     driver.dispose();
+    await page.close({ runBeforeUnload: false });
     await browser.close();
-  });
+  }, 30_000);
 
   it('drives DOM and accessibility primitives through opaque interactive refs', async () => {
     const accessibility = AccessibilitySnapshotResultSchema.parse(
