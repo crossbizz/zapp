@@ -84,7 +84,7 @@ export function TopBar({
   return (
     <div aria-label="Project editor" className="zapp-builder-top-bar" role="region">
       <div className="zapp-builder-project-identity">
-        <Link aria-label="zapp.build home" className="zapp-builder-home-link" href="/">
+        <Link aria-label="zapp.build home" className="zapp-builder-home-link" href="/dashboard">
           <span aria-hidden="true">z</span>
         </Link>
         <span aria-hidden="true" className="zapp-builder-header-divider" />

@@ -81,7 +81,7 @@ void describe('product shell navigation', () => {
 
   void it('keeps viewer destinations read-only and public-API-backed', () => {
     assert.deepEqual(shellDestinations('viewer'), [
-      { href: '/', icon: 'dashboard', label: 'Dashboard' },
+      { href: '/dashboard', icon: 'dashboard', label: 'Dashboard' },
       { href: '/projects', icon: 'projects', label: 'Projects' },
       { href: '/templates', icon: 'templates', label: 'Templates' },
       { href: '/org/usage', icon: 'usage', label: 'Usage' },

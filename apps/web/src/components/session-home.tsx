@@ -81,7 +81,7 @@ export function SessionHome(): ReactElement {
   const organizationId = readySession.membership.organization.id;
   const shell = (children: ReactElement): ReactElement => (
     <AppShell
-      activePath="/"
+      activePath="/dashboard"
       invalidOrganization={readySession.invalidOrganization}
       onSignOut={() => session.signOut(organizationId)}
       onSwitchOrganization={session.switchOrganization}

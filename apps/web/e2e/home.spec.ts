@@ -44,9 +44,9 @@ const projectFixture = {
     createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
     description: null,
     id: 'proj-home',
-    name: 'Build a customer support portal',
+    name: 'Customer Support Portal',
     organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
-    slug: 'build-a-customer-support-portal',
+    slug: 'customer-support-portal',
     sourceType: 'prompt',
     supportLevel: 'compatible',
   },
@@ -769,7 +769,7 @@ test('defaults Auto to web without model and hands the first prompt to the real 
   const runRequest = observed.runRequests[0];
   expect(projectRequest?.method).toBe('POST');
   expect(projectRequest?.body).toEqual({
-    name: 'Build a customer support portal',
+    name: 'Customer Support Portal',
     sourceType: 'prompt',
   });
   expect(runRequest?.method).toBe('POST');
@@ -836,6 +836,58 @@ test('uses the Auto heuristic and lets an explicit mode win', async ({ page }) =
     mode: 'ask',
     prompt: 'I have an idea for a garden planning app',
   });
+});
+
+test('renders the canonical dashboard composer with the approved neutral focus rhythm', async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.goto('/dashboard');
+
+  const composer = page.getByRole('textbox', { name: 'Describe your project' });
+  await expect(composer).toBeVisible();
+  await composer.focus();
+
+  await expect
+    .poll(async () => {
+      return await composer.evaluate((element) => {
+        const style = window.getComputedStyle(element);
+        return {
+          boxShadow: style.boxShadow,
+          paddingBottom: style.paddingBottom,
+          paddingLeft: style.paddingLeft,
+          paddingRight: style.paddingRight,
+          paddingTop: style.paddingTop,
+        };
+      });
+    })
+    .toEqual({
+      boxShadow: 'none',
+      paddingBottom: '12px',
+      paddingLeft: '24px',
+      paddingRight: '24px',
+      paddingTop: '20px',
+    });
+
+  const actions = page.getByTestId('project-composer-actions');
+  await expect
+    .poll(async () => {
+      return await actions.evaluate((element) => {
+        const style = window.getComputedStyle(element);
+        return {
+          paddingBottom: style.paddingBottom,
+          paddingLeft: style.paddingLeft,
+          paddingRight: style.paddingRight,
+          paddingTop: style.paddingTop,
+        };
+      });
+    })
+    .toEqual({
+      paddingBottom: '16px',
+      paddingLeft: '20px',
+      paddingRight: '20px',
+      paddingTop: '4px',
+    });
 });
 
 test('matches Auto exploratory terms as words instead of prompt fragments', async ({ page }) => {

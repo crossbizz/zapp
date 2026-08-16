@@ -534,6 +534,16 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - [x] Add ordered, deduplicated, closeable open-file tabs plus truthful reference-in-chat, copy-content, and download actions for the selected file; references render as removable composer chips and enter the next message context.
 - [x] Prove API tenant headers, all-role read-only behavior, tab behavior, file actions, chat context handoff, syntax rendering, accessibility, full builder regression coverage, and visual parity. Commit: `feat(web): add Lovable-parity code editor`
 
+### Task WEB-22 [M6]: Lovable-parity dashboard project creation
+
+**Files:** Modify the authenticated home/dashboard route, prompt title derivation and composer styles, project creation entry points/cards, shell navigation, focused Node/Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-dashboard-project-creation-parity.md`.
+**Effort:** M. **[expand-at-execution]**
+
+- [x] Generate deterministic, meaningful project titles capped at three to four words while preserving the full first prompt for the run.
+- [x] Make `/dashboard` the canonical project-creation surface and route every **New project** entry point there instead of opening a duplicate modal.
+- [x] Remove non-actionable support-level badges from the project UI and match the approved prompt composer focus, padding, and action-row rhythm without weakening keyboard accessibility.
+- [x] Prove title derivation, navigation, badge absence, composer focus/rhythm, and existing creation behavior in focused and full web suites. Commit: `feat(web): polish dashboard project creation`
+
 ---
 
 ## Testing strategy
@@ -547,6 +557,7 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 ## Execution log
 
+- 2026-08-16 WEB-22 done — Added deterministic three-to-four-word project titles while preserving the full builder prompt, made `/dashboard` the canonical creation route, removed non-actionable support badges, matched the Lovable-style neutral composer rhythm, and passed 51/51 web Node tests, 163/163 browser tests, the production build, and the complete 94/94-task repository gate; credential-dependent integration cases skipped visibly as designed.
 - 2026-08-16 WEB-18-FIX-21 done — Stopped Docker containers no longer masquerade as live workspaces, provider resources are cleaned before durable attachment reconciliation, and Preview recovers from boot-log failure through the current branch; 13/13 focused sandbox tests, the preview-disappearance browser regression, affected lint/typecheck, and the complete 94/94-task repository gate passed.
 - 2026-08-16 WEB-21 done — Replaced the plain source view with a read-only CodeMirror 6 editor, Lovable-density tabs and darker compact semantic file icons, reference-in-chat context, polished conversation typography and localized timestamps, and removed the non-actionable builder Compatible badge; Builder/Viewer read-only checks, one-copy context handoff, 45/45 web Node tests, 160/160 browser tests, the production build, and the complete 94/94-task repository gate passed, while live-provider checks skipped visibly without credentials.
 - 2026-08-16 WEB-19-FIX-1 done — Forwarded the selected run's merged durable and live events to Preview so terminal projects recover their workspace after reload; the TDD regression failed before and passed after, and the complete web and repository gates passed.

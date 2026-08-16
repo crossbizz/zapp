@@ -14,7 +14,7 @@ export function TemplateGallery(): ReactElement {
   return (
     <main className={styles.page}>
       <PageFrame
-        actions={<Link href="/">Back home</Link>}
+        actions={<Link href="/dashboard">Back home</Link>}
         description="Start with a proven foundation, then remix it into your own product."
         eyebrow="Start faster"
         title="Templates"

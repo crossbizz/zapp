@@ -13,7 +13,7 @@ import styles from './shell.module.css';
 
 function Brand(): ReactElement {
   return (
-    <Link aria-label="zapp.build dashboard" className={styles.brand} href="/">
+    <Link aria-label="zapp.build dashboard" className={styles.brand} href="/dashboard">
       <span aria-hidden="true" className={styles.brandMark}>z</span>
       <span className={styles.brandName}>zapp.build</span>
     </Link>
@@ -86,9 +86,8 @@ export function Sidebar({
 
       <nav aria-label="Primary" className={styles.primaryNavigation}>
         {shellDestinations(membership.role).map((destination) => {
-          const active = destination.href === '/'
-            ? activePath === '/'
-            : activePath === destination.href || activePath.startsWith(`${destination.href}/`);
+          const active =
+            activePath === destination.href || activePath.startsWith(`${destination.href}/`);
           return (
             <Link
               aria-current={active ? 'page' : undefined}

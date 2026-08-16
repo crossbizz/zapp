@@ -161,6 +161,12 @@
   margin-top: 0.75rem;
   padding: 0;
   overflow: visible;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.composerCard:focus-within {
+  border-color: var(--zapp-border);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--zapp-text-secondary) 14%, transparent), var(--zapp-shadow-card);
 }
 
 .selectionChips {
@@ -169,6 +175,10 @@
   flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.75rem 1rem 0;
+}
+
+.selectionChips:empty {
+  display: none;
 }
 
 .selectionChip {
@@ -187,7 +197,7 @@
   width: 100%;
   resize: none;
   border: 0;
-  padding: 1rem;
+  padding: 1.25rem 1.5rem 0.75rem;
   color: var(--zapp-text-primary);
   background: var(--zapp-surface-raised);
   font: inherit;
@@ -200,15 +210,11 @@
   color: var(--zapp-text-muted);
 }
 
-.composerTextarea:focus-visible {
-  box-shadow: inset 0 0 0 3px var(--zapp-focus);
-}
-
 .composerActions {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0 1rem 1rem;
+  padding: 0.25rem 1.25rem 1rem;
 }
 
 .composerActionSpacer {

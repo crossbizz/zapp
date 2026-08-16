@@ -14,6 +14,7 @@ import {
 
 import { createControlPlaneClient, type CreateRunInput } from '../../lib/api';
 import { captureProjectCreated } from '../../lib/activation';
+import { deriveProjectTitle } from '../../lib/project-title';
 import { rememberFirstPrompt } from '../../lib/prompt-handoff';
 import styles from './home.module.css';
 
@@ -76,14 +77,6 @@ interface SpeechWindow extends Window {
 function recommendedMode(prompt: string): RunMode {
   const normalized = prompt.toLocaleLowerCase('en-US');
   return EXPLORATORY_PATTERN.test(normalized) ? 'prototype' : 'build';
-}
-
-function projectName(prompt: string): string {
-  return prompt
-    .trim()
-    .replace(/\s+/gu, ' ')
-    .replace(/[.!?]+$/gu, '')
-    .slice(0, 80);
 }
 
 function renderedTextareaRows(textarea: HTMLTextAreaElement): number {
@@ -187,7 +180,7 @@ export function PromptComposer({
           appType,
           ...(selectedModel === undefined ? {} : { model: selectedModel }),
           projectBody: {
-            name: projectName(trimmedPrompt),
+            name: deriveProjectTitle(trimmedPrompt),
             sourceType: 'prompt',
           },
           projectIdempotencyKey: crypto.randomUUID(),
@@ -300,7 +293,7 @@ export function PromptComposer({
           rows={textareaRowCount}
           value={prompt}
         />
-        <div className={styles.composerActions}>
+        <div className={styles.composerActions} data-testid="project-composer-actions">
           <IconButton
             aria-expanded={attachmentMenuOpen}
             label="Add attachment or controls"

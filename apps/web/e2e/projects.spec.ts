@@ -255,7 +255,10 @@ test('switches active organizations and renders only API-backed project card fie
   await expect(
     page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Projects' }),
   ).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByRole('button', { name: 'New project' }).first()).toBeVisible();
+  await expect(page.getByRole('link', { name: 'New project' }).first()).toHaveAttribute(
+    'href',
+    '/dashboard',
+  );
   await expect(page.getByRole('button', { name: 'Import from GitHub' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Browse templates' })).toHaveAttribute(
     'href',
@@ -263,7 +266,7 @@ test('switches active organizations and renders only API-backed project card fie
   );
   await expect(page.getByRole('heading', { name: 'Alpha Portal' })).toBeVisible();
   await expect(page.getByLabel('Preview unavailable for Alpha Portal')).toBeVisible();
-  await expect(page.getByText('Verified')).toBeVisible();
+  await expect(page.getByText('Verified')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Open Alpha Portal' })).toHaveAttribute(
     'href',
     '/projects/alpha-portal',
@@ -275,7 +278,7 @@ test('switches active organizations and renders only API-backed project card fie
     .selectOption('org_01K27Q9C2W85CMN1V9S6Q3D4FE');
 
   await expect(page.getByRole('heading', { name: 'Beta Console' })).toBeVisible();
-  await expect(page.getByText('Managed')).toBeVisible();
+  await expect(page.getByText('Managed')).toHaveCount(0);
   await expect(page.getByText('Alpha Portal')).toHaveCount(0);
   await expect
     .poll(async () => {
@@ -814,7 +817,7 @@ test('ignores stale Alpha pagination across an Alpha to Beta to Alpha switch', a
   ]);
 });
 
-test('shows a truthful empty state and reuses the WEB-3 composer in the new-project dialog', async ({
+test('shows a truthful empty state and routes project creation to the canonical dashboard', async ({
   page,
 }) => {
   await page.route(new RegExp(`^${apiBaseUrl}/v1/projects(?:\\?.*)?$`, 'u'), async (route) => {
@@ -829,17 +832,16 @@ test('shows a truthful empty state and reuses the WEB-3 composer in the new-proj
   await page.goto('/projects');
 
   await expect(page.getByRole('heading', { name: 'No projects yet' })).toBeVisible();
-  await page.getByRole('button', { name: 'New project' }).first().click();
+  await page.getByRole('link', { name: 'New project' }).first().click();
 
-  const dialog = page.getByRole('dialog', { name: 'Create a new project' });
-  await expect(dialog).toBeVisible();
-  const composer = dialog.getByRole('textbox', { name: 'Describe your project' });
-  const submit = dialog.getByRole('button', { name: 'Create project' });
+  await expect(page).toHaveURL('/dashboard');
+  const composer = page.getByRole('textbox', { name: 'Describe your project' });
+  const submit = page.getByRole('button', { name: 'Create project' });
   await expect(submit).toBeDisabled();
   await composer.fill('Build an agency client portal');
   await expect(submit).toBeEnabled();
-  await dialog.getByRole('button', { name: 'Add attachment or controls' }).click();
-  await expect(dialog.getByRole('link', { name: 'Import from GitHub' })).toHaveAttribute(
+  await page.getByRole('button', { name: 'Add attachment or controls' }).click();
+  await expect(page.getByRole('link', { name: 'Import from GitHub' })).toHaveAttribute(
     'href',
     '/projects?import=github',
   );
@@ -1131,7 +1133,7 @@ test('preserves base cards when summaries fail and retries only the failed summa
   await page.goto('/projects');
 
   const card = page.getByRole('article').filter({ hasText: 'Alpha Retry' });
-  await expect(card.getByText('Verified')).toBeVisible();
+  await expect(card.getByText('Verified')).toHaveCount(0);
   await expect(card.getByRole('link', { name: 'Open Alpha Retry' })).toBeVisible();
   await expect(card.getByRole('alert')).toContainText('Project details could not load.');
   await card.getByRole('button', { name: 'Retry project details' }).click();

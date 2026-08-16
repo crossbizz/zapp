@@ -228,7 +228,7 @@ test('takes one signed-in user through the real public API from prompt to deploy
   ).toMatchObject({ method: 'POST' });
   expect(status.requests.find(({ method, path }) => method === 'POST' && path === '/v1/projects')).toMatchObject({
     body: {
-      name: 'Build a friendly appointment scheduler for neighborhood clinics',
+      name: 'Friendly Appointment Scheduler',
       sourceType: 'prompt',
     },
     method: 'POST',

@@ -1,6 +1,6 @@
 'use client';
 
-import { Button, Card, SupportLevelBadge } from '@zapp/ui';
+import { Button, Card } from '@zapp/ui';
 import Link from 'next/link';
 import { useRef, useState, type ReactElement } from 'react';
 
@@ -106,7 +106,6 @@ export function ProjectCard({
       ) : null}
       <ProjectThumbnail alt={view.thumbnail?.alt} name={view.name} url={thumbnailUrl} />
       <h2>{project.name}</h2>
-      <SupportLevelBadge level={project.supportLevel} />
 
       {summaryFailed ? (
         <div className={styles.summaryFailure} role="alert">

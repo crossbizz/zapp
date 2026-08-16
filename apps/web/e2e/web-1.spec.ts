@@ -53,7 +53,10 @@ test('renders the authenticated product navigation around the prompt dashboard',
   await signIn(page);
 
   const navigation = page.getByRole('navigation', { name: 'Primary' });
-  await expect(navigation.getByRole('link', { name: 'Dashboard' })).toHaveAttribute('href', '/');
+  await expect(navigation.getByRole('link', { name: 'Dashboard' })).toHaveAttribute(
+    'href',
+    '/dashboard',
+  );
   await expect(navigation.getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects');
   await expect(navigation.getByRole('link', { name: 'Templates' })).toHaveAttribute('href', '/templates');
   await expect(navigation.getByRole('link', { name: 'Usage' })).toHaveAttribute('href', '/org/usage');
@@ -62,6 +65,17 @@ test('renders the authenticated product navigation around the prompt dashboard',
     'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
   );
   await expect(page.getByRole('textbox', { name: 'Describe your project' })).toBeVisible();
+});
+
+test('renders the authenticated creation surface at the canonical dashboard route', async ({ page }) => {
+  await signIn(page);
+  await page.goto('/dashboard');
+
+  await expect(page).toHaveURL('/dashboard');
+  await expect(page.getByRole('textbox', { name: 'Describe your project' })).toBeVisible();
+  await expect(
+    page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Dashboard' }),
+  ).toHaveAttribute('aria-current', 'page');
 });
 
 test('redirects unauthenticated requests to login', async ({ page }) => {

@@ -55,7 +55,7 @@ export function AppShell({
       )}
       {compactible && !immersive ? (
         <header className={styles.mobileHeader}>
-          <Link aria-label="zapp.build dashboard" className={styles.mobileBrand} href="/">
+          <Link aria-label="zapp.build dashboard" className={styles.mobileBrand} href="/dashboard">
             <span aria-hidden="true" className={styles.brandMark}>
               z
             </span>

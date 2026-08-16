@@ -13,7 +13,7 @@ import { AppShell } from '../shell/AppShell';
 import styles from './projects.module.css';
 import { GitHubImportDialog, type GitHubInstallCallback } from './GitHubImportDialog';
 import { DeleteProjectDialog } from './DeleteProjectDialog';
-import { NewProjectDialog } from './NewProjectDialog';
+import { NewProjectLink } from './NewProjectLink';
 import { ProjectCard, type ProjectDeletionState } from './ProjectCard';
 import { decodeThumbnail, revokeThumbnail } from './project-thumbnail';
 
@@ -751,7 +751,6 @@ export function ProjectsDashboard(): ReactElement {
   if (selectedMembership === undefined) {
     return <main className={styles.dashboard}>Loading projects…</main>;
   }
-  const allowedModels = selectedMembership.allowedModels;
   const shellSession: ReadyAppSession = {
     ...readySession,
     membership: selectedMembership,
@@ -809,7 +808,7 @@ export function ProjectsDashboard(): ReactElement {
               open={githubImportOpen}
               organizationId={organizationId}
             />
-            <NewProjectDialog allowedModels={allowedModels} organizationId={organizationId} />
+            <NewProjectLink />
           </div>
         </header>
 
@@ -831,7 +830,7 @@ export function ProjectsDashboard(): ReactElement {
             description="Start from a prompt and zapp will create the project and its first build."
             title="No projects yet"
           >
-            <NewProjectDialog allowedModels={allowedModels} organizationId={organizationId} />
+            <NewProjectLink />
           </EmptyState>
         ) : (
           <section aria-label="Projects" className={styles.grid}>
