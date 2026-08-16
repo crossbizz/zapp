@@ -8,6 +8,7 @@ import { OpenTelemetryPlugin } from '@temporalio/interceptors-opentelemetry';
 import { getOpenTelemetryRuntime } from '@zapp/config';
 import {
   TEMPORAL_RUN_WORKFLOW_TYPES,
+  SignalRunResultSchema,
   projectTemporalRunSignal,
   projectTemporalRunStart,
 } from '@zapp/contracts';
@@ -312,6 +313,11 @@ function createTemporalOrchestratorForQueue(
         });
       } else {
         const projected = projectTemporalRunSignal(inputValue);
+        if (projected.signalName === 'message') {
+          return SignalRunResultSchema.parse(
+            await handle.executeUpdate('messageAdmission', { args: [projected.payload] }),
+          );
+        }
         await handle.signal(projected.signalName, projected.payload);
       }
       return { applied: true };

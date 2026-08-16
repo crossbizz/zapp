@@ -3,7 +3,11 @@ import {
   WorkflowNotFoundError,
   type Client,
 } from '@temporalio/client';
-import { projectTemporalRunSignal, projectTemporalRunStart } from '@zapp/contracts';
+import {
+  SignalRunResultSchema,
+  projectTemporalRunSignal,
+  projectTemporalRunStart,
+} from '@zapp/contracts';
 
 import {
   DispatchNotStartedError,
@@ -57,6 +61,11 @@ export function createTemporalRunOrchestrator(options: {
       const projected = projectTemporalRunSignal(input);
       try {
         const handle = options.client.workflow.getHandle(input.workflowId);
+        if (projected.signalName === 'message') {
+          return SignalRunResultSchema.parse(
+            await handle.executeUpdate('messageAdmission', { args: [projected.payload] }),
+          );
+        }
         await handle.signal(projected.signalName, projected.payload);
         return { applied: true };
       } catch (error) {

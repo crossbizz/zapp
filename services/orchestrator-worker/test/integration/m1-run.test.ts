@@ -15,6 +15,7 @@ import {
   createSessionActivities,
   type RunBuilderSessionInput,
 } from '../../src/activities/session.js';
+import { MemoryTranscriptStore } from '../../src/session/transcript.js';
 import { createTestTemporalOrchestrator } from '../../src/worker.js';
 import { runWorkflow } from '../../src/workflows/run.js';
 
@@ -338,6 +339,131 @@ describe('AR-8 M1 durable Temporal run', () => {
 
     expect(nativeHeartbeats).toHaveLength(1);
     expect(nativeHeartbeats[0]).toMatchObject({ taskId: 'm1-builder', transcript: null });
+  });
+
+  it('persists a yielded transcript across activities without replaying the completed tool', async () => {
+    const client = {
+      withAbortSignal: <T>(_signal: AbortSignal, operation: () => T): T => operation(),
+      activity: {
+        heartbeat: () => Promise.resolve(),
+        reportCancellation: () => Promise.resolve(),
+      },
+    } as unknown as Client;
+    const durableTranscripts = new MemoryTranscriptStore();
+    let toolExecutions = 0;
+    const activities = createSessionActivities(
+      {
+        run: async (input, context) => {
+          const key = { runId: input.runId, taskId: 'm1-builder' };
+          const transcript = await context.transcripts.load(key);
+          if (transcript === undefined) {
+            toolExecutions += 1;
+            await context.transcripts.save(null, {
+              key,
+              role: 'builder',
+              mode: input.mode,
+              tools: [],
+              budgets: { maxTurns: 4, maxTokens: 1_000, maxWallClockMs: 30_000 },
+              startedAtMs: Date.now(),
+              provenance: [],
+              messages: [{ role: 'user', content: input.prompt }],
+              turns: 1,
+              tokensUsed: 4,
+              completedToolCallIds: ['call-durable-tool'],
+              pendingToolCalls: [],
+              activeToolCallId: null,
+              executionLease: null,
+              nextFence: 1,
+              eventOutbox: [],
+              commits: [],
+              artifacts: [],
+              summary: '',
+              terminalStatus: null,
+              terminalErrorCode: null,
+            });
+            return { status: 'yielded', commits: [], artifacts: [], summary: 'tool complete' };
+          }
+          const message = input.control?.message;
+          if (message === null || message === undefined) throw new Error('Expected queued message');
+          const { version, ...draft } = transcript;
+          await context.transcripts.save(version, {
+            ...draft,
+            messages: [...draft.messages, { role: 'user', content: message.content }],
+            appliedMessageOperationKeys: [
+              ...draft.appliedMessageOperationKeys,
+              message.operationKey,
+            ],
+            turns: 2,
+            summary: 'follow-up complete',
+            terminalStatus: 'completed',
+          });
+          return {
+            status: 'completed',
+            commits: [],
+            artifacts: [],
+            summary: 'follow-up complete',
+            messageApplied: true,
+          };
+        },
+      },
+      {
+        heartbeatIntervalMs: 10_000,
+        durableTranscriptStore: () => durableTranscripts,
+      },
+    );
+    const runId = newId('run');
+    const baseInput: RunBuilderSessionInput = {
+      runId,
+      organizationId: newId('org'),
+      projectId: newId('proj'),
+      workspaceId: 'workspace-durable-boundary',
+      mode: 'build',
+      model: null,
+      prompt: 'Complete one durable tool.',
+      allowedTools: [],
+      modeInstructions: 'Complete the verified Build task.',
+      budget: null,
+      control: { yieldAfterTool: true, redirect: null },
+      idempotencyKey: 'durable-boundary-first',
+    };
+    const runActivity = (input: RunBuilderSessionInput) =>
+      new MockActivityEnvironment(undefined, { client }).run(
+        (value: RunBuilderSessionInput) => activities.runBuilderSession(value),
+        input,
+      );
+
+    await expect(runActivity(baseInput)).resolves.toMatchObject({ status: 'yielded' });
+    await expect(
+      runActivity({
+        ...baseInput,
+        control: {
+          yieldAfterTool: true,
+          redirect: null,
+          message: {
+            operationKey: `op_${'b'.repeat(64)}`,
+            messageId: 'msg_01J00000000000000000000001',
+            content: 'Apply this after the tool.',
+            attachments: [],
+            source: 'web',
+          },
+        },
+        idempotencyKey: 'durable-boundary-second',
+      }),
+    ).resolves.toMatchObject({ status: 'completed', messageApplied: true });
+
+    expect(toolExecutions).toBe(1);
+    await expect(durableTranscripts.load({ runId, taskId: 'm1-builder' })).resolves.toMatchObject({
+      completedToolCallIds: ['call-durable-tool'],
+      appliedMessageOperationKeys: [`op_${'b'.repeat(64)}`],
+    });
+    await expect(
+      runActivity({
+        ...baseInput,
+        runId: newId('run'),
+        requireExistingTranscript: true,
+        idempotencyKey: 'missing-durable-continuation',
+      }),
+    ).rejects.toThrow('Durable session transcript continuation is missing');
   });
 
   it('latches cancellation before releasing an already-queued durable heartbeat', async () => {

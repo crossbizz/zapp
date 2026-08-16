@@ -27,6 +27,7 @@ import type { RunWorkerEnv } from '../env.js';
 import { createM1BuilderSessionRunner, type RolePromptRegistry } from './m1-session.js';
 import { createModelGatewaySessionGateway } from './model-gateway-client.js';
 import { createSandboxWorkspaceRuntime } from './sandbox-client.js';
+import { DatabaseTranscriptStore } from '../session/transcript.js';
 
 const WorkspaceResponseSchema = z
   .object({ workspace: z.object({ id: idSchema('ws') }).passthrough() })
@@ -458,7 +459,17 @@ export async function composeProductionActivities(options: {
         }).run(input, context);
       },
     },
-    { publishSessionEvent: (event) => eventClient.emit(event) },
+    {
+      publishSessionEvent: (event) => eventClient.emit(event),
+      durableTranscriptStore: (input, taskId) =>
+        input.control?.yieldAfterTool === true
+          ? new DatabaseTranscriptStore(database, {
+              organizationId: input.organizationId,
+              runId: input.runId,
+              taskId,
+            })
+          : undefined,
+    },
   );
   const featureFlagActivities = createFeatureFlagActivities(
     createFeatureFlagEvaluator({

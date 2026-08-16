@@ -15,6 +15,7 @@ import { sessionEventToPendingAgentEvent, type PendingAgentEvent } from './event
 import {
   CheckpointTranscriptStore,
   MAX_TEMPORAL_TRANSCRIPT_BYTES,
+  ReplicatedTranscriptStore,
   SessionTranscriptSchema,
   type TranscriptStore,
 } from '../session/transcript.js';
@@ -68,6 +69,7 @@ export const RunBuilderSessionInputSchema = z
       })
       .strict()
       .optional(),
+    requireExistingTranscript: z.boolean().optional(),
     idempotencyKey: z.string().min(1).max(512),
   })
   .strict();
@@ -94,6 +96,10 @@ export interface SessionActivities {
 export interface SessionActivityOptions {
   readonly heartbeatIntervalMs?: number;
   readonly publishSessionEvent?: (event: PendingAgentEvent) => Promise<void>;
+  readonly durableTranscriptStore?: (
+    input: RunBuilderSessionInput,
+    taskId: string,
+  ) => TranscriptStore | undefined;
 }
 
 /** Binds the coarse durable-run input to the exact AR-6 session-loop contract. */
@@ -197,7 +203,7 @@ export function createSessionActivities(
         checkpointHeartbeatTail = operation.catch(() => undefined);
         return operation;
       };
-      const transcripts = new CheckpointTranscriptStore(
+      const checkpointTranscripts = new CheckpointTranscriptStore(
         checkpoint.transcript,
         async (transcript) => {
           const next = SessionCheckpointSchema.parse({ ...checkpoint, transcript });
@@ -208,6 +214,22 @@ export function createSessionActivities(
           await heartbeatCheckpoint(next);
         },
       );
+      const transcriptKey = { runId: input.runId, taskId: checkpoint.taskId };
+      const durableTranscripts = options.durableTranscriptStore?.(input, checkpoint.taskId);
+      const transcripts =
+        durableTranscripts === undefined
+          ? checkpointTranscripts
+          : await ReplicatedTranscriptStore.open(
+              transcriptKey,
+              durableTranscripts,
+              checkpointTranscripts,
+            );
+      if (
+        input.requireExistingTranscript === true &&
+        (await transcripts.load(transcriptKey)) === undefined
+      ) {
+        throw new Error('Durable session transcript continuation is missing');
+      }
       const sendHeartbeat = (): void => {
         void heartbeatCheckpoint(checkpoint).catch((error: unknown) => {
           checkpointHeartbeatFailure =

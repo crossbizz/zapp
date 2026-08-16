@@ -628,9 +628,9 @@ describe('AR-10 durable run control signals', () => {
       'Complete the current builder turn.',
       'Complete the current builder turn.',
     ]);
-    expect(controls[0]).toEqual({ yieldAfterTool: false, redirect: null });
+    expect(controls[0]).toEqual({ yieldAfterTool: true, redirect: null });
     expect(controls[1]).toEqual({
-      yieldAfterTool: false,
+      yieldAfterTool: true,
       redirect: {
         instruction: 'Use the existing repository adapter and keep the public API unchanged.',
         operationKey: operationKey('f'),

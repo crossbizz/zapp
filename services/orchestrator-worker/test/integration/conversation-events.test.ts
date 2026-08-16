@@ -62,8 +62,9 @@ describe('AR-22 public conversation events', () => {
 
   it('maps CP-20 message input to the strict continuation signal', async () => {
     const signal = vi.fn(() => Promise.resolve());
+    const executeUpdate = vi.fn(() => Promise.resolve({ applied: true }));
     const orchestrator = createTemporalOrchestrator({
-      client: { workflow: { getHandle: () => ({ signal }) } } as never,
+      client: { workflow: { getHandle: () => ({ executeUpdate, signal }) } } as never,
     });
     const message = {
       messageId: 'msg_01J00000000000000000000001',
@@ -90,12 +91,160 @@ describe('AR-22 public conversation events', () => {
         operationKey: operationKey('b'),
       }),
     ).resolves.toEqual({ applied: true });
-    expect(signal).toHaveBeenCalledWith('message', {
-      runId: id('run'),
-      message,
-      operationKey: operationKey('b'),
+    expect(executeUpdate).toHaveBeenCalledWith('messageAdmission', {
+      args: [{ runId: id('run'), message, operationKey: operationKey('b') }],
     });
+    expect(signal).not.toHaveBeenCalled();
   });
+
+  it('admits at most 100 distinct queued messages and reports duplicate replay deterministically', async () => {
+    const firstTurn = deferred<{
+      status: 'completed';
+      commits: never[];
+      artifacts: never[];
+      summary: string;
+    }>();
+    let sessions = 0;
+    const activities = {
+      ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar25-admission' }),
+      runBuilderSession: () => {
+        sessions += 1;
+        return sessions === 1
+          ? firstTurn.promise
+          : Promise.resolve({
+              status: 'completed' as const,
+              commits: [],
+              artifacts: [],
+              summary: 'Continuation complete.',
+            });
+      },
+      commitAndPush: () => Promise.resolve({ commitSha: 'e'.repeat(40), diffstat: [] }),
+      emitEvents: () => Promise.resolve(),
+      storeAssistantContent: () => Promise.reject(new Error('overflow is not expected')),
+      transitionRunStatus: () => Promise.resolve(),
+      estimateRunCost: approvalActivityNotExpected,
+      requestBudgetIncrease: approvalActivityNotExpected,
+      checkpointBudgetStop: approvalActivityNotExpected,
+    } as unknown as RunActivities;
+    const taskQueue = `ar25-admission-${Date.now().toString(36)}`;
+    const worker = await createRunWorker({
+      connection: environment.nativeConnection,
+      taskQueue,
+      activities,
+      testOnlyBypassActivityIdempotency: true,
+    });
+
+    await worker.runUntil(async () => {
+      const input = workflowInput('run_01J00000000000000000000025');
+      const handle = await environment.client.workflow.start(runWorkflow, {
+        taskQueue,
+        workflowId: input.workflowId,
+        args: [input],
+      });
+      await vi.waitFor(() => {
+        expect(sessions).toBe(1);
+      }, { timeout: 5_000 });
+      const message = {
+        messageId: 'msg_01J00000000000000000000025',
+        content: 'Apply this after the active tool boundary.',
+        attachments: [],
+        source: 'api',
+      };
+      for (let index = 0; index < 100; index += 1) {
+        await expect(
+          handle.executeUpdate('messageAdmission', {
+            args: [{
+              runId: input.runId,
+              operationKey: `op_${index.toString(16).padStart(64, '0')}`,
+              message,
+            }],
+          }),
+        ).resolves.toEqual({ applied: true });
+      }
+      await expect(
+        handle.executeUpdate('messageAdmission', {
+          args: [{ runId: input.runId, operationKey: `op_${'0'.repeat(64)}`, message }],
+        }),
+      ).resolves.toEqual({ applied: true });
+      await expect(
+        handle.executeUpdate('messageAdmission', {
+          args: [{ runId: input.runId, operationKey: `op_${'f'.repeat(64)}`, message }],
+        }),
+      ).resolves.toEqual({ applied: false });
+      expect((await handle.query(getRunStatusQuery)).pendingMessageCount).toBe(100);
+      await handle.terminate('AR-25 admission test complete');
+      firstTurn.resolve({ status: 'completed', commits: [], artifacts: [], summary: 'Done.' });
+    });
+  }, 60_000);
+
+  it.each([
+    ['ask', 'run_01J00000000000000000000026', null],
+    ['build', 'run_01J00000000000000000000027', 'e'.repeat(40)],
+  ] as const)(
+    'closes %s message admission before terminal event activities',
+    async (mode, runId, commitSha) => {
+      const terminalEventsStarted = deferred<undefined>();
+      const releaseTerminalEvents = deferred<undefined>();
+      const activities = {
+        ensureWorkspace: () => Promise.resolve({ workspaceId: `workspace-ar25-${mode}-terminal` }),
+        runBuilderSession: () => Promise.resolve({
+          status: 'completed' as const,
+          commits: [],
+          artifacts: [],
+          summary: 'The active turn is complete.',
+          model: 'anthropic/claude-sonnet-4',
+          turn: 1,
+        }),
+        commitAndPush: () => Promise.resolve({ commitSha: 'e'.repeat(40), diffstat: [] }),
+        emitEvents: async ({ events }: { events: Array<{ type: string }> }) => {
+          if (events.some(({ type }) => type === 'run.completed')) {
+            terminalEventsStarted.resolve(undefined);
+            await releaseTerminalEvents.promise;
+          }
+        },
+        storeAssistantContent: () => Promise.reject(new Error('overflow is not expected')),
+        transitionRunStatus: () => Promise.resolve(),
+        estimateRunCost: approvalActivityNotExpected,
+        requestBudgetIncrease: approvalActivityNotExpected,
+        checkpointBudgetStop: approvalActivityNotExpected,
+      } as unknown as RunActivities;
+      const taskQueue = `ar25-${mode}-terminal-${Date.now().toString(36)}`;
+      const worker = await createRunWorker({
+        connection: environment.nativeConnection,
+        taskQueue,
+        activities,
+        testOnlyBypassActivityIdempotency: true,
+      });
+
+      await worker.runUntil(async () => {
+        const input = { ...workflowInput(runId), mode, prompt: 'Finish this turn.' };
+        const handle = await environment.client.workflow.start(runWorkflow, {
+          taskQueue,
+          workflowId: input.workflowId,
+          args: [input],
+        });
+        await terminalEventsStarted.promise;
+        try {
+          await expect(handle.executeUpdate('messageAdmission', {
+            args: [{
+              runId: input.runId,
+              operationKey: operationKey(mode === 'ask' ? '6' : '7'),
+              message: {
+                messageId: `msg_01J0000000000000000000002${mode === 'ask' ? '6' : '7'}`,
+                content: 'This arrived after terminalization began.',
+                attachments: [],
+                source: 'api',
+              },
+            }],
+          })).resolves.toEqual({ applied: false });
+        } finally {
+          releaseTerminalEvents.resolve(undefined);
+        }
+        await expect(handle.result()).resolves.toEqual({ status: 'completed', commitSha });
+      });
+    },
+    30_000,
+  );
 
   it('stores assistant overflow with a content-addressed, idempotent receipt', async () => {
     const stored: Array<Record<string, unknown>> = [];
@@ -174,7 +323,6 @@ describe('AR-22 public conversation events', () => {
           summary: oversizedReply,
           model: 'anthropic/claude-sonnet-4',
           turn: 2,
-          messageApplied: true,
         });
       },
       commitAndPush: () => Promise.resolve({ commitSha: 'e'.repeat(40), diffstat: [] }),
@@ -261,6 +409,12 @@ describe('AR-22 public conversation events', () => {
     });
 
     expect(sessionInputs).toHaveLength(3);
+    expect(
+      sessionInputs.every(
+        (input) =>
+          (input['control'] as { yieldAfterTool?: unknown }).yieldAfterTool === true,
+      ),
+    ).toBe(true);
     expect(sessionInputs[1]?.['control']).toMatchObject({
       message: {
         operationKey: operationKey('c'),
@@ -277,6 +431,7 @@ describe('AR-22 public conversation events', () => {
       'message.user',
       'message.assistant',
       'agent.started',
+      'message.applied',
       'agent.started',
       'artifact.created',
       'message.assistant',

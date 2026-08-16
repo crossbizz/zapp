@@ -174,6 +174,33 @@ describe('production Temporal run adapter', () => {
     expect(signal).toHaveBeenCalledWith(wireSignal, envelope);
   });
 
+  it('uses an admission update so a full message queue is explicitly rejected', async () => {
+    const signal = vi.fn().mockResolvedValue(undefined);
+    const executeUpdate = vi.fn().mockResolvedValue({ applied: false });
+    const orchestrator = createTemporalRunOrchestrator({
+      client: { workflow: { getHandle: () => ({ executeUpdate, signal }) } } as never,
+    });
+    const message = {
+      messageId: `msg_${'0'.repeat(26)}`,
+      content: 'Apply this after the active tool boundary.',
+      attachments: [],
+      source: 'api' as const,
+    };
+
+    await expect(orchestrator.signalRun(SignalRunInputSchema.parse({
+      runId: identity.runId,
+      workflowId: identity.workflowId,
+      mode: 'build',
+      signal: 'message',
+      message,
+      operationKey: identity.operationKey,
+    }))).resolves.toEqual({ applied: false });
+    expect(executeUpdate).toHaveBeenCalledWith('messageAdmission', {
+      args: [{ runId: identity.runId, message, operationKey: identity.operationKey }],
+    });
+    expect(signal).not.toHaveBeenCalled();
+  });
+
   it.each(['ask', 'prototype', 'build', 'autonomous', 'fix'] as const)(
     'projects the reason-bound budget approval envelope accepted by the %s workflow',
     async (mode) => {

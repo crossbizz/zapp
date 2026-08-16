@@ -347,6 +347,138 @@ describe('AR-18 Build mode', () => {
     expect(BuildModePlanSchema.safeParse(unmapped).success).toBe(false);
   });
 
+  it('routes an admitted production Build message into a follow-up Builder session', async () => {
+    environment = await TestWorkflowEnvironment.createLocal();
+    const taskQueue = `ar25-build-message-${Date.now().toString(36)}`;
+    const workflowInput = buildInput('5');
+    const plan = BuildModePlanSchema.parse(
+      lightweightPlan({ suffix: '5', riskLevel: 'low', taskCount: 1 }),
+    );
+    const planArtifactId = id('art', '5');
+    const integrationCommit = '8'.repeat(40);
+    const followUpCommit = '9'.repeat(40);
+    let taskSessionStartedResolve: (() => void) | undefined;
+    let taskSessionRelease: (() => void) | undefined;
+    const taskSessionStarted = new Promise<void>((resolve) => {
+      taskSessionStartedResolve = resolve;
+    });
+    const taskSessionReleased = new Promise<void>((resolve) => {
+      taskSessionRelease = resolve;
+    });
+    const followUpInputs: Array<Record<string, unknown>> = [];
+    const emittedTypes: string[] = [];
+
+    const mainWorker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue,
+      workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
+      activities: {
+        transitionRunStatus: () => Promise.resolve(),
+        emitEvents: ({ events }: { events: Array<{ type: string }> }) => {
+          emittedTypes.push(...events.map(({ type }) => type));
+          return Promise.resolve();
+        },
+        storeAssistantContent: () => Promise.reject(new Error('not expected')),
+        ensureWorkspace: () => Promise.resolve({ workspaceId: 'workspace-ar25-build-message' }),
+        runBuilderSession: (request: Record<string, unknown>) => {
+          followUpInputs.push(request);
+          return Promise.resolve({
+            status: 'completed' as const,
+            commits: [],
+            artifacts: [],
+            summary: 'The follow-up change is complete.',
+            model: 'anthropic/claude-sonnet-4',
+            turn: 1,
+            messageApplied: true,
+          });
+        },
+        commitAndPush: () => Promise.resolve({ commitSha: followUpCommit, diffstat: [] }),
+        estimateRunCost: () => Promise.resolve({ estimatedCredits: '10.0000' }),
+        requestBudgetIncrease: () => Promise.reject(new Error('not expected')),
+        checkpointBudgetStop: () => Promise.reject(new Error('not expected')),
+        producePlan: () => Promise.resolve({ planArtifactId, plan }),
+        assessBuildPlanApproval: () =>
+          Promise.resolve({ source: 'policy_engine' as const, diffFiles: 1, risk: 'low' as const }),
+        approvePlan: () => Promise.resolve({ planArtifactId, status: 'approved' as const }),
+        resolveIntegrationHead: () => Promise.resolve({ commitSha: integrationCommit }),
+        transitionPhaseTasks: () => Promise.resolve(),
+        recordBaseCommit: () => Promise.resolve({ baseCommitSha: '1'.repeat(40) }),
+        createTaskWorkspace: () =>
+          Promise.resolve({ workspaceId: 'workspace-ar25-task', workspacePath: '/tmp/task' }),
+        transitionTaskState: () => Promise.resolve(),
+        async runTaskBuilderSession() {
+          taskSessionStartedResolve?.();
+          await taskSessionReleased;
+          return { status: 'completed' as const };
+        },
+        commitAndPushTask: () => Promise.resolve({ commitSha: '5'.repeat(40) }),
+        mergeTask: () => Promise.resolve({ outcome: 'merged' as const }),
+        createConflictTask: () => Promise.reject(new Error('not expected')),
+        emitTaskBlocked: () => Promise.reject(new Error('not expected')),
+      },
+    });
+    const verificationWorker = await Worker.create({
+      connection: environment.nativeConnection,
+      taskQueue: 'verification',
+      workflowsPath: new URL('../src/workflows/run.ts', import.meta.url).pathname,
+      activities: {
+        verifyPhase: () => Promise.resolve({
+          verificationResultId: id('vr', '5'),
+          decision: 'approved' as const,
+          criteriaResults: [{
+            criterionId: 'AC-1',
+            specificationVersion: 1,
+            taskIds: [id('task', '5')],
+            testCaseIds: ['test-case-1'],
+            result: 'passed' as const,
+            evidenceArtifactIds: ['evidence-1'],
+            verifierComments: [],
+          }],
+          risks: [],
+        }),
+      },
+    });
+    const verificationRun = verificationWorker.run();
+    const message = {
+      messageId: 'msg_01J00000000000000000000025',
+      content: 'Add the requested follow-up change.',
+      attachments: [],
+      source: 'api',
+    };
+
+    try {
+      await mainWorker.runUntil(async () => {
+        const handle = await environment?.client.workflow.start(buildWorkflow, {
+          taskQueue,
+          workflowId: workflowInput.workflowId,
+          args: [workflowInput],
+        });
+        await taskSessionStarted;
+        await expect(handle?.executeUpdate('messageAdmission', {
+          args: [{
+            runId: workflowInput.runId,
+            operationKey: `op_${'5'.repeat(64)}`,
+            message,
+          }],
+        })).resolves.toEqual({ applied: true });
+        taskSessionRelease?.();
+        await expect(handle?.result()).resolves.toEqual({
+          status: 'completed',
+          commitSha: followUpCommit,
+        });
+      });
+    } finally {
+      verificationWorker.shutdown();
+      await verificationRun;
+    }
+
+    expect(followUpInputs).toHaveLength(1);
+    expect(followUpInputs[0]?.['control']).toMatchObject({
+      message: { operationKey: `op_${'5'.repeat(64)}`, ...message },
+    });
+    expect(emittedTypes).toContain('message.applied');
+  }, 40_000);
+
   it('rejects caller-supplied Build continuations before any activity can run', async () => {
     environment = await TestWorkflowEnvironment.createLocal();
     const taskQueue = `ar18-build-provenance-${Date.now().toString(36)}`;

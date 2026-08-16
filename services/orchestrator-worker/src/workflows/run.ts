@@ -5,6 +5,7 @@ import {
   continueAsNew,
   defineQuery,
   defineSignal,
+  defineUpdate,
   executeChild,
   isCancellation,
   proxyActivities,
@@ -13,7 +14,11 @@ import {
   type RetryPolicy,
 } from '@temporalio/workflow';
 import { RunWorkflowStartInputSchema } from '@zapp/contracts/temporal-run';
-import { MessageAssistantPayloadSchema, MessageUserPayloadSchema } from '@zapp/contracts/events';
+import {
+  MessageAppliedPayloadSchema,
+  MessageAssistantPayloadSchema,
+  MessageUserPayloadSchema,
+} from '@zapp/contracts/events';
 import { TOOL_GROUPS, TOOL_NAMES, type ToolName } from '@zapp/contracts/tools';
 import { PlanSchema, type PlanTask } from '@zapp/planning-engine';
 import { z } from 'zod';
@@ -319,6 +324,9 @@ const RunWorkflowStateSchema = RunWorkflowInputSchema.extend({
   .superRefine((state, context) => {
     const lightweightBuild = state.buildModeVersion === 'lightweight-v1';
     const buildContinuation = state.continuation?.phase.startsWith('build_') ?? false;
+    const buildFollowUpContinuation =
+      lightweightBuild &&
+      (state.continuation?.phase === 'session' || state.continuation?.phase === 'commit');
     if (lightweightBuild && state.mode !== 'build') {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -326,7 +334,10 @@ const RunWorkflowStateSchema = RunWorkflowInputSchema.extend({
         path: ['mode'],
       });
     }
-    if (lightweightBuild !== buildContinuation && state.continuation !== undefined) {
+    if (
+      lightweightBuild !== (buildContinuation || buildFollowUpContinuation) &&
+      state.continuation !== undefined
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'run_mode_continuation_mismatch',
@@ -430,6 +441,12 @@ export const resumeRunSignal = defineSignal<[unknown]>('resume');
 export const cancelRunSignal = defineSignal<[unknown]>('cancel');
 export const redirectRunSignal = defineSignal<[unknown]>('redirect');
 export const messageRunSignal = defineSignal<[unknown]>('message');
+interface MessageAdmissionResult {
+  readonly applied: boolean;
+}
+export const messageRunUpdate = defineUpdate<MessageAdmissionResult, [unknown]>(
+  'messageAdmission',
+);
 
 export const RunControlStatusSchema = z
   .object({
@@ -672,6 +689,11 @@ async function executeRunWorkflow(
         : 'preparing';
   let currentWorkspaceId = input.continuation?.workspaceId ?? null;
   let activeScope: CancellationScope | undefined;
+  let acceptingMessages = true;
+
+  const closeMessageAdmission = (): void => {
+    acceptingMessages = false;
+  };
 
   const acceptControlSignal = (value: unknown): z.infer<typeof RunControlSignalSchema> => {
     const parsed = RunControlSignalSchema.parse(value);
@@ -760,13 +782,26 @@ async function executeRunWorkflow(
     if (pendingRedirects.length >= 100) throw new Error('run redirect queue is full');
     pendingRedirects.push(signal);
   });
-  setHandler(messageRunSignal, (value) => {
+  const admitMessage = (value: unknown): MessageAdmissionResult => {
     const signal = RunMessageSignalSchema.parse(value);
     if (signal.runId !== input.runId) throw new Error('run message does not match workflow');
-    if (!rememberOperation(signal.operationKey) || cancelRequested) return;
-    if (pendingMessages.length >= 100) throw new Error('run message queue is full');
+    if (seenOperationKeys.has(signal.operationKey)) return { applied: true };
+    if (
+      cancelRequested ||
+      !acceptingMessages ||
+      pendingMessages.length >= 100 ||
+      seenOperationKeys.size >= 1_000
+    ) {
+      return { applied: false };
+    }
+    seenOperationKeys.add(signal.operationKey);
     pendingMessages.push(signal);
+    return { applied: true };
+  };
+  setHandler(messageRunSignal, (value) => {
+    admitMessage(value);
   });
+  setHandler(messageRunUpdate, admitMessage);
   setHandler(retryFailedTaskSignal, (value) => {
     const signal = RetryFailedTaskSignalSchema.parse(value);
     if (signal.runId !== input.runId) throw new Error('task retry does not match workflow');
@@ -1137,6 +1172,7 @@ async function executeRunWorkflow(
       workspaceId = ensured.workspaceId;
       currentWorkspaceId = workspaceId;
     } catch (error: unknown) {
+      closeMessageAdmission();
       await events.transitionRunStatus({
         runId: input.runId,
         status: 'failed',
@@ -1352,6 +1388,7 @@ async function executeRunWorkflow(
           ],
         });
         if (resolution.decision === 'rejected') {
+          closeMessageAdmission();
           currentStatus = 'cancelled';
           currentPhase = 'terminal';
           await events.transitionRunStatus({
@@ -1444,6 +1481,7 @@ async function executeRunWorkflow(
         control: controlContinuation(),
       });
     } catch (error: unknown) {
+      closeMessageAdmission();
       currentStatus = 'failed';
       currentPhase = 'terminal';
       await events.transitionRunStatus({
@@ -1814,6 +1852,7 @@ async function executeRunWorkflow(
         control: controlContinuation(),
       });
     } catch (error: unknown) {
+      closeMessageAdmission();
       currentStatus = 'failed';
       currentPhase = 'terminal';
       await events.transitionRunStatus({
@@ -1941,32 +1980,56 @@ async function executeRunWorkflow(
           idempotencyKey: operationKey(input, 'build-tasks-passed'),
         }),
       );
-      await events.emitEvents({
-        events: [
-          ...plan.tasks.map((task) =>
-            event(
-              input,
-              'task.completed',
-              `build-task-${task.id}-completed`,
-              {
-                phaseId: phase.id,
-                taskId: task.id,
-                commitSha: taskCommitById.get(task.id),
-                verificationResultId: verification.verificationResultId,
-              },
-              { phaseId: phase.id, taskId: task.id },
-            ),
-          ),
+      const buildCompletionEvents = [
+        ...plan.tasks.map((task) =>
           event(
             input,
-            'phase.completed',
-            'build-phase-completed',
+            'task.completed',
+            `build-task-${task.id}-completed`,
             {
               phaseId: phase.id,
-              commitSha,
+              taskId: task.id,
+              commitSha: taskCommitById.get(task.id),
+              verificationResultId: verification.verificationResultId,
             },
-            { phaseId: phase.id },
+            { phaseId: phase.id, taskId: task.id },
           ),
+        ),
+        event(
+          input,
+          'phase.completed',
+          'build-phase-completed',
+          {
+            phaseId: phase.id,
+            commitSha,
+          },
+          { phaseId: phase.id },
+        ),
+      ];
+      if (pendingMessages.length > 0) {
+        await events.emitEvents({
+          events: [
+            ...buildCompletionEvents,
+            event(input, 'phase.created', 'follow-up-phase-created', {
+              phase: 'm1-chat',
+              name: 'Conversation follow-up',
+            }),
+            event(input, 'phase.started', 'follow-up-phase-started', { phase: 'm1-chat' }),
+          ],
+        });
+        return await continueAsNew<typeof runWorkflow>({
+          ...input,
+          continuation: { phase: 'session', workspaceId },
+          budgetAttempt,
+          sessionStep,
+          lastEmittedAssistantTurn,
+          control: controlContinuation(),
+        });
+      }
+      closeMessageAdmission();
+      await events.emitEvents({
+        events: [
+          ...buildCompletionEvents,
           event(input, 'run.completed', 'run-completed', { status: 'completed', commitSha }),
         ],
       });
@@ -1979,6 +2042,7 @@ async function executeRunWorkflow(
       currentPhase = 'terminal';
       return RunWorkflowResultSchema.parse({ status: 'completed', commitSha });
     } catch (error: unknown) {
+      closeMessageAdmission();
       currentStatus = 'failed';
       currentPhase = 'terminal';
       await events.transitionRunStatus({
@@ -2028,11 +2092,9 @@ async function executeRunWorkflow(
               allowedTools: [...guardrails.allowedTools],
               modeInstructions: guardrails.modeInstructions,
               budget: input.budget,
+              requireExistingTranscript: sessionStep > 0,
               control: {
-                // The Temporal activity heartbeat owns the durable transcript for the
-                // lifetime of this session. Starting a new activity after every tool
-                // would discard that checkpoint and replay the first model turn.
-                yieldAfterTool: false,
+                yieldAfterTool: true,
                 redirect:
                   pendingRedirects[0] === undefined
                     ? null
@@ -2065,10 +2127,29 @@ async function executeRunWorkflow(
       } finally {
         activeScope = undefined;
       }
+      if (sessionResult.redirectApplied === true) pendingRedirects.shift();
+      if (sessionResult.messageApplied === true) {
+        const appliedMessage = pendingMessages[0];
+        if (appliedMessage === undefined) {
+          throw new Error('Builder session acknowledged a message that was not queued');
+        }
+        await events.emitEvents({
+          events: [
+            event(
+              input,
+              'message.applied',
+              `message-applied-${appliedMessage.operationKey.slice('op_'.length)}`,
+              MessageAppliedPayloadSchema.parse({
+                messageId: appliedMessage.message.messageId,
+                operationKey: appliedMessage.operationKey,
+              }),
+            ),
+          ],
+        });
+        pendingMessages.shift();
+      }
       const controlResult = await honorNewWorkBoundary(sessionWorkspaceId, 'session');
       if (controlResult !== undefined) return controlResult;
-      if (sessionResult.redirectApplied === true) pendingRedirects.shift();
-      if (sessionResult.messageApplied === true) pendingMessages.shift();
       const assistantTurn = sessionResult.turn ?? sessionStep + 1;
       if (
         (sessionResult.status === 'completed' ||
@@ -2153,6 +2234,7 @@ async function executeRunWorkflow(
             ],
           });
           if (resolution.decision === 'rejected') {
+            closeMessageAdmission();
             const checkpoint = await approvals.checkpointBudgetStop({
               runId: input.runId,
               organizationId: input.organizationId,
@@ -2211,6 +2293,7 @@ async function executeRunWorkflow(
         continueSession = true;
       }
       if (!continueSession && input.mode === 'ask') {
+        closeMessageAdmission();
         const completedEvents: PendingAgentEvent[] = [
           event(input, 'agent.completed', 'agent-completed', { agent: 'builder' }),
         ];
@@ -2263,6 +2346,7 @@ async function executeRunWorkflow(
         }
       }
     } catch (error: unknown) {
+      closeMessageAdmission();
       await events.transitionRunStatus({
         runId: input.runId,
         status: 'failed',
@@ -2359,6 +2443,7 @@ async function executeRunWorkflow(
         control: controlContinuation(),
       });
     }
+    closeMessageAdmission();
     await events.emitEvents({
       events: [
         event(input, 'phase.completed', 'phase-completed', { phase: 'm1-chat' }),
@@ -2378,6 +2463,7 @@ async function executeRunWorkflow(
       commitSha: committed.commitSha,
     });
   } catch (error: unknown) {
+    closeMessageAdmission();
     currentStatus = 'failed';
     currentPhase = 'terminal';
     await events.transitionRunStatus({
@@ -2437,7 +2523,9 @@ export async function buildWorkflow(inputValue: unknown): Promise<RunWorkflowRes
     input.mode !== 'build' ||
     input.buildModeVersion !== 'lightweight-v1' ||
     input.continuation === undefined ||
-    !input.continuation.phase.startsWith('build_')
+    (!input.continuation.phase.startsWith('build_') &&
+      input.continuation.phase !== 'session' &&
+      input.continuation.phase !== 'commit')
   ) {
     throw ApplicationFailure.nonRetryable(
       'Build continuation state does not match the dedicated Build workflow',

@@ -384,11 +384,11 @@ Execution expansion (2026-08-12):
 **ADR:** ADR-0034. **Files:** Modify Builder session transcript repository/activity/workflow, run signal queue, context assembly, composition, contracts/events, tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-durable-project-conversations.md`.
 **Effort:** L. **[expand-at-execution]**
 
-- [ ] **25a RED/GREEN — durable transcript:** persist versioned run/task Builder transcripts across completed activity yields with compare-and-swap semantics; refuse missing or conflicting continuation state rather than restarting from an empty transcript.
-- [ ] **25b RED/GREEN — keyed bounded queue:** accept at most 100 distinct keyed messages, ignore duplicate operation keys deterministically, and surface overflow explicitly.
-- [ ] **25c RED/GREEN — safe boundary application:** yield only after a completed tool boundary, apply the oldest queued message once in the next session activity, and emit `message.applied` only after transcript persistence; never cancel an active tool to accept a message.
-- [ ] **25d replay/context proof:** prove crash/retry around persistence and acknowledgement is idempotent, no first model turn/tool replays, same-conversation successor context is present, and a distinct conversation receives none.
-- [ ] Verify focused worker unit/Temporal suites plus lint/typecheck/build and architecture gates; no real-provider call. Commit: `feat(orchestrator): apply queued messages safely`
+- [x] **25a RED/GREEN — durable transcript:** persist versioned run/task Builder transcripts across completed activity yields with compare-and-swap semantics; refuse missing or conflicting continuation state rather than restarting from an empty transcript.
+- [x] **25b RED/GREEN — keyed bounded queue:** accept at most 100 distinct keyed messages, ignore duplicate operation keys deterministically, and surface overflow explicitly.
+- [x] **25c RED/GREEN — safe boundary application:** yield only after a completed tool boundary, apply the oldest queued message once in the next session activity, and emit `message.applied` only after transcript persistence; never cancel an active tool to accept a message.
+- [x] **25d replay/context proof:** prove crash/retry around persistence and acknowledgement is idempotent, no first model turn/tool replays, same-conversation successor context is present, and a distinct conversation receives none.
+- [x] Verify focused worker unit/Temporal suites plus lint/typecheck/build and architecture gates; no real-provider call. Commit: `feat(orchestrator): apply queued messages safely`
 
 ## Testing strategy
 - Unit: policies, graph, context assembly, schema round-trips (fast, no infra).
@@ -402,6 +402,8 @@ Execution expansion (2026-08-12):
 - Policy evaluation is code-side (Global Constraint 15); model sees redacted, delimited tool output only; approval-gated tools enumerated in AR-4 table; all activities carry org/project context for ledger + audit attribution.
 
 ## Execution log
+
+- 2026-08-16 AR-25 done — Added tenant-scoped PostgreSQL transcript CAS with single-write checkpoint healing, update-admitted bounded message queues, production Build follow-up routing, terminal admission closure, safe tool-boundary yields, and post-persistence acknowledgements; required worker/control adapter and Build-mode test joins, worker 264/264 and architecture gates passed, no provider calls; live PostgreSQL acceptance skipped because `DATABASE_URL` was unset.
 
 - 2026-08-12 AR-24 done — Added opt-in v1 structured interview and approval cards with keyed durable responses, stable approval persistence, exact typed signal identities, and replay-compatible legacy branches; no provider calls.
 

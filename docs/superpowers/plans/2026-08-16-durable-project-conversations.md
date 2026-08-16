@@ -330,7 +330,7 @@ git commit -m "feat(control-api): expose durable conversation history"
 - Consumes: `builderSessionTranscripts`, `MessageAppliedPayloadSchema`, existing `TranscriptStore`, message signal queue, CP-13 event batcher.
 - Produces: `DatabaseTranscriptStore`, safe `yieldAfterTool: true` production behavior, exactly-once `message.applied` events keyed by message operation.
 
-- [ ] **Step 1: Write failing durable-store and safe-boundary tests**
+- [x] **Step 1: Write failing durable-store and safe-boundary tests**
 
 ```ts
 it('persists a yielded transcript and resumes without replaying the first model turn', async () => {
@@ -348,13 +348,13 @@ it('persists a yielded transcript and resumes without replaying the first model 
 
 Add a real Temporal test that blocks a tool, signals a message, asserts pending count `1`, releases the tool, observes `message.applied`, and proves the message appears exactly once in the next model request.
 
-- [ ] **Step 2: Run focused worker tests to verify RED**
+- [x] **Step 2: Run focused worker tests to verify RED**
 
 Run: `pnpm --filter @zapp/orchestrator-worker test -- session.test.ts m1-session.test.ts integration/signals.test.ts`
 
 Expected: FAIL because a new activity starts from an empty heartbeat-only transcript and production sets `yieldAfterTool: false`.
 
-- [ ] **Step 3: Implement the PostgreSQL transcript store**
+- [x] **Step 3: Implement the PostgreSQL transcript store**
 
 ```ts
 export class DatabaseTranscriptStore implements TranscriptStore {
@@ -370,7 +370,7 @@ export class DatabaseTranscriptStore implements TranscriptStore {
 
 Both methods validate the key and tenant/run scope. `save` uses `INSERT ... ON CONFLICT ... DO UPDATE ... WHERE version = expectedVersion RETURNING` and throws `TranscriptConflictError` on a lost compare-and-swap. Reject serialized transcripts larger than `MAX_TEMPORAL_TRANSCRIPT_BYTES`. Keep activity heartbeats as retry checkpoints, but seed the checkpoint store from the newer of heartbeat and database versions and persist every successful save to both.
 
-- [ ] **Step 4: Yield production sessions and emit applied acknowledgements**
+- [x] **Step 4: Yield production sessions and emit applied acknowledgements**
 
 ```ts
 control: {
@@ -382,7 +382,7 @@ control: {
 
 After a session result reports `messageApplied`, emit one `message.applied` event with `{ messageId, operationKey }` using event key `message-applied-<operation suffix>`, then shift the queue. Do not emit before transcript persistence succeeds. Continue-as-new after every yielded tool boundary while queued controls remain observable.
 
-- [ ] **Step 5: Run worker tests to verify GREEN**
+- [x] **Step 5: Run worker tests to verify GREEN**
 
 Run: `pnpm --filter @zapp/orchestrator-worker test`
 
@@ -392,7 +392,7 @@ Run: `pnpm exec vitest run services/orchestrator-worker/test/integration/signals
 
 Expected: real Temporal signal tests pass serially.
 
-- [ ] **Step 6: Verify and commit AR-25**
+- [x] **Step 6: Verify and commit AR-25**
 
 Run: `pnpm --filter @zapp/orchestrator-worker lint && pnpm --filter @zapp/orchestrator-worker typecheck && pnpm --filter @zapp/orchestrator-worker build && git diff --check`
 
@@ -400,7 +400,7 @@ Append the AR-25 execution-log line, check AR-25 in `tasks/todo.md`, and commit:
 
 ```bash
 git add services/orchestrator-worker docs/plans/04-agent-runtime.md tasks/todo.md
-git commit -m "fix(orchestrator): apply messages at safe tool boundaries"
+git commit -m "feat(orchestrator): apply queued messages safely"
 ```
 
 ### Task 4: WEB-19 history, new-thread, and same-thread continuity

@@ -20,7 +20,10 @@ import { MemoryWorkspaceRuntime } from '@zapp/workspace-runtime';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSessionLoop, type SessionEvent } from '../src/session/loop.js';
 import {
+  CheckpointTranscriptStore,
+  DatabaseTranscriptStore,
   MemoryTranscriptStore,
+  ReplicatedTranscriptStore,
   type SessionTranscript,
   type TranscriptStore,
 } from '../src/session/transcript.js';
@@ -172,6 +175,119 @@ function scriptedGateway(turns: readonly (readonly GatewayStreamEvent[])[]) {
 }
 
 describe('agent session loop', () => {
+  it('recovers a durable transcript when checkpoint acknowledgement fails after persistence', async () => {
+    const key = { runId: 'run-test', taskId: 'task-test' };
+    const durable = new MemoryTranscriptStore();
+    const failingCheckpoint = new CheckpointTranscriptStore(undefined, () => {
+      throw new Error('simulated checkpoint acknowledgement loss');
+    });
+    const replicated = await ReplicatedTranscriptStore.open(key, durable, failingCheckpoint);
+    const draft = {
+      key,
+      role: 'builder' as const,
+      mode: 'build' as const,
+      tools: [] as ToolName[],
+      budgets: { maxTurns: 4, maxTokens: 1_000, maxWallClockMs: 30_000 },
+      startedAtMs: Date.now(),
+      provenance: [],
+      messages: [{ role: 'user' as const, content: 'Persist this once.' }],
+      turns: 0,
+      tokensUsed: 0,
+      completedToolCallIds: [],
+      pendingToolCalls: [],
+      activeToolCallId: null,
+      executionLease: null,
+      nextFence: 1,
+      eventOutbox: [],
+      commits: [],
+      artifacts: [],
+      summary: '',
+      terminalStatus: null,
+      terminalErrorCode: null,
+    };
+
+    await expect(replicated.save(null, draft)).rejects.toThrow(
+      'simulated checkpoint acknowledgement loss',
+    );
+    await expect(durable.load(key)).resolves.toMatchObject({ version: 0, messages: draft.messages });
+
+    let durableVersion = await durable.load(key);
+    for (let turn = 1; turn <= 20; turn += 1) {
+      if (durableVersion === undefined) throw new Error('durable transcript was not created');
+      const { version, ...durableDraft } = durableVersion;
+      durableVersion = await durable.save(version, { ...durableDraft, turns: turn });
+    }
+    let checkpointWrites = 0;
+    const recoveredCheckpoint = new CheckpointTranscriptStore(undefined, () => {
+      checkpointWrites += 1;
+    });
+    const recovered = await ReplicatedTranscriptStore.open(key, durable, recoveredCheckpoint);
+    await expect(recovered.load(key)).resolves.toMatchObject({
+      version: 20,
+      messages: draft.messages,
+    });
+    expect(checkpointWrites).toBe(1);
+
+    const concurrentDurable = new MemoryTranscriptStore();
+    const concurrent = await ReplicatedTranscriptStore.open(
+      { runId: 'run-concurrent', taskId: 'task-test' },
+      concurrentDurable,
+      new MemoryTranscriptStore(),
+    );
+    const stale = await ReplicatedTranscriptStore.open(
+      { runId: 'run-concurrent', taskId: 'task-test' },
+      concurrentDurable,
+      new MemoryTranscriptStore(),
+    );
+    const concurrentDraft = {
+      ...draft,
+      key: { runId: 'run-concurrent', taskId: 'task-test' },
+    };
+    await expect(concurrent.save(null, concurrentDraft)).resolves.toMatchObject({ version: 0 });
+    await expect(stale.save(null, concurrentDraft)).rejects.toMatchObject({
+      name: 'TranscriptConflictError',
+    });
+  });
+
+  it('rejects the exact checkpoint envelope before opening a database transaction', async () => {
+    const draft = {
+      key: { runId: 'run-test', taskId: 'task-test' },
+      role: 'builder' as const,
+      mode: 'build' as const,
+      tools: [] as ToolName[],
+      budgets: { maxTurns: 4, maxTokens: 1_000, maxWallClockMs: 30_000 },
+      startedAtMs: Date.now(),
+      provenance: [],
+      messages: [{ role: 'user' as const, content: 'Persist this once.' }],
+      turns: 0,
+      tokensUsed: 0,
+      completedToolCallIds: [],
+      pendingToolCalls: [],
+      activeToolCallId: null,
+      executionLease: null,
+      nextFence: 1,
+      eventOutbox: [],
+      commits: [],
+      artifacts: [],
+      summary: '',
+      terminalStatus: null,
+      terminalErrorCode: null,
+    };
+    const normalized = await new MemoryTranscriptStore().save(null, draft);
+    const rawTranscriptBytes = Buffer.byteLength(JSON.stringify(normalized), 'utf8');
+    const transaction = vi.fn();
+    const store = new DatabaseTranscriptStore(
+      { transaction } as never,
+      { organizationId: 'org-test', runId: 'run-test', taskId: 'task-test' },
+      rawTranscriptBytes + 1,
+    );
+
+    await expect(store.save(null, draft)).rejects.toThrow(
+      'Session checkpoint exceeds the Temporal payload size limit',
+    );
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('retains the workflow operation window for long-running conversations', async () => {
     const transcripts = new MemoryTranscriptStore();
     const appliedMessageOperationKeys = Array.from(
@@ -565,6 +681,80 @@ describe('agent session loop', () => {
         (message) => message.role === 'user' && message.content === redirect.instruction,
       ),
     ).toHaveLength(1);
+  });
+
+  it('resumes after a completed tool boundary and applies one queued message without replay', async () => {
+    const { registry, root } = await memoryRegistry();
+    const transcripts = new MemoryTranscriptStore();
+    const scripted = scriptedGateway([
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-safe-boundary',
+          toolName: 'write_file',
+          input: { path: 'safe.txt', content: 'first turn' },
+        },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 4 },
+        { type: 'done' },
+      ],
+      [
+        { type: 'text-delta', text: 'Follow-up applied.' },
+        { type: 'usage', ...USAGE_ATTRIBUTION, totalTokens: 4 },
+        { type: 'done' },
+      ],
+    ]);
+    const session = createSessionLoop({
+      gateway: scripted.gateway,
+      tools: registry,
+      transcripts,
+      events: { emit: () => undefined },
+      approvals: { status: () => Promise.resolve('pending') },
+      prompts: {
+        builder: 'builder prompt',
+        planner: 'planner',
+        verifier: 'verifier',
+        summarizer: 'summary',
+      },
+      redact: (value) => value,
+      countRequestTokens,
+    });
+
+    await expect(
+      session.run({
+        ...input(),
+        control: { yieldAfterTool: true, redirect: null },
+      }),
+    ).resolves.toMatchObject({ status: 'yielded' });
+
+    await expect(
+      session.run({
+        ...input(),
+        control: {
+          yieldAfterTool: true,
+          redirect: null,
+          message: {
+            operationKey: `op_${'b'.repeat(64)}`,
+            message: {
+              messageId: 'msg_01J00000000000000000000001',
+              content: 'Keep the completed write and finish.',
+              attachments: [],
+              source: 'web',
+            },
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ status: 'completed', messageApplied: true });
+
+    expect(scripted.requests).toHaveLength(2);
+    expect(scripted.requests[1]?.messages).toContainEqual({
+      role: 'user',
+      content: 'Keep the completed write and finish.',
+    });
+    expect(await readFile(join(root, 'safe.txt'), 'utf8')).toBe('first turn');
+    expect(
+      (await transcripts.load({ runId: 'run-test', taskId: 'task-test' }))
+        ?.completedToolCallIds,
+    ).toEqual(['call-safe-boundary']);
   });
 
   it('surfaces a code-side policy denial to the model without executing the mutation', async () => {
