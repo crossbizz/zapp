@@ -14,7 +14,7 @@ export default defineConfig({
     command: 'node --import tsx e2e/support/server.ts',
     url: `${appBaseUrl}/login`,
     reuseExistingServer: false,
-    timeout: 60_000,
+    timeout: 300_000,
     gracefulShutdown: { signal: 'SIGTERM', timeout: 30_000 },
   },
 });

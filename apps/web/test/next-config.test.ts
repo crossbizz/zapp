@@ -93,12 +93,13 @@ void it('loads the UI package from source during development when build artifact
   );
 });
 
-void it('runs one signal-owning E2E supervisor with enough time to restore generated configuration', async () => {
+void it('gives the signal-owning E2E supervisor enough time for a cold production build', async () => {
   const { default: playwrightConfig } = await import('../playwright.config.js');
   const webServer = Array.isArray(playwrightConfig.webServer)
     ? playwrightConfig.webServer[0]
     : playwrightConfig.webServer;
 
   assert.equal(webServer?.command, 'node --import tsx e2e/support/server.ts');
+  assert.equal(webServer.timeout, 300_000);
   assert.deepEqual(webServer.gracefulShutdown, { signal: 'SIGTERM', timeout: 30_000 });
 });
