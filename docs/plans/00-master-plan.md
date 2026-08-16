@@ -300,6 +300,7 @@ North star (PRD §37.1): **verified production releases per active org per month
 - 2026-08-12 M4-GATE BLOCKED: The local release E2E path passed 1/1 and local Forgejo Gate-5 passed 1/1, but GitHub, Supabase, Neon, Stripe, and Fly live-provider acceptance skipped visibly because credentials were absent. M4 remains open until those provider-backed exit paths produce evidence.
 - 2026-08-12 M5-GATE BLOCKED: Billing, analytics, and observability provider acceptance is incomplete: Stripe and PostHog credentials were absent, and OPS-8 remains unchecked because prior real Grafana OTLP attempts returned 401 while the current token is a placeholder. The beta policy is structurally valid but readiness remains blocked; no provider skip or failed acceptance is reported green.
 - 2026-08-12 M2-M6-PLAN-2 done — Accepted ADR-0032 and expanded the remaining dependency graph around durable public builder controls/cards, tenant-safe code/evidence/settings/deployment projections, immutable OCI distribution, public Git leases, and desktop notification delivery; no provider call was required.
+- 2026-08-16 M1-GATE-17-FIX-2 done — Preserved the pnpm contract across the legacy catch-all listing behavior; focused M1 tests passed 8/8, the worker suite passed 265/265, the locked Docker image selected `pnpm install --frozen-lockfile` and `pnpm run dev`, and `pnpm verify` exited 0 with its visible environment/provider skips; no deviations.
 
 - 2026-08-12 V-5 BLOCKED: Implemented and twice reviewed an anonymous five-slot cohort registry, four-severity/two-person current support rotation, exact-shape privacy boundary, and atomic idempotent feedback-to-`tasks/beta-feedback/` bridge; all 5 operations tests pass and the readiness command deliberately exits 2 because no real agencies, support assignment, or task-linked feedback exist yet.
 - 2026-08-12 V-4 BLOCKED: Implemented and twice reviewed a fail-closed evaluator for all eight exact PRD §37.6 thresholds and seven §40.4 invalidation signals, with typed SHA-256-bound V-2/V-5 evidence, strict boundary behavior, and complete missing-input reporting; the policy gate is 5/5 green, while the real verdict remains blocked on all eight measurements, both evidence kinds, and the agency review.
@@ -396,6 +397,15 @@ by the binding execution plan.
 - [x] **Step 3:** Make `pnpm local` default to Docker, consume the digest-pinned public Forge image, and retain explicit Modal mode without changing production routing.
 - [x] **Step 4:** Run focused RED/GREEN evidence, touched-package lint/typecheck/build, the real signed-in local prompt-to-preview/edit/Git browser journey on port 3000, and `pnpm verify:cold`.
 - [x] **Step 5:** Check only the fix task after all evidence is green and commit `feat(local): add isolated Docker sandboxes`; `M1-GATE-17` remains unchecked until its required real Modal evidence exists.
+
+#### M1-GATE-17-FIX-2 — Preserve pnpm contracts on legacy sandbox images
+
+**Files:** `services/orchestrator-worker/src/runtime/m1-session.ts`, `services/orchestrator-worker/test/m1-session.test.ts`, `docs/plans/00-master-plan.md`, `tasks/todo.md`
+
+- [x] **Step 1:** Preserve the live failure where the immutable sandbox agent excludes root-level files from a `**/*` listing, causing the current-source contract scan to miss `pnpm-lock.yaml`, default to npm, and fail the supervised dependency install before Vite starts.
+- [x] **Step 2:** At the M1 scanner boundary, omit only the catch-all glob so legacy and current workspace agents return the complete bounded source tree; retain every narrower caller-supplied glob.
+- [x] **Step 3:** Run the focused RED/GREEN regression, orchestrator-worker test/lint/typecheck/build, and verify the original contract against the locked Docker image without rebuilding it.
+- [x] **Step 4:** Check the fix task and commit `fix(preview): preserve pnpm contract on legacy sandboxes`; `M1-GATE-17` remains open for its required Modal evidence.
 
 - 2026-08-12 M1-GATE-16 BLOCKED: the local supervisor/live harness and all non-provider gates, including `pnpm verify`, are green; the single real Stytch/Anthropic/Modal browser acceptance was not run because `STYTCH_PROJECT_ID`, `STYTCH_PUBLIC_TOKEN`, `STYTCH_SECRET`, `ANTHROPIC_API_KEY`, `MODAL_TOKEN_ID`, and `MODAL_TOKEN_SECRET` are not configured, so the task and tracker remain unchecked.
 - 2026-08-12 M1-GATE-16 progress — Provider configuration is now present and `pnpm local --no-open` reached truthful ready with login/control HTTP 200 plus clean application-only SIGINT shutdown; the interactive Stytch prompt-to-preview live gate remains unrun, so the task and tracker remain unchecked.

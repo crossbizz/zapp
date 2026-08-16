@@ -162,6 +162,42 @@ describe('M1 builder session composition', () => {
     });
   });
 
+  it('preserves the pnpm contract when a legacy sandbox glob omits root files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'zapp-m1-legacy-root-glob-'));
+    roots.push(root);
+    await Promise.all([
+      writeFile(
+        join(root, 'package.json'),
+        JSON.stringify({ scripts: { dev: 'vite --port 3000' }, dependencies: {} }),
+      ),
+      writeFile(join(root, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n'),
+    ]);
+    const runtime = new RecordingRuntime(root);
+    Object.defineProperty(runtime, 'kind', { value: 'cloud' });
+    const registry = createM1ToolRegistry(runtime, { redact: (value) => value });
+
+    await expect(
+      registry.execute(
+        'run_dev_server',
+        {},
+        {
+          organizationId: newId('org'),
+          projectId: newId('proj'),
+          runId: newId('run'),
+          taskId: 'm1-builder',
+          step: 'legacy-root-glob',
+        },
+      ),
+    ).resolves.toMatchObject({ ok: true, port: 3000 });
+    expect(runtime.started).toEqual([
+      expect.objectContaining({
+        package_manager: 'pnpm',
+        install: { command: 'pnpm install --frozen-lockfile' },
+        develop: { command: 'pnpm run dev', port: 3000 },
+      }),
+    ]);
+  });
+
   it('keeps dependency and generated output trees out of the builder file inventory', async () => {
     const root = await mkdtemp(join(tmpdir(), 'zapp-m1-source-inventory-'));
     roots.push(root);

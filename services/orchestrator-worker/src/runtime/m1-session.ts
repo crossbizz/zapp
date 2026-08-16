@@ -162,7 +162,12 @@ function projectDataPort(runtime: WorkspaceRuntime): ProjectDataPort {
       const result = await scanProjectCapabilities({
         workspaceRoot: '.',
         listFiles: async (glob) =>
-          (await listProjectEntries(runtime, '.', { glob, maxDepth: 100 }))
+          (
+            await listProjectEntries(runtime, '.', {
+              ...(glob === '**/*' ? {} : { glob }),
+              maxDepth: 100,
+            })
+          )
             .filter((entry) => entry.type === 'file')
             .map((entry) => entry.path),
         readFile: async (path) => new TextDecoder().decode(await runtime.readFile(path)),
