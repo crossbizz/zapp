@@ -6,6 +6,7 @@ import { afterEach, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  createNextDevOutputName,
   defaultNextDevOutputDirectory,
   nextDevWatchEnvironment,
   preserveNextGeneratedFiles,
@@ -48,6 +49,15 @@ void test('defaults to the absolute web app Next output directory', () => {
 
 void test('uses polling for repository-scale local and E2E Next watchers', () => {
   assert.deepEqual(nextDevWatchEnvironment(), { WATCHPACK_POLLING: 'true' });
+});
+
+void test('gives every E2E server run its own Next output directory', () => {
+  const first = createNextDevOutputName(3100);
+  const second = createNextDevOutputName(3100);
+
+  assert.match(first, /^\.next-e2e-3100-[a-f0-9-]+$/u);
+  assert.match(second, /^\.next-e2e-3100-[a-f0-9-]+$/u);
+  assert.notEqual(first, second);
 });
 
 void test('restores tracked files that Next rewrites during an isolated dev run', async () => {

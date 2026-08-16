@@ -544,6 +544,15 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - [x] Remove non-actionable support-level badges from the project UI and match the approved prompt composer focus, padding, and action-row rhythm without weakening keyboard accessibility.
 - [x] Prove title derivation, navigation, badge absence, composer focus/rhythm, and existing creation behavior in focused and full web suites. Commit: `feat(web): polish dashboard project creation`
 
+### Task WEB-22-FIX-1 [M6]: Isolate E2E output per server run
+
+**Files:** Modify `apps/web/.gitignore`, `apps/web/e2e/support/{next-dev-output,server}.ts`, `apps/web/test/next-dev-output.test.ts`, this plan, and `tasks/todo.md`.
+**Effort:** S.
+
+- [x] Reproduce the cleanup race where an exiting E2E server can delete a successor server's deterministic Next output directory.
+- [x] Give every E2E server process a unique ignored Next output directory while retaining run-owned cleanup.
+- [x] Prove same-port output names cannot collide, rerun the previously failing accessibility flow, and pass the complete repository gate. Commit: `fix(web): isolate e2e output per run`
+
 ---
 
 ## Testing strategy
@@ -557,6 +566,7 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 ## Execution log
 
+- 2026-08-16 WEB-22-FIX-1 done — Replaced the shared per-port E2E Next output directory with a unique run-owned directory so delayed shutdown cleanup cannot corrupt a successor server; the focused regression, three repeated accessibility passes, 52/52 web Node tests, 163/163 browser tests, all integration/isolation suites, Gate 5, and the complete 94/94-task repository gate passed, while credential-dependent cases skipped visibly as designed.
 - 2026-08-16 WEB-22 done — Added deterministic three-to-four-word project titles while preserving the full builder prompt, made `/dashboard` the canonical creation route, removed non-actionable support badges, matched the Lovable-style neutral composer rhythm, and passed 51/51 web Node tests, 163/163 browser tests, the production build, and the complete 94/94-task repository gate; credential-dependent integration cases skipped visibly as designed.
 - 2026-08-16 WEB-18-FIX-21 done — Stopped Docker containers no longer masquerade as live workspaces, provider resources are cleaned before durable attachment reconciliation, and Preview recovers from boot-log failure through the current branch; 13/13 focused sandbox tests, the preview-disappearance browser regression, affected lint/typecheck, and the complete 94/94-task repository gate passed.
 - 2026-08-16 WEB-21 done — Replaced the plain source view with a read-only CodeMirror 6 editor, Lovable-density tabs and darker compact semantic file icons, reference-in-chat context, polished conversation typography and localized timestamps, and removed the non-actionable builder Compatible badge; Builder/Viewer read-only checks, one-copy context handoff, 45/45 web Node tests, 160/160 browser tests, the production build, and the complete 94/94-task repository gate passed, while live-provider checks skipped visibly without credentials.
