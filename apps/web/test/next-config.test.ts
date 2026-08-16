@@ -25,10 +25,19 @@ after(() => {
 });
 
 void it('connects next dev to the real local control API when no override is supplied', async () => {
-  const { default: nextConfig } = await import('../next.config.js');
+  const { default: nextConfig, resolveNextDistDirectory } = await import('../next.config.js');
 
   assert.equal(nextConfig.env?.NEXT_PUBLIC_CONTROL_API_URL, 'http://localhost:4000');
   assert.equal(nextConfig.distDir, '.next-e2e-test');
+  assert.equal(resolveNextDistDirectory({ NODE_ENV: 'development' }), '.next-dev');
+  assert.equal(
+    resolveNextDistDirectory({
+      NODE_ENV: 'development',
+      ZAPP_WEB_NEXT_DIST_DIR: '.next-e2e-explicit',
+    }),
+    '.next-e2e-explicit',
+  );
+  assert.equal(resolveNextDistDirectory({ NODE_ENV: 'production' }), undefined);
 });
 
 void it('does not watch repository worktrees during local development', async () => {

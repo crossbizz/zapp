@@ -8,16 +8,25 @@ const controlApiUrl =
       ? 'http://localhost:4000'
       : undefined
     : configuredControlApiUrl;
-const configuredDistDir = process.env.ZAPP_WEB_NEXT_DIST_DIR?.trim();
 const uiSourceEntry = fileURLToPath(new URL('../../packages/ui/src/index.ts', import.meta.url));
 const uiSourceTokens = fileURLToPath(new URL('../../packages/ui/src/tokens.css', import.meta.url));
+
+export function resolveNextDistDirectory(
+  environment: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const configuredDistDir = environment['ZAPP_WEB_NEXT_DIST_DIR']?.trim();
+  if (configuredDistDir !== undefined && configuredDistDir.length > 0) {
+    return configuredDistDir;
+  }
+  return environment['NODE_ENV'] === 'development' ? '.next-dev' : undefined;
+}
+
+const nextDistDirectory = resolveNextDistDirectory(process.env);
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: ['127.0.0.1'],
   ...(controlApiUrl === undefined ? {} : { env: { NEXT_PUBLIC_CONTROL_API_URL: controlApiUrl } }),
-  ...(configuredDistDir === undefined || configuredDistDir.length === 0
-    ? {}
-    : { distDir: configuredDistDir }),
+  ...(nextDistDirectory === undefined ? {} : { distDir: nextDistDirectory }),
   productionBrowserSourceMaps: true,
   transpilePackages: ['@zapp/ui'],
   webpack(config, { dev }) {

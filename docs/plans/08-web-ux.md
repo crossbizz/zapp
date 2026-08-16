@@ -412,6 +412,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Prove the focused Git bootstrap suite, sandbox lint/typecheck, and the affected real durable-volume recovery path.
 - [x] Commit: `fix(preview): recover workspaces after origin rotation`
 
+#### WEB-18-FIX-14 - verification-safe local web runtime
+
+**Root cause:** the long-running `next dev` process and repository verification both used `apps/web/.next`. The web build starts by deleting that directory, so a valid cold/pre-push verification run removed live dev-server chunks and left port 3000 returning `Internal Server Error` until a manual restart.
+**Files:** Modify `apps/web/next.config.ts`, `apps/web/test/next-config.test.ts`, `apps/web/tsconfig.json`, `apps/web/.gitignore`, `eslint.config.mjs`, this plan, and `tasks/todo.md`. No production build output, public API contract, generated project source, or UI redesign is in scope.
+
+- [x] Add a failing configuration regression proving the default development output is isolated while explicit E2E and production output behavior remain intact.
+- [x] Give local Next development a dedicated ignored output directory without changing the production build directory.
+- [x] Prove the focused configuration suite, web lint/typecheck, and a live port-3000 request while a production build replaces `.next`.
+- [x] Commit: `fix(web): isolate the live dev build cache`
+
 ---
 
 ## Testing strategy
@@ -425,6 +435,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-14 done — Isolated long-running Next development in ignored `.next-dev` output while preserving explicit E2E directories and the production `.next` contract; the focused configuration suite passed 4/4, web lint passed with one pre-existing image warning, typecheck and production build passed, and eight concurrent plus one post-build port-3000 probes all returned HTTP 200 while `.next` was deleted and rebuilt.
 - 2026-08-15 WEB-18-FIX-13 done — Confirmed the affected durable Docker volume still held its branch, source tree, dependencies, and uncommitted work but retained an obsolete development-tunnel Git origin; reattach now validates the scoped organization/project repository path independently of the rotating host, rejects foreign paths, and scrubs the origin to the current credential-free URL. The focused Git bootstrap suite passed 7 tests with 1 live-environment skip, sandbox lint/typecheck passed, and the full sandbox suite passed 210 tests with 19 provider-gated skips.
 - 2026-08-15 WEB-18-FIX-12 done — Serialized the execution-contract install command before every Docker/Modal dev-server start and restart, extended only preview startup deadlines, rejected install failures before launch, and proved the current locked Docker image installs missing Vite and serves the generated document through the real preview proxy; sandbox 209 passed with 19 provider-gated skips, focused control 7/7, affected lint/typecheck, and the dependency-empty live Docker acceptance passed 1/1.
 - 2026-08-15 WEB-18-FIX-11 done — Resolved `@zapp/ui` and its token stylesheet from source during Next development so cold verification cannot strand the live app after deleting package build output; the focused configuration regression passed 4/4, web lint/typecheck passed with one pre-existing image warning, and the real supervisor served the login page with `packages/ui/dist` absent.

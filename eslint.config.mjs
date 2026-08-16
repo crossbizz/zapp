@@ -10,6 +10,7 @@ export default tseslint.config(
     ignores: [
       '**/dist/**',
       '**/.next/**',
+      '**/.next-dev/**',
       '**/.next-e2e-*/**',
       '**/.turbo/**',
       '**/coverage/**',

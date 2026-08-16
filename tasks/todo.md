@@ -307,6 +307,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-18-FIX-11 Stable local UI source resolution
 - [x] WEB-18-FIX-12 Dependency-safe preview startup
 - [x] WEB-18-FIX-13 Origin-rotation-safe workspace recovery
+- [x] WEB-18-FIX-14 Verification-safe local web runtime
 - [x] M6-GATE-FIX-1 Bound preview-proxy browser cleanup under cold-gate contention
 - [x] OPS-13-FIX-1 Narrow child-process runtime owners in Semgrep
 - [x] OPS-13-FIX-2 Admit the local Docker sandbox command owner in Semgrep
