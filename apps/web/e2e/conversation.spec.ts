@@ -81,6 +81,7 @@ interface EventInput {
   readonly runId?: string;
   readonly sequence: number;
   readonly type:
+    | 'agent.started'
     | 'commit.created'
     | 'conversation.card'
     | 'message.applied'
@@ -91,6 +92,7 @@ interface EventInput {
     | 'preview.starting'
     | 'run.cancelled'
     | 'tool.completed'
+    | 'tool.output'
     | 'tool.started';
 }
 
@@ -774,18 +776,122 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
       type: 'phase.started',
     }),
     eventFrame({
-      payload: { tool: 'write_file', userSummary: 'Edited 3 files' },
+      payload: {
+        tool: 'write_file',
+        toolCallId: 'write-package',
+        userSummary: 'Started write file',
+      },
       sequence: 3,
       type: 'tool.started',
     }),
     eventFrame({
-      payload: { tool: 'write_file', userSummary: 'Edited 3 files' },
+      payload: {
+        output: { ok: true, path: 'package.json' },
+        tool: 'write_file',
+        toolCallId: 'write-package',
+      },
       sequence: 4,
+      type: 'tool.output',
+    }),
+    eventFrame({
+      payload: {
+        audit: { path: 'package.json' },
+        tool: 'write_file',
+        toolCallId: 'write-package',
+        userSummary: 'Wrote package.json',
+      },
+      sequence: 5,
       type: 'tool.completed',
     }),
     eventFrame({
-      payload: { tool: 'run_build', userSummary: 'Ran build' },
-      sequence: 5,
+      payload: {
+        tool: 'write_file',
+        toolCallId: 'write-tsconfig',
+        userSummary: 'Started write file',
+      },
+      sequence: 6,
+      type: 'tool.started',
+    }),
+    eventFrame({
+      payload: {
+        output: { ok: true, path: 'tsconfig.json' },
+        tool: 'write_file',
+        toolCallId: 'write-tsconfig',
+      },
+      sequence: 7,
+      type: 'tool.output',
+    }),
+    eventFrame({
+      payload: {
+        audit: { path: 'tsconfig.json' },
+        tool: 'write_file',
+        toolCallId: 'write-tsconfig',
+        userSummary: 'Wrote tsconfig.json',
+      },
+      sequence: 8,
+      type: 'tool.completed',
+    }),
+    eventFrame({ payload: { agent: 'builder' }, sequence: 9, type: 'agent.started' }),
+    eventFrame({
+      payload: {
+        tool: 'install_dependency',
+        toolCallId: 'install-runtime',
+        userSummary: 'Started install dependency',
+      },
+      sequence: 10,
+      type: 'tool.started',
+    }),
+    eventFrame({
+      payload: {
+        output: { exitCode: 0, ok: true },
+        tool: 'install_dependency',
+        toolCallId: 'install-runtime',
+      },
+      sequence: 11,
+      type: 'tool.output',
+    }),
+    eventFrame({
+      payload: {
+        audit: { count: 3 },
+        tool: 'install_dependency',
+        toolCallId: 'install-runtime',
+        userSummary: 'Installed 3 dependencies',
+      },
+      sequence: 12,
+      type: 'tool.completed',
+    }),
+    eventFrame({ payload: { agent: 'builder' }, sequence: 13, type: 'agent.started' }),
+    eventFrame({
+      payload: {
+        tool: 'install_dependency',
+        toolCallId: 'install-dev',
+        userSummary: 'Started install dependency',
+      },
+      sequence: 14,
+      type: 'tool.started',
+    }),
+    eventFrame({
+      payload: {
+        output: { exitCode: 0, ok: true },
+        tool: 'install_dependency',
+        toolCallId: 'install-dev',
+      },
+      sequence: 15,
+      type: 'tool.output',
+    }),
+    eventFrame({
+      payload: {
+        audit: { count: 7 },
+        tool: 'install_dependency',
+        toolCallId: 'install-dev',
+        userSummary: 'Installed 7 dependencies',
+      },
+      sequence: 16,
+      type: 'tool.completed',
+    }),
+    eventFrame({
+      payload: { tool: 'run_command', toolCallId: 'run-build', userSummary: 'Ran build' },
+      sequence: 17,
       type: 'tool.completed',
     }),
     eventFrame({
@@ -795,12 +901,12 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
         model: 'anthropic/claude-sonnet-5',
         turnId: 'turn_01K27Q9C2W85CMN1V9S6Q3D4FJ',
       },
-      sequence: 6,
+      sequence: 19,
       type: 'message.assistant',
     }),
     eventFrame({
       payload: { phase: 'implementation' },
-      sequence: 7,
+      sequence: 20,
       type: 'phase.completed',
     }),
     eventFrame({
@@ -808,7 +914,7 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
         commitSha: '0123456789abcdef0123456789abcdef01234567',
         message: 'Complete checkout flow',
       },
-      sequence: 8,
+      sequence: 22,
       type: 'commit.created',
     }),
   ].join('');
@@ -822,7 +928,18 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
 
   await expect(page.getByText('Build the checkout flow', { exact: true })).toBeVisible();
   await expect(page.getByText('Checkout', { exact: true })).toBeVisible();
-  await expect(page.getByText('Edited 3 files · Ran build ✓')).toBeVisible();
+  const activity = page.locator('details.zapp-conversation-activity');
+  await expect(activity).toHaveCount(1);
+  await expect(
+    activity.getByText(
+      'Updated 2 project files · Installed 10 dependencies · Ran build ✓',
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(activity.getByText('Started write file', { exact: false }).first()).toBeHidden();
+  await activity.getByText('Details', { exact: true }).click();
+  await expect(activity.getByText('Started write file (started)', { exact: true }).first()).toBeVisible();
+  await expect(activity.getByText('Installed 7 dependencies (completed)', { exact: true })).toBeVisible();
   await expect(page.getByRole('status', { name: 'Build progress' })).toContainText('Complete');
   await page.getByRole('button', { name: /0123456 Complete checkout flow/u }).click();
   await expect(page.getByRole('tab', { name: 'Code' })).toHaveAttribute('aria-selected', 'true');

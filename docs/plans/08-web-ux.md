@@ -120,6 +120,17 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - [x] e2e with seeded event fixture stream: renders text, activity groups, progress card; kill SSE → reconnect → no dupes; Stop fires cancel and UI reflects `run.cancelled` ≤ 5 s.
 - [x] Commit: `feat(web): event-sourced conversation thread`
 
+#### WEB-6-FIX-1 — concise collapsed conversation activity rollups
+
+**Root cause:** `Thread` flushed its activity accumulator for non-rendered lifecycle metadata such as `tool.output`, `agent.started`, and `usage.recorded`, while `ToolActivityLine` joined every completed `userSummary` verbatim. Normal project setup therefore rendered separate start/completion rows and long filename lists instead of one reader-friendly progress update.
+
+**Files:** Modify `apps/web/src/components/conversation/{Thread,ToolActivityLine}.tsx`, `apps/web/test/conversation-presentation.test.ts`, `apps/web/e2e/conversation.spec.ts`, this plan, and `tasks/todo.md`. Add the approved design and implementation plan. No public API, event schema, orchestration, preview, sandbox, model-gateway, or port behavior is in scope.
+
+- [x] Build semantic summaries from structured tool names and audit counts; keep failed `userSummary` text prominent.
+- [x] Preserve exact ordered lifecycle summaries behind a native, closed-by-default `Details` disclosure.
+- [x] Ignore non-rendered events as activity boundaries while retaining messages, cards, phases, commits, and run changes as meaningful boundaries.
+- [x] Prove the rendering with focused SSR tests and a seeded browser stream containing `tool.output` and agent metadata. Commit: `fix(web): collapse conversation tool activity`.
+
 ### Task WEB-7 [M2]: Preview panel
 
 **Files:** Create: `src/components/preview/{PreviewFrame,PreviewToolbar,ConsoleDrawer}.tsx`
@@ -557,6 +568,7 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 ## Execution log
 
+- 2026-08-16 WEB-6-FIX-1 done — Collapsed noisy tool lifecycle rows into structured reader-friendly activity batches with exact ordered details on demand; TDD reproduced seven rows before the fix and one after, 6/6 focused presentation tests and 24/24 conversation browser tests passed, web lint/typecheck and the production build passed, with the one pre-existing image warning unchanged.
 - 2026-08-16 WEB-22 done — Added deterministic three-to-four-word project titles while preserving the full builder prompt, made `/dashboard` the canonical creation route, removed non-actionable support badges, matched the Lovable-style neutral composer rhythm, and passed 51/51 web Node tests, 163/163 browser tests, the production build, and the complete 94/94-task repository gate; credential-dependent integration cases skipped visibly as designed.
 - 2026-08-16 WEB-18-FIX-21 done — Stopped Docker containers no longer masquerade as live workspaces, provider resources are cleaned before durable attachment reconciliation, and Preview recovers from boot-log failure through the current branch; 13/13 focused sandbox tests, the preview-disappearance browser regression, affected lint/typecheck, and the complete 94/94-task repository gate passed.
 - 2026-08-16 WEB-21 done — Replaced the plain source view with a read-only CodeMirror 6 editor, Lovable-density tabs and darker compact semantic file icons, reference-in-chat context, polished conversation typography and localized timestamps, and removed the non-actionable builder Compatible badge; Builder/Viewer read-only checks, one-copy context handoff, 45/45 web Node tests, 160/160 browser tests, the production build, and the complete 94/94-task repository gate passed, while live-provider checks skipped visibly without credentials.

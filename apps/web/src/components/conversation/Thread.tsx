@@ -126,6 +126,13 @@ function payloadString(event: RunEvent, key: string): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function toolAuditCount(event: RunEvent): number | undefined {
+  const audit = event.data.payload['audit'];
+  if (typeof audit !== 'object' || audit === null || Array.isArray(audit)) return undefined;
+  const count = (audit as Readonly<Record<string, unknown>>)['count'];
+  return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+}
+
 function attachmentNames(event: RunEvent): readonly string[] {
   const attachments = event.data.payload['attachments'];
   if (!Array.isArray(attachments)) return [];
@@ -180,7 +187,11 @@ function threadItems(events: readonly ConversationRunEvent[]): readonly ThreadIt
       const summary = payloadString(event, 'userSummary');
       if (summary !== undefined) {
         if (activities.length === 0) activityRunId = event.data.runId;
+        const count = toolAuditCount(event);
+        const tool = payloadString(event, 'tool');
+        const toolCallId = payloadString(event, 'toolCallId');
         activities.push({
+          ...(count === undefined ? {} : { count }),
           sequence: event.data.sequence,
           state:
             event.type === 'tool.completed'
@@ -189,13 +200,15 @@ function threadItems(events: readonly ConversationRunEvent[]): readonly ThreadIt
                 ? 'failed'
                 : 'started',
           summary,
+          ...(tool === undefined ? {} : { tool }),
+          ...(toolCallId === undefined ? {} : { toolCallId }),
         });
       }
       continue;
     }
-    flushActivities();
 
     if (event.type === 'conversation.card') {
+      flushActivities();
       const card = event.data.payload['card'] as ConversationCard;
       items.push({
         card,
@@ -208,6 +221,7 @@ function threadItems(events: readonly ConversationRunEvent[]): readonly ThreadIt
     }
 
     if (event.type === 'message.user' || event.type === 'message.assistant') {
+      flushActivities();
       const content = payloadString(event, 'content');
       if (content === undefined && event.type === 'message.assistant') {
         const artifactId = payloadString(event, 'contentArtifactId');
@@ -245,6 +259,7 @@ function threadItems(events: readonly ConversationRunEvent[]): readonly ThreadIt
       event.type === 'phase.started' ||
       event.type === 'phase.completed'
     ) {
+      flushActivities();
       const key = `${event.data.runId}:${phaseKey(event)}`;
       const existingIndex = phases.get(key);
       const existing = existingIndex === undefined ? undefined : items[existingIndex];
@@ -280,6 +295,7 @@ function threadItems(events: readonly ConversationRunEvent[]): readonly ThreadIt
     }
 
     if (event.type === 'commit.created') {
+      flushActivities();
       const sha = payloadString(event, 'commitSha') ?? payloadString(event, 'sha');
       if (sha !== undefined) {
         items.push({
@@ -424,7 +440,16 @@ function ThreadStyles(): ReactElement {
         font-size: var(--zapp-text-14);
       }
       .zapp-conversation-activity summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
         cursor: pointer;
+      }
+      .zapp-conversation-activity-details {
+        flex: 0 0 auto;
+        color: var(--zapp-text-muted);
+        font-size: var(--zapp-text-12);
       }
       .zapp-conversation-progress {
         display: flex;

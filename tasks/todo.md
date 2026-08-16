@@ -114,6 +114,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-4-FIX-1 Cold-run durable import retry acceptance bound
 - [x] WEB-5 Builder two-pane shell
 - [x] WEB-6 Event-sourced conversation thread
+- [x] WEB-6-FIX-1 Concise collapsed conversation activity rollups
 
 ## M2 — Agentic core + Mission Control (Weeks 8–14)
 

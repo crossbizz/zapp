@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { MessageBubble } from '../src/components/conversation/MessageBubble';
 import { formatConversationTimestamp } from '../src/components/conversation/message-time';
+import { ToolActivityLine } from '../src/components/conversation/ToolActivityLine';
 
 void test('formats current-day messages with their exact local time', () => {
   assert.equal(
@@ -50,4 +51,82 @@ void test('defers localized timestamp text until browser hydration', () => {
   );
 
   assert.doesNotMatch(markup, /<time/u);
+});
+
+void test('rolls structured tool activity into one reader-friendly summary', () => {
+  const activities = [
+    {
+      sequence: 1,
+      state: 'started',
+      summary: 'Started write file',
+      tool: 'write_file',
+      toolCallId: 'write-package',
+    },
+    {
+      sequence: 2,
+      state: 'completed',
+      summary: 'Wrote package.json',
+      tool: 'write_file',
+      toolCallId: 'write-package',
+    },
+    {
+      sequence: 3,
+      state: 'completed',
+      summary: 'Wrote tsconfig.json',
+      tool: 'write_file',
+      toolCallId: 'write-tsconfig',
+    },
+    {
+      count: 3,
+      sequence: 4,
+      state: 'completed',
+      summary: 'Installed 3 dependencies',
+      tool: 'install_dependency',
+      toolCallId: 'install-runtime',
+    },
+    {
+      count: 7,
+      sequence: 5,
+      state: 'completed',
+      summary: 'Installed 7 dependencies',
+      tool: 'install_dependency',
+      toolCallId: 'install-dev',
+    },
+  ] as const;
+
+  const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
+
+  assert.match(
+    markup,
+    /<summary><span>Updated 2 project files · Installed 10 dependencies ✓<\/span>/u,
+  );
+  assert.match(markup, />Details<\/span>/u);
+  assert.match(markup, /Started write file \(started\)/u);
+  assert.match(markup, /Wrote package\.json \(completed\)/u);
+  assert.doesNotMatch(markup, /<details[^>]*\sopen(?:=|\s|>)/u);
+});
+
+void test('keeps a failed tool summary prominent while retaining prior details', () => {
+  const activities = [
+    {
+      sequence: 1,
+      state: 'completed',
+      summary: 'Wrote package.json',
+      tool: 'write_file',
+      toolCallId: 'write-package',
+    },
+    {
+      sequence: 2,
+      state: 'failed',
+      summary: 'Command failed',
+      tool: 'run_command',
+      toolCallId: 'run-tests',
+    },
+  ] as const;
+
+  const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
+
+  assert.match(markup, /<summary><span>Command failed !<\/span>/u);
+  assert.doesNotMatch(markup, /<summary>[^<]*Wrote package\.json/u);
+  assert.match(markup, /Wrote package\.json \(completed\)/u);
 });
