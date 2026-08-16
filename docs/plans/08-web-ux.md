@@ -586,12 +586,21 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 ### Task WEB-22-FIX-3 [M6]: Allow cold E2E production builds to finish
 
-**Files:** Modify `apps/web/playwright.config.ts`, `apps/web/test/next-config.test.ts`, this plan, and `tasks/todo.md`.
+**Files:** Modify `apps/web/playwright.config.ts`, `apps/web/test/next-config.test.ts`, `packages/config/test/turbo.test.ts`, this plan, and `tasks/todo.md`.
 **Effort:** XS.
 
 - [x] Reproduce the authoritative CI failure where Playwright's one-minute startup deadline interrupts a clean production build and the shutdown race surfaces as a missing isolated build.
 - [x] Give the single signal-owning browser supervisor a bounded five-minute startup budget while retaining its existing 30-second graceful shutdown.
 - [x] Prove the focused configuration contract, complete 167-test browser suite, and repository gate; require both exact-SHA GitHub workflows at the final acceptance gate. Commit: `fix(web): allow cold e2e production builds`
+
+### Task WEB-22-FIX-4 [M6]: Synchronize the cold web test graph
+
+**Files:** Modify `packages/config/test/turbo.test.ts`, this plan, and `tasks/todo.md`.
+**Effort:** XS.
+
+- [x] Preserve the cold-gate failure where the Turbo graph contract omitted two tracked web Node tests.
+- [x] Synchronize the exact web test command contract without weakening graph validation.
+- [x] Prove the focused configuration contract and complete cold repository gate. Commit: `test(config): sync web cold test contract`
 
 ---
 
@@ -606,6 +615,7 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 ## Execution log
 
+- 2026-08-16 WEB-22-FIX-4 done — Synchronized the exact Turbo web test-command contract with the tracked project-title and run-outcome suites; the focused configuration test passed 5/5 and the complete cold repository gate passed 94/94 package tasks plus 167/167 browser tests.
 - 2026-08-16 WEB-22-FIX-3 done — Raised the browser supervisor's startup budget above the observed two-minute clean-CI production build while retaining bounded shutdown; the focused RED/GREEN contract, 62/62 web Node tests, 167/167 browser tests, and complete 94/94-task repository gate passed, with provider-credential cases skipped visibly as designed and exact-SHA GitHub workflows required before final handoff.
 - 2026-08-16 WEB-19-FIX-2 done — Kept the production one-second reconnect policy unchanged, replaced an overloaded five-second presentation race with explicit bounded transport and rendering assertions, passed the scenario 20/20 under isolated stress, and passed the complete repository gate.
 - 2026-08-16 WEB-6-FIX-1 done — Collapsed noisy tool lifecycle rows into truthful structured activity batches with exact ordered details on demand, failed closed on missing outcomes and inexact file metadata, and kept active work visible; TDD regressions passed 12/12 focused presentation tests and 26/26 conversation browser tests, web lint/typecheck and the production build passed, with the one pre-existing image warning unchanged and no port behavior changed.
