@@ -449,6 +449,7 @@ export function PreviewFrame({
   const workspaceScopeRef = useRef<string | undefined>(undefined);
   const lifecycle = useMemo(() => previewLifecycle(events), [events]);
   const eventWorkspace = eventWorkspaceId(lifecycle.event);
+  const workspaceRecoveryAllowed = eventWorkspace !== undefined || runStatus === 'completed';
   const previewUsable = logs?.state === 'ready';
 
   useEffect(() => {
@@ -461,7 +462,7 @@ export function PreviewFrame({
       setWorkspaceId(undefined);
     }
     setWorkspaceRecoveryError(undefined);
-    if (eventWorkspace === undefined && (runStatus === 'queued' || runStatus === 'running')) {
+    if (!workspaceRecoveryAllowed) {
       setOperationStatus(undefined);
       return () => {
         current = false;
@@ -494,7 +495,14 @@ export function PreviewFrame({
       current = false;
       controller.abort();
     };
-  }, [branchId, eventWorkspace, organizationId, projectId, runStatus, workspaceRecoveryGeneration]);
+  }, [
+    branchId,
+    eventWorkspace,
+    organizationId,
+    projectId,
+    workspaceRecoveryAllowed,
+    workspaceRecoveryGeneration,
+  ]);
 
   const refreshWorkspace = useCallback(
     async (signal?: AbortSignal, reset = false): Promise<void> => {
@@ -1038,14 +1046,32 @@ export function PreviewFrame({
       );
     }
     if (workspaceId === undefined) {
+      const terminalWithoutWorkspace = runStatus === 'failed' || runStatus === 'cancelled';
+      const title = terminalWithoutWorkspace
+        ? 'Preview unavailable'
+        : runStatus === 'queued'
+          ? 'Build queued'
+          : runStatus === 'completed'
+            ? 'Restoring workspace'
+            : runStatus === undefined
+              ? 'Loading build'
+              : 'Build in progress';
+      const description = terminalWithoutWorkspace
+        ? 'This run ended before the agent started a project workspace.'
+        : runStatus === 'queued'
+          ? 'The agent accepted your request and will start the workspace next.'
+          : runStatus === 'completed'
+            ? 'Opening the latest project branch…'
+            : runStatus === undefined
+              ? 'Checking the latest run before opening its workspace…'
+              : 'The preview will open as soon as the agent starts the project workspace.';
       return (
-        <div aria-busy="true" className="zapp-preview-state">
-          <h2>{runStatus === 'queued' ? 'Build queued' : 'Restoring workspace'}</h2>
-          <p>
-            {runStatus === 'queued'
-              ? 'The agent accepted your request and will start the workspace next.'
-              : 'Opening the latest project branch…'}
-          </p>
+        <div
+          {...(terminalWithoutWorkspace ? {} : { 'aria-busy': true })}
+          className="zapp-preview-state"
+        >
+          <h2>{title}</h2>
+          <p>{description}</p>
         </div>
       );
     }

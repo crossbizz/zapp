@@ -197,6 +197,36 @@ test('keeps preview controls compact and gives the remaining workspace to the st
   await expect(page.getByRole('status', { name: 'Build status' })).toHaveText('Build queued');
 });
 
+test('leaves initial workspace provisioning to the active run while run state hydrates', async ({
+  page,
+}) => {
+  const workspaceRequests: string[] = [];
+  await installBuilder(page, () => '');
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await route.fulfill({
+      body: JSON.stringify({ items: [activeRun], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    workspaceRequests.push(route.request().method());
+    await route.fulfill({
+      body: JSON.stringify({ workspaces: [] }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect(page.getByRole('status', { name: 'Build status' })).toHaveText('Agent is running');
+  expect(workspaceRequests).toEqual([]);
+  await expect(page.getByRole('heading', { name: 'Build in progress' })).toBeVisible();
+});
+
 test('keeps an existing healthy preview open when a repeated start reports failure', async ({
   page,
 }) => {

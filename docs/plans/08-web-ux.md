@@ -442,6 +442,16 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Prove the focused provider suite, sandbox lint/typecheck, and a real restored Docker workspace through the signed-in preview UI.
 - [x] Commit: `fix(preview): restore development dependencies noninteractively`
 
+#### WEB-18-FIX-17 - run-owned initial workspace provisioning
+
+**Root cause:** The builder mounts Preview before Conversation finishes hydrating the latest run. With no run status or preview event yet, Preview treated a fresh project as an expired historical workspace and created a second sandbox. The UI recovery sandbox acquired the project-branch lock first, so Temporal's authoritative `ensureWorkspace` activity received a 502 and failed the run before dependency installation or agent work began.
+**Files:** Modify `apps/web/src/components/preview/PreviewFrame.tsx`, `apps/web/e2e/preview-panel.spec.ts`, this plan, and `tasks/todo.md`. No public API, workspace lock, orchestration activity, dependency installation, generated project source, or visual redesign is in scope.
+
+- [x] Add a failing browser regression proving Preview makes no workspace request while the latest active run is still hydrating and provisioning its workspace.
+- [x] Allow automatic UI workspace creation only for completed historical runs or a structured preview event that already identifies the run-owned workspace, with truthful waiting and terminal empty states.
+- [x] Prove the focused preview panel, web lint/typecheck, and signed-in fresh plus restored Docker project flows.
+- [x] Commit: `fix(web): prevent fresh-run preview workspace races`
+
 ---
 
 ## Testing strategy
@@ -455,6 +465,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-15 WEB-18-FIX-17 done — Reserved initial workspace provisioning for the authoritative run, restored terminal projects from their durable branch, and proved the focused preview lifecycle, web lint/typecheck, fresh-run non-race, and signed-in Docker restoration flow.
 - 2026-08-15 WEB-18-FIX-16 done — Forced preview dependency recovery into non-interactive development mode for both start and restart; the focused and full sandbox suites, full repository gate, and signed-in restored Docker preview/source flow passed.
 - 2026-08-15 WEB-18-FIX-15 done — Replaced placeholder More navigation with compact semantic icons, labeled the active surface, added Lovable-style nested Cloud navigation with truthful API-backed content, and passed 25/25 builder shell plus 136/136 browser tests, 37/37 web unit tests, lint/typecheck, desktop and 680px acceptance.
 - 2026-08-15 WEB-18-FIX-14 done — Isolated long-running Next development in ignored `.next-dev` output while preserving explicit E2E directories and the production `.next` contract; the focused configuration suite passed 4/4, web lint passed with one pre-existing image warning, typecheck and production build passed, and eight concurrent plus one post-build port-3000 probes all returned HTTP 200 while `.next` was deleted and rebuilt.
