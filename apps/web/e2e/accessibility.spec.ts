@@ -60,6 +60,9 @@ async function signIn(page: Page): Promise<void> {
   await page.goto('/login');
   await page.getByRole('link', { name: 'Sign in' }).click();
   await expect(page).toHaveURL('/');
+  await expect(page.getByRole('textbox', { name: 'Describe your project' })).toBeVisible({
+    timeout: 20_000,
+  });
 }
 
 async function response(route: Route, body: unknown, status = 200): Promise<void> {
