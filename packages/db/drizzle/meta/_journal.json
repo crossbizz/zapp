@@ -253,6 +253,13 @@
       "when": 1786690387629,
       "tag": "0035_sandbox_capacity",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786864835763,
+      "tag": "0036_rich_naoko",
+      "breakpoints": true
     }
   ]
 }

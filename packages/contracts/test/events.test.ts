@@ -4,6 +4,7 @@ import {
   AgentEventSchema,
   AgentEventVisibilitySchema,
   AttachmentRefSchema,
+  MessageAppliedPayloadSchema,
   PreviewLifecycleEventSchema,
 } from '../src/events.js';
 
@@ -121,6 +122,7 @@ describe('AGENT_EVENT_TYPES', () => {
       'agent.completed',
       'message.user',
       'message.assistant',
+      'message.applied',
       'conversation.card',
       'conversation.response',
       'tool.started',
@@ -145,7 +147,7 @@ describe('AGENT_EVENT_TYPES', () => {
     expect(new Set(AGENT_EVENT_TYPES).size).toBe(AGENT_EVENT_TYPES.length);
   });
   it('event type list matches PRD count', () => {
-    expect(AGENT_EVENT_TYPES).toHaveLength(38);
+    expect(AGENT_EVENT_TYPES).toHaveLength(39);
   });
 });
 
@@ -208,6 +210,24 @@ describe('conversation event payloads', () => {
     byteSize: 1234,
     contentType: 'image/png',
   };
+
+  it('accepts only structured message application acknowledgements', () => {
+    const payload = {
+      messageId: 'msg_01J8ME7YQZJ2V9Q0X3T5B6K7NF',
+      operationKey: `op_${'a'.repeat(64)}`,
+    };
+    expect(MessageAppliedPayloadSchema.parse(payload)).toEqual(payload);
+    expect(
+      AgentEventSchema.safeParse({ ...baseEvent, type: 'message.applied', payload }).success,
+    ).toBe(true);
+    expect(
+      AgentEventSchema.safeParse({
+        ...baseEvent,
+        type: 'message.applied',
+        payload: { messageId: payload.messageId },
+      }).success,
+    ).toBe(false);
+  });
 
   it('accepts up to ten typed image attachments on message.user', () => {
     expect(AttachmentRefSchema.parse(attachment)).toEqual(attachment);

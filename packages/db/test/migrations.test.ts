@@ -35,6 +35,10 @@ const planEnforcementSql = readFileSync(
   new URL('../drizzle/0026_cooing_hemingway.sql', import.meta.url),
   'utf8',
 );
+const durableConversationsSql = readFileSync(
+  new URL('../drizzle/0036_rich_naoko.sql', import.meta.url),
+  'utf8',
+);
 
 describe('migration journal', () => {
   it('lists every migration file, in order, exactly once', () => {
@@ -105,6 +109,23 @@ describe('migration journal', () => {
     expect(sql).toMatch(/"type" = 'budget_increase'/iu);
     expect(sql).toMatch(/not \("request_json" \? 'reason'\)/iu);
     expect(sql).toContain('run_budget_exhausted');
+  });
+
+  it('backfills one durable conversation per legacy run before enforcing non-null links', () => {
+    const normalized = durableConversationsSql.toLowerCase();
+    expect(durableConversationsSql).toMatch(/insert into "conversations"/iu);
+    expect(durableConversationsSql).toMatch(/update "agent_runs"/iu);
+    expect(durableConversationsSql).toMatch(
+      /alter table "agent_runs" alter column "conversation_id" set not null/iu,
+    );
+    expect(durableConversationsSql).toMatch(
+      /alter table "agent_runs" alter column "conversation_run_number" set not null/iu,
+    );
+    expect(normalized.indexOf('insert into "conversations"')).toBeLessThan(
+      normalized.indexOf(
+        'alter table "agent_runs" alter column "conversation_id" set not null',
+      ),
+    );
   });
 });
 

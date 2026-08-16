@@ -7,6 +7,7 @@ const ALL_PREFIXES: readonly IdPrefix[] = [
   'org',
   'user',
   'proj',
+  'conv',
   'run',
   'task',
   'ws',
@@ -42,6 +43,7 @@ describe('ALL_PREFIXES', () => {
       'org',
       'user',
       'proj',
+      'conv',
       'run',
       'task',
       'ws',
@@ -71,7 +73,7 @@ describe('ALL_PREFIXES', () => {
   });
 
   it('covers every PRD §23 table with one prefix each', () => {
-    expect(ALL_PREFIXES).toHaveLength(26);
+    expect(ALL_PREFIXES).toHaveLength(27);
   });
 });
 

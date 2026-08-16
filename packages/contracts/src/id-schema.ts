@@ -9,6 +9,7 @@ export type IdPrefix =
   | 'user'
   | 'sub'
   | 'proj'
+  | 'conv'
   | 'repo'
   | 'br'
   | 'env'

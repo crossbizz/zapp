@@ -15,6 +15,18 @@ export {
   type ConversationCardResponse,
 } from './conversation-cards.js';
 export {
+  ConversationEventPageSchema,
+  ConversationEventSchema,
+  ConversationPageSchema,
+  ConversationSchema,
+  ConversationSummarySchema,
+  type Conversation,
+  type ConversationEvent,
+  type ConversationEventPage,
+  type ConversationPage,
+  type ConversationSummary,
+} from './conversations.js';
+export {
   IntegralCreditDecimalSchema,
   PlanLimitSchema,
   PlanLimitsConfigSchema,
@@ -38,6 +50,7 @@ export {
   AgentEventVisibilitySchema,
   AttachmentRefSchema,
   MessageAssistantPayloadSchema,
+  MessageAppliedPayloadSchema,
   MessageUserPayloadSchema,
   PreviewLifecycleEventSchema,
   PreviewOperationFailurePayloadSchema,
@@ -49,6 +62,7 @@ export {
   type AgentEventVisibility,
   type AttachmentRef,
   type MessageAssistantPayload,
+  type MessageAppliedPayload,
   type MessageUserPayload,
   type PreviewLifecycleEvent,
 } from './events.js';

@@ -4,7 +4,7 @@ import type { Database } from '../../src/client.js';
 import { nextEventSequence } from '../../src/events.js';
 import { agentEvents } from '../../src/schema/execution.js';
 import { organizations, users } from '../../src/schema/identity.js';
-import { agentRuns } from '../../src/schema/planning.js';
+import { agentRuns, conversations } from '../../src/schema/planning.js';
 import { branches, projects } from '../../src/schema/projects.js';
 
 /**
@@ -24,6 +24,7 @@ export interface SeededTenant {
   readonly organizationId: string;
   readonly userId: string;
   readonly projectId: string;
+  readonly conversationId: string;
   readonly branchId: string;
   readonly runId: string;
   /** Event ids in sequence order, `1 … eventCount`. */
@@ -38,6 +39,7 @@ export async function seedTenant(
   const userId = newId('user');
   const projectId = newId('proj');
   const branchId = newId('br');
+  const conversationId = newId('conv');
   const runId = newId('run');
 
   await db
@@ -64,10 +66,19 @@ export async function seedTenant(
     name: 'main',
     status: 'active',
   });
+  await db.insert(conversations).values({
+    id: conversationId,
+    organizationId,
+    projectId,
+    createdBy: userId,
+    title: `${options.slug} conversation`,
+  });
   await db.insert(agentRuns).values({
     id: runId,
     organizationId,
     projectId,
+    conversationId,
+    conversationRunNumber: 1,
     branchId,
     mode: 'build',
     requestFingerprint: `seed:${runId}`,
@@ -96,5 +107,13 @@ export async function seedTenant(
     eventIds.push(id);
   }
 
-  return { organizationId, userId, projectId, branchId, runId, eventIds };
+  return {
+    organizationId,
+    userId,
+    projectId,
+    conversationId,
+    branchId,
+    runId,
+    eventIds,
+  };
 }

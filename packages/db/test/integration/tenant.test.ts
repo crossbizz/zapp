@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDb } from '../../src/client.js';
 import { nextEventSequence } from '../../src/events.js';
 import { runEventCounters } from '../../src/schema/execution.js';
-import { agentRuns } from '../../src/schema/planning.js';
+import { agentRuns, conversations } from '../../src/schema/planning.js';
 import { branches } from '../../src/schema/projects.js';
 import { integrationConnections } from '../../src/schema/security.js';
 import { forOrg } from '../../src/tenant.js';
@@ -80,9 +80,19 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
       if (seededRun === undefined) throw new Error('expected the seeded run');
 
       const newestRunId = 'run_00000000000000000000000000';
+      const newestConversationId = newId('conv');
+      await handle.db.insert(conversations).values({
+        id: newestConversationId,
+        organizationId: alpha.organizationId,
+        projectId: alpha.projectId,
+        createdBy: alpha.userId,
+        title: 'Newest conversation',
+      });
       await handle.db.insert(agentRuns).values({
         ...seededRun,
         id: newestRunId,
+        conversationId: newestConversationId,
+        conversationRunNumber: 1,
         startedAt: new Date(seededRun.startedAt.getTime() + 1_000),
         temporalWorkflowId: newestRunId,
       });
@@ -304,9 +314,11 @@ describe.skipIf(!hasDatabase)('tenant-scoped repositories', () => {
           id: newId('run'),
           organizationId: alpha.organizationId,
           projectId: beta.projectId,
+          conversationId: alpha.conversationId,
+          conversationRunNumber: 2,
           mode: 'build',
           requestFingerprint: 'seed:cross-tenant-run',
-          status: 'running',
+          status: 'completed',
           startedBy: alpha.userId,
           planMaxCredits: '1000.0000',
         }),

@@ -27,6 +27,7 @@ export const AGENT_EVENT_TYPES = [
   'agent.completed',
   'message.user',
   'message.assistant',
+  'message.applied',
   'conversation.card',
   'conversation.response',
   'tool.started',
@@ -180,6 +181,14 @@ export const MessageAssistantPayloadSchema = z
   });
 export type MessageAssistantPayload = z.infer<typeof MessageAssistantPayloadSchema>;
 
+export const MessageAppliedPayloadSchema = z
+  .object({
+    messageId: OpaqueMessageIdSchema,
+    operationKey: z.string().regex(/^op_[a-f0-9]{64}$/u),
+  })
+  .strict();
+export type MessageAppliedPayload = z.infer<typeof MessageAppliedPayloadSchema>;
+
 /**
  * PRD §14.4. Events are immutable, ordered per run by `sequence`, replayable,
  * and idempotently consumable — Mission Control reads these, never chat text.
@@ -210,11 +219,13 @@ function validateEventPayload(
       ? MessageUserPayloadSchema.safeParse(event.payload)
       : event.type === 'message.assistant'
         ? MessageAssistantPayloadSchema.safeParse(event.payload)
-        : event.type === 'conversation.card'
-          ? ConversationCardEventPayloadSchema.safeParse(event.payload)
-          : event.type === 'conversation.response'
-            ? ConversationResponseEventPayloadSchema.safeParse(event.payload)
-        : undefined;
+        : event.type === 'message.applied'
+          ? MessageAppliedPayloadSchema.safeParse(event.payload)
+          : event.type === 'conversation.card'
+            ? ConversationCardEventPayloadSchema.safeParse(event.payload)
+            : event.type === 'conversation.response'
+              ? ConversationResponseEventPayloadSchema.safeParse(event.payload)
+              : undefined;
   if (parsed !== undefined && !parsed.success) {
     for (const issue of parsed.error.issues) {
       ctx.addIssue({ ...issue, path: ['payload', ...issue.path] });

@@ -379,6 +379,17 @@ Execution expansion (2026-08-12):
 - [x] **24c RED/GREEN — typed approvals:** persist specification, plan, build-plan, and redirect approvals with stable ids; emit typed specification/plan/approval cards and wait on matching approval id, kind, and artifact identity.
 - [x] **24d replay/verification:** prove duplicate response keys do not advance twice and old continuation histories default safely; run focused contracts and real Temporal tests plus worker lint/typecheck/build and architecture checks, then record and commit once.
 
+### Task AR-25 [M6]: Safe queued-message application
+
+**ADR:** ADR-0034. **Files:** Modify Builder session transcript repository/activity/workflow, run signal queue, context assembly, composition, contracts/events, tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-durable-project-conversations.md`.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] **25a RED/GREEN — durable transcript:** persist versioned run/task Builder transcripts across completed activity yields with compare-and-swap semantics; refuse missing or conflicting continuation state rather than restarting from an empty transcript.
+- [ ] **25b RED/GREEN — keyed bounded queue:** accept at most 100 distinct keyed messages, ignore duplicate operation keys deterministically, and surface overflow explicitly.
+- [ ] **25c RED/GREEN — safe boundary application:** yield only after a completed tool boundary, apply the oldest queued message once in the next session activity, and emit `message.applied` only after transcript persistence; never cancel an active tool to accept a message.
+- [ ] **25d replay/context proof:** prove crash/retry around persistence and acknowledgement is idempotent, no first model turn/tool replays, same-conversation successor context is present, and a distinct conversation receives none.
+- [ ] Verify focused worker unit/Temporal suites plus lint/typecheck/build and architecture gates; no real-provider call. Commit: `feat(orchestrator): apply queued messages safely`
+
 ## Testing strategy
 - Unit: policies, graph, context assembly, schema round-trips (fast, no infra).
 - Integration: Temporal dev server + fake sandbox/model for workflow semantics (signals, restarts, isolation, idempotency). Worker-kill tests (AR-8, AR-17) are permanent CI.

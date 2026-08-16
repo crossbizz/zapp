@@ -463,6 +463,26 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 - [x] Prove the focused and full affected suites, package lint/typecheck, all 12 preview browser flows, the real source tree, and an authenticated Docker container-restart-to-render recovery.
 - [x] Commit: `fix(preview): make workspace recovery reliable`
 
+### Task WEB-19 [M6]: Project conversation history and new threads
+
+**ADR:** ADR-0034. **Files:** Modify builder thread/header/API/SSE composition and styles, add conversation hooks/history drawer, Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-durable-project-conversations.md`.
+**Effort:** L. **[expand-at-execution]**
+
+- [ ] Render the selected conversation's structured events across every ordered run; terminal same-thread follow-up creates a successor without unmounting prior messages, while an active-run message uses the existing keyed continuation route.
+- [ ] Add accessible **History** and **New thread** controls. Store selection in `?conversation=`, support refresh/Back/Forward, select newest only when no selection exists, and create no empty record for `conversation=new`.
+- [ ] Show accepted busy-run user messages as **Queued** and transition only on the matching `message.applied`; merge history pages and active SSE by `(runId, sequence)` without duplicates or cross-tenant retained selection.
+- [ ] Prove seeded multi-run history, terminal follow-up, explicit new-thread creation, queued-to-applied state, pagination, navigation restoration, retry states, and organization fencing in focused and full web suites. Commit: `feat(web): add project conversation history`
+
+### Task WEB-20 [M6]: Project-card deletion lifecycle
+
+**Files:** Modify project dashboard/card/API/styles, add exact-name confirmation dialog, Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-project-card-deletion.md`.
+**Effort:** M. **[expand-at-execution]**
+
+- [ ] Add an Owner-only accessible card overflow action for every project; Builders/Viewers never receive it, and exact project-name confirmation is mandatory.
+- [ ] Reuse CP-17's public keyed deletion request/status API, keep the key stable while outcome is unknown, and show truthful queued/running/failed/retry states until completion or a fresh scoped list omits the project.
+- [ ] Keep other cards usable, clean only the deleted project's thumbnail/state, and abort timers/requests plus clear stale state on organization changes.
+- [ ] Prove permission visibility, headers/idempotency, confirmation, bounded polling, retry-key rotation, multi-card isolation, and organization fencing in focused and full web suites. Commit: `feat(web): add project-card deletion`
+
 ---
 
 ## Testing strategy

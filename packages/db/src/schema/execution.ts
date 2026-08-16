@@ -276,6 +276,24 @@ export const runEventCounters = pgTable('run_event_counters', {
   lastSequence: bigint('last_sequence', { mode: 'number' }).notNull().default(0),
 });
 
+export const builderSessionTranscripts = pgTable(
+  'builder_session_transcripts',
+  {
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
+    organizationId: organizationId(),
+    taskId: text('task_id').notNull(),
+    version: integer('version').notNull(),
+    transcriptJson: jsonb('transcript_json').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.runId, t.taskId] }),
+    check('builder_session_transcripts_version_check', sql`${t.version} >= 0`),
+  ],
+);
+
 const ACTIVITY_IDEMPOTENCY_STATUSES = ['running', 'completed'] as const;
 
 /**
@@ -418,6 +436,8 @@ export type NewWorkspace = typeof workspaces.$inferInsert;
 export type AgentEventRow = typeof agentEvents.$inferSelect;
 export type NewAgentEventRow = typeof agentEvents.$inferInsert;
 export type RunEventCounter = typeof runEventCounters.$inferSelect;
+export type BuilderSessionTranscript = typeof builderSessionTranscripts.$inferSelect;
+export type NewBuilderSessionTranscript = typeof builderSessionTranscripts.$inferInsert;
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
 export type TestRun = typeof testRuns.$inferSelect;

@@ -34,6 +34,18 @@ const TENANT_COLUMN = 'organization_id';
 /** Tables that exist for mechanism rather than for the model; each needs a reason. */
 const NON_PRD_TABLES = new Map([
   [
+    'conversations',
+    'the durable project thread aggregate required by ADR-0034; the PRD originally modeled immutable agent_runs as the only conversation unit',
+  ],
+  [
+    'conversation_context_artifacts',
+    'the immutable bounded prior-thread context linked to successor runs by ADR-0034; the browser never constructs historical prompts',
+  ],
+  [
+    'builder_session_transcripts',
+    'the versioned run/task transcript that lets AR-25 yield at safe tool boundaries without replaying a model turn',
+  ],
+  [
     'run_event_counters',
     'the gapless allocator behind agent_events.sequence (plan 01 FND-6); no PRD row of its own',
   ],
@@ -154,6 +166,14 @@ const NON_PRD_TABLES = new Map([
  * stamp.
  */
 const NON_PRD_COLUMNS = new Map([
+  [
+    'agent_runs.conversation_id',
+    'the durable project thread identity required by ADR-0034 so one user-visible conversation may span immutable runs',
+  ],
+  [
+    'agent_runs.conversation_run_number',
+    'the deterministic cross-run order within an ADR-0034 conversation',
+  ],
   [
     'agent_runs.plan_max_credits',
     'immutable resolved plan ceiling required by plan 10 OPS-3-FIX-1 so retries, continuation, and approvals cannot drift after a plan change',

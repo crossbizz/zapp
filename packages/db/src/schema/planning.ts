@@ -2,6 +2,7 @@ import { APP_TYPES, RunModeSchema, TaskStateSchema } from '@zapp/contracts';
 import { sql } from 'drizzle-orm';
 import {
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -84,6 +85,33 @@ export const decisions = pgTable(
   ],
 );
 
+export const conversations = pgTable(
+  'conversations',
+  {
+    id: text('id').primaryKey(), // conv_*
+    organizationId: organizationId(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    createdBy: text('created_by')
+      .notNull()
+      .references(() => users.id),
+    title: text('title').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('conversations_id_org_idx').on(t.id, t.organizationId),
+    index('conversations_project_updated_idx').on(
+      t.projectId,
+      t.updatedAt.desc(),
+      t.id.desc(),
+    ),
+    check('conversations_title_length_check', sql`char_length(${t.title}) between 1 and 160`),
+    projectTenantForeignKey('conversations', t.projectId, t.organizationId),
+  ],
+);
+
 export const agentRuns = pgTable(
   'agent_runs',
   {
@@ -92,6 +120,8 @@ export const agentRuns = pgTable(
     projectId: text('project_id')
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
+    conversationId: text('conversation_id').notNull(),
+    conversationRunNumber: integer('conversation_run_number').notNull(),
     /** Null in ask mode, which answers questions without touching a branch (PRD §11.1). */
     branchId: text('branch_id').references(() => branches.id),
     mode: text('mode', { enum: RUN_MODES }).notNull(),
@@ -119,6 +149,10 @@ export const agentRuns = pgTable(
     check('agent_runs_mode_check', oneOf('mode', RUN_MODES)),
     check('agent_runs_app_type_check', oneOf('app_type', APP_TYPES)),
     check(
+      'agent_runs_conversation_run_number_check',
+      sql`${t.conversationRunNumber} >= 1`,
+    ),
+    check(
       'agent_runs_plan_max_credits_check',
       sql`${t.planMaxCredits} >= 1 and ${t.planMaxCredits} <= 1000000 and trunc(${t.planMaxCredits}) = ${t.planMaxCredits}`,
     ),
@@ -126,7 +160,65 @@ export const agentRuns = pgTable(
     // index serves the cross-project dashboard and every tenant-scoped read.
     index('agent_runs_project_started_at_idx').on(t.projectId, t.startedAt),
     index('agent_runs_org_started_at_idx').on(t.organizationId, t.startedAt),
+    uniqueIndex('agent_runs_id_org_idx').on(t.id, t.organizationId),
+    uniqueIndex('agent_runs_conversation_order_idx').on(
+      t.conversationId,
+      t.conversationRunNumber,
+    ),
+    uniqueIndex('agent_runs_conversation_active_idx')
+      .on(t.conversationId)
+      .where(sql`${t.status} in ('queued', 'running', 'paused', 'waiting_for_approval')`),
+    foreignKey({
+      name: 'agent_runs_conversation_tenant_fk',
+      columns: [t.conversationId, t.organizationId],
+      foreignColumns: [conversations.id, conversations.organizationId],
+    }).onDelete('cascade'),
     projectTenantForeignKey('agent_runs', t.projectId, t.organizationId),
+  ],
+);
+
+export const conversationContextArtifacts = pgTable(
+  'conversation_context_artifacts',
+  {
+    id: text('id').primaryKey(), // art_*
+    organizationId: organizationId(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    conversationId: text('conversation_id').notNull(),
+    runId: text('run_id').notNull(),
+    sourceRunId: text('source_run_id').notNull(),
+    contentHash: text('content_hash').notNull(),
+    contextJson: jsonb('context_json').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('conversation_context_artifacts_id_org_idx').on(t.id, t.organizationId),
+    uniqueIndex('conversation_context_run_idx').on(t.runId),
+    check(
+      'conversation_context_content_hash_check',
+      sql`${t.contentHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    foreignKey({
+      name: 'conversation_context_conversation_tenant_fk',
+      columns: [t.conversationId, t.organizationId],
+      foreignColumns: [conversations.id, conversations.organizationId],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'conversation_context_run_tenant_fk',
+      columns: [t.runId, t.organizationId],
+      foreignColumns: [agentRuns.id, agentRuns.organizationId],
+    }).onDelete('cascade'),
+    foreignKey({
+      name: 'conversation_context_source_run_tenant_fk',
+      columns: [t.sourceRunId, t.organizationId],
+      foreignColumns: [agentRuns.id, agentRuns.organizationId],
+    }).onDelete('cascade'),
+    projectTenantForeignKey(
+      'conversation_context_artifacts',
+      t.projectId,
+      t.organizationId,
+    ),
   ],
 );
 
@@ -250,6 +342,10 @@ export type Decision = typeof decisions.$inferSelect;
 export type NewDecision = typeof decisions.$inferInsert;
 export type AgentRun = typeof agentRuns.$inferSelect;
 export type NewAgentRun = typeof agentRuns.$inferInsert;
+export type Conversation = typeof conversations.$inferSelect;
+export type NewConversation = typeof conversations.$inferInsert;
+export type ConversationContextArtifact = typeof conversationContextArtifacts.$inferSelect;
+export type NewConversationContextArtifact = typeof conversationContextArtifacts.$inferInsert;
 export type AgentPhase = typeof agentPhases.$inferSelect;
 export type NewAgentPhase = typeof agentPhases.$inferInsert;
 export type AgentTask = typeof agentTasks.$inferSelect;

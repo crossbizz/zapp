@@ -5,6 +5,7 @@ import {
   activityIdempotency,
   agentEvents,
   artifacts,
+  builderSessionTranscripts,
   MAX_EVENT_PAYLOAD_BYTES,
   testCases,
   testRuns,
@@ -24,6 +25,21 @@ import {
 
 /** PRD §23.4 pinned column by column; see `schema-projects.test.ts` for the convention. */
 describe('execution and evidence (PRD §23.4)', () => {
+  it('stores one versioned Builder transcript per run task', () => {
+    expect(columnNames(builderSessionTranscripts)).toEqual([
+      'run_id',
+      'organization_id',
+      'task_id',
+      'version',
+      'transcript_json',
+      'updated_at',
+    ]);
+    expect(primaryKeyColumns(builderSessionTranscripts)).toEqual(['run_id', 'task_id']);
+    expect(checkNames(builderSessionTranscripts)).toEqual([
+      'builder_session_transcripts_version_check',
+    ]);
+  });
+
   it('gives workspaces the PRD columns plus durable WS-13 runtime state, in order', () => {
     expect(columnNames(workspaces)).toEqual([
       'id',
@@ -260,10 +276,10 @@ describe('agent_events', () => {
   });
 
   it('types the event by the PRD §14.4 list and the sequence as a number', () => {
-    // The 34 PRD types plus ADR-0027's two message types and CP-23's two typed
-    // conversation-card types; the column
+    // The 34 PRD types plus ADR-0027's two message types, CP-23's two typed
+    // conversation-card types, and ADR-0034's structured application acknowledgement; the column
     // refuses anything outside the shared contract at compile time.
-    expect(enumValues(agentEvents, 'type')).toHaveLength(38);
+    expect(enumValues(agentEvents, 'type')).toHaveLength(39);
     expect(enumValues(agentEvents, 'type').slice(0, 3)).toEqual([
       'run.created',
       'run.started',

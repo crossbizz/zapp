@@ -49,7 +49,7 @@
 
 **Interfaces:**
 - Consumes: existing `idSchema`, `AgentEventObjectSchema`, `agentRuns`, `agentEvents`, tenant composite project foreign keys.
-- Produces: `ConversationSchema`, `ConversationSummarySchema`, `ConversationEventSchema`, `ConversationPageSchema`, `ConversationEventPageSchema`, `MessageAppliedPayloadSchema`, `conversations`, immutable `conversationContextArtifacts`, `builderSessionTranscripts`, and required `agentRuns.conversationId` / `agentRuns.conversationRunNumber` / `agentRuns.contextArtifactId` fields.
+- Produces: `ConversationSchema`, `ConversationSummarySchema`, `ConversationEventSchema`, `ConversationPageSchema`, `ConversationEventPageSchema`, `MessageAppliedPayloadSchema`, `conversations`, immutable run-linked `conversationContextArtifacts`, `builderSessionTranscripts`, and required `agentRuns.conversationId` / `agentRuns.conversationRunNumber` fields.
 
 - [ ] **Step 1: Write failing contract tests**
 
@@ -163,17 +163,18 @@ export const conversationContextArtifacts = pgTable('conversation_context_artifa
   organizationId: organizationId(),
   projectId: text('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
   conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  runId: text('run_id').notNull().references(() => agentRuns.id, { onDelete: 'cascade' }),
   sourceRunId: text('source_run_id').notNull().references(() => agentRuns.id, { onDelete: 'cascade' }),
   contentHash: text('content_hash').notNull(),
   contextJson: jsonb('context_json').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
-  uniqueIndex('conversation_context_source_idx').on(t.conversationId, t.sourceRunId),
+  uniqueIndex('conversation_context_run_idx').on(t.runId),
   projectTenantForeignKey('conversation_context_artifacts', t.projectId, t.organizationId),
 ]);
 ```
 
-Add `conversationId`, `conversationRunNumber`, and nullable `contextArtifactId` to `agentRuns`, the unique run-order index, and the partial unique active-run index. `contextArtifactId` is null for first runs and references the immutable context record for successors. Generate the migration with `pnpm --filter @zapp/db db:generate`, then edit only the generated migration so it creates deterministic legacy conversation IDs from each legacy run, backfills the two required run columns, makes them non-null, and leaves all existing dependent rows unchanged.
+Add `conversationId` and `conversationRunNumber` to `agentRuns`, the unique run-order index, and the partial unique active-run index. A successor's immutable context row links both the new run and its terminal source run without creating a circular schema dependency. Generate the migration with `pnpm --filter @zapp/db db:generate`, then edit only the generated migration so it creates deterministic legacy conversation IDs from each legacy run, backfills the two required run columns, makes them non-null, and leaves all existing dependent rows unchanged.
 
 - [ ] **Step 7: Run schema and migration tests to verify GREEN**
 
@@ -268,7 +269,7 @@ export interface TenantConversationRepository {
 }
 ```
 
-Use a transaction and a conversation row lock for create/new-successor. Omitted `conversationId` inserts `stableId('conv', operationKey)` and run number `1`; supplied `conversationId` verifies project ownership, rejects an active run, and inserts `max(run_number)+1`. For a successor, select only prior structured `message.user`/`message.assistant` events in run order, bound them to the existing context token ceiling, insert one immutable `conversationContextArtifacts` row with a deterministic `art_*` id and SHA-256 hash, and link the new run through `contextArtifactId`. Update `conversations.updated_at` in the same transaction. Derive the title from the first 160 normalized characters of the first user prompt.
+Use a transaction and a conversation row lock for create/new-successor. Omitted `conversationId` inserts `stableId('conv', operationKey)` and run number `1`; supplied `conversationId` verifies project ownership, rejects an active run, and inserts `max(run_number)+1`. For a successor, select only prior structured `message.user`/`message.assistant` events in run order, bound them to the existing context token ceiling, insert one immutable `conversationContextArtifacts` row with a deterministic `art_*` id and SHA-256 hash, and link it to the new run through its unique `runId`. Update `conversations.updated_at` in the same transaction. Derive the title from the first 160 normalized characters of the first user prompt.
 
 - [ ] **Step 4: Implement public routes and extend create-run dispatch**
 

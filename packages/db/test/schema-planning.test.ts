@@ -5,6 +5,8 @@ import {
   agentRuns,
   agentTasks,
   approvals,
+  conversationContextArtifacts,
+  conversations,
   decisions,
   specifications,
 } from '../src/schema/planning.js';
@@ -19,6 +21,29 @@ import {
 
 /** PRD §23.3 pinned column by column; see `schema-projects.test.ts` for the convention. */
 describe('specification and planning (PRD §23.3)', () => {
+  it('defines durable project conversations and immutable successor context', () => {
+    expect(columnNames(conversations)).toEqual([
+      'id',
+      'organization_id',
+      'project_id',
+      'created_by',
+      'title',
+      'created_at',
+      'updated_at',
+    ]);
+    expect(columnNames(conversationContextArtifacts)).toEqual([
+      'id',
+      'organization_id',
+      'project_id',
+      'conversation_id',
+      'run_id',
+      'source_run_id',
+      'content_hash',
+      'context_json',
+      'created_at',
+    ]);
+  });
+
   it('gives specifications exactly the PRD columns, in order', () => {
     expect(columnNames(specifications)).toEqual([
       'id',
@@ -52,6 +77,8 @@ describe('specification and planning (PRD §23.3)', () => {
       'id',
       'organization_id',
       'project_id',
+      'conversation_id',
+      'conversation_run_number',
       'branch_id',
       'mode',
       'app_type',
@@ -136,6 +163,7 @@ describe('specification and planning (PRD §23.3)', () => {
       'branch_id -> branches.id',
       'specification_id -> specifications.id',
       'started_by -> users.id',
+      'conversation_id, organization_id -> conversations.id, organization_id',
       'project_id, organization_id -> projects.id, organization_id',
     ]);
     expect(foreignKeys(agentPhases)).toEqual([
@@ -161,6 +189,17 @@ describe('specification and planning (PRD §23.3)', () => {
     expect(indexNames(agentRuns)).toEqual([
       'agent_runs_project_started_at_idx',
       'agent_runs_org_started_at_idx',
+      'agent_runs_id_org_idx',
+      'agent_runs_conversation_order_idx',
+      'agent_runs_conversation_active_idx',
+    ]);
+    expect(indexNames(conversations)).toEqual([
+      'conversations_id_org_idx',
+      'conversations_project_updated_idx',
+    ]);
+    expect(indexNames(conversationContextArtifacts)).toEqual([
+      'conversation_context_artifacts_id_org_idx',
+      'conversation_context_run_idx',
     ]);
     // Two phases cannot claim one slot in a plan.
     expect(indexNames(agentPhases)).toEqual(['agent_phases_run_sequence_idx']);
@@ -172,6 +211,7 @@ describe('specification and planning (PRD §23.3)', () => {
     expect(checkNames(agentRuns)).toEqual([
       'agent_runs_mode_check',
       'agent_runs_app_type_check',
+      'agent_runs_conversation_run_number_check',
       'agent_runs_plan_max_credits_check',
     ]);
     expect(checkExpression(agentRuns, 'agent_runs_mode_check')).toBe(
