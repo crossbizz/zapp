@@ -16,6 +16,11 @@ import {
   type ProjectConversation,
 } from '../../lib/api';
 import { Composer, type ConversationImageInput, type ConversationSubmission } from './Composer';
+import {
+  displayMessageContent,
+  serializeMessageContext,
+  type ConversationCodeReferenceInput,
+} from './code-references';
 import { MessageBubble } from './MessageBubble';
 import { ProgressCard } from './ProgressCard';
 import { ToolActivityLine, type ToolActivity } from './ToolActivityLine';
@@ -32,6 +37,7 @@ interface ThreadProps {
   readonly adoptedRun?: BuilderRun;
   readonly allowedModels: readonly string[];
   readonly branches: readonly { readonly id: string; readonly name: string }[];
+  readonly incomingCodeReferences?: readonly ConversationCodeReferenceInput[];
   readonly incomingImages?: readonly ConversationImageInput[];
   readonly initialPrompt?: string;
   readonly conversation?: ProjectConversation;
@@ -56,6 +62,7 @@ interface MessageItem {
   readonly role: 'assistant' | 'user';
   readonly runId: string;
   readonly sequence: number;
+  readonly timestamp: string;
 }
 
 interface ActivityItem {
@@ -110,6 +117,7 @@ interface OptimisticMessage {
   readonly id: string;
   readonly messageId: string | undefined;
   readonly runId: string;
+  readonly timestamp: string;
 }
 
 function payloadString(event: RunEvent, key: string): string | undefined {
@@ -212,18 +220,20 @@ function threadItems(events: readonly ConversationRunEvent[]): readonly ThreadIt
             role: 'assistant',
             runId: event.data.runId,
             sequence: event.data.sequence,
+            timestamp: event.data.occurredAt,
           });
         }
       } else if (content !== undefined) {
         items.push({
           attachments: event.type === 'message.user' ? attachmentNames(event) : [],
-          content,
+          content: event.type === 'message.user' ? displayMessageContent(content) : content,
           key: `${event.data.runId}:${payloadString(event, 'messageId') ?? event.id}`,
           kind: 'message',
           messageId: payloadString(event, 'messageId'),
           role: event.type === 'message.user' ? 'user' : 'assistant',
           runId: event.data.runId,
           sequence: event.data.sequence,
+          timestamp: event.data.occurredAt,
         });
       }
       continue;
@@ -293,21 +303,24 @@ function submissionFingerprint(submission: ConversationSubmission): string {
     files: submission.files.map((file) => [file.name, file.size, file.type, file.lastModified]),
     mode: submission.mode,
     model: submission.model,
+    referencedFiles: submission.referencedFiles,
     selectedElements: submission.selectedElements,
   });
 }
 
 function messageContent(submission: ConversationSubmission): string {
-  if (submission.selectedElements.length === 0) return submission.content;
-  return JSON.stringify({
-    message: submission.content,
-    selectedElements: submission.selectedElements,
-  });
+  return serializeMessageContext(
+    submission.content,
+    submission.referencedFiles,
+    submission.selectedElements,
+  );
 }
 
 function userMessageCount(events: readonly RunEvent[], content: string): number {
   return events.filter(
-    (event) => event.type === 'message.user' && payloadString(event, 'content') === content,
+    (event) =>
+      event.type === 'message.user' &&
+      displayMessageContent(payloadString(event, 'content') ?? '') === content,
   ).length;
 }
 
@@ -330,12 +343,6 @@ function optimisticDeliveryStatus(
       event.data.sequence > applied.data.sequence,
   );
   return answered ? undefined : 'Applied';
-}
-
-function newRunAttachmentContent(submission: ConversationSubmission): string {
-  return submission.selectedElements.length === 0
-    ? 'Use these reference images with my request.'
-    : messageContent(submission);
 }
 
 function recommendedMode(content: string): CreateRunInputMode {
@@ -368,15 +375,21 @@ function ThreadStyles(): ReactElement {
         padding: 1rem 1rem 0.75rem;
       }
       .zapp-conversation-message {
-        max-width: 92%;
+        max-width: 100%;
         border: 1px solid transparent;
-        border-radius: var(--zapp-radius-panel);
-        padding: 0.65rem 0.75rem;
+        border-radius: 1.2rem;
+        padding: 0.2rem 0;
         background: transparent;
+        color: var(--zapp-text-primary);
+        font-size: 0.9375rem;
+        line-height: 1.55;
       }
       .zapp-conversation-message[data-role='user'] {
         align-self: flex-end;
+        max-width: 84%;
         border-color: var(--zapp-border);
+        border-bottom-right-radius: 0.45rem;
+        padding: 0.72rem 0.9rem 0.55rem;
         background: var(--zapp-surface-subtle);
       }
       .zapp-conversation-message p,
@@ -391,12 +404,19 @@ function ThreadStyles(): ReactElement {
         color: var(--zapp-text-muted);
         font-size: var(--zapp-text-12);
       }
-      .zapp-conversation-message-delivery {
-        display: block;
+      .zapp-conversation-message-meta {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 0.4rem;
         margin-top: 0.35rem;
         color: var(--zapp-text-muted);
-        font-size: var(--zapp-text-12);
-        font-weight: 650;
+        font-size: 0.6875rem;
+        font-weight: 500;
+        line-height: 1.25;
+      }
+      .zapp-conversation-message[data-role='user'] .zapp-conversation-message-meta {
+        justify-content: flex-end;
       }
       .zapp-conversation-activity {
         color: var(--zapp-text-muted);
@@ -590,6 +610,7 @@ export function Thread({
   conversationListError,
   conversationLoading,
   incomingImages = [],
+  incomingCodeReferences = [],
   initialPrompt,
   newThread,
   onConversationCreated,
@@ -634,20 +655,18 @@ export function Thread({
     activeRunStatuses.has(selectedRun.status) &&
     !cancelled &&
     !completed;
-  const visibleOptimisticMessages = optimisticMessages.filter(
-    (message) => {
-      if (message.runId !== selectedRun?.id) return false;
-      if (message.messageId !== undefined) {
-        return !items.some(
-          (item) =>
-            item.kind === 'message' &&
-            item.runId === message.runId &&
-            item.messageId === message.messageId,
-        );
-      }
-      return userMessageCount(currentRunEvents, message.content) < message.expectedOrdinal;
-    },
-  );
+  const visibleOptimisticMessages = optimisticMessages.filter((message) => {
+    if (message.runId !== selectedRun?.id) return false;
+    if (message.messageId !== undefined) {
+      return !items.some(
+        (item) =>
+          item.kind === 'message' &&
+          item.runId === message.runId &&
+          item.messageId === message.messageId,
+      );
+    }
+    return userMessageCount(currentRunEvents, message.content) < message.expectedOrdinal;
+  });
 
   useEffect(() => {
     onEventsChange(selectedRun?.id, currentRunEvents);
@@ -827,14 +846,14 @@ export function Thread({
         ...(conversation === undefined ? {} : { conversationId: conversation.id }),
         mode: submission.mode === 'auto' ? recommendedMode(submission.content) : submission.mode,
         ...(submission.model === undefined ? {} : { model: submission.model }),
-        prompt: submission.content,
+        prompt: messageContent(submission),
       },
       pending.runKey,
     );
-    if (attachments.length > 0 || submission.selectedElements.length > 0) {
+    if (attachments.length > 0) {
       await client.sendRunMessage(
         created.run.id,
-        { attachments: [...attachments], content: newRunAttachmentContent(submission) },
+        { attachments: [...attachments], content: 'Use these reference images with my request.' },
         pending.newRunAttachmentKey,
       );
     }
@@ -844,11 +863,7 @@ export function Thread({
     return created.run;
   };
 
-  const appendOptimisticMessage = (
-    run: BuilderRun,
-    content: string,
-    messageId?: string,
-  ): void => {
+  const appendOptimisticMessage = (run: BuilderRun, content: string, messageId?: string): void => {
     setOptimisticMessages((current) => {
       const durableCount =
         selectedRun?.id === run.id ? userMessageCount(currentRunEvents, content) : 0;
@@ -863,6 +878,7 @@ export function Thread({
           id: crypto.randomUUID(),
           messageId,
           runId: run.id,
+          timestamp: new Date().toISOString(),
         },
       ];
     });
@@ -966,9 +982,7 @@ export function Thread({
           aria-label="Reload thread"
           className="zapp-conversation-commit"
           onClick={
-            conversationListError === undefined
-              ? retryConversationEvents
-              : onRetryConversationList
+            conversationListError === undefined ? retryConversationEvents : onRetryConversationList
           }
           type="button"
         >
@@ -1005,7 +1019,11 @@ export function Thread({
           <p aria-live="polite">Loading conversation…</p>
         ) : null}
         {!hasUserMessage && initialPrompt !== undefined ? (
-          <MessageBubble content={initialPrompt} role="user" />
+          <MessageBubble
+            content={initialPrompt}
+            role="user"
+            {...(selectedRun?.startedAt === undefined ? {} : { timestamp: selectedRun.startedAt })}
+          />
         ) : null}
         {!loading &&
         !eventsLoading &&
@@ -1035,6 +1053,7 @@ export function Thread({
                   : { deliveryStatus: optimisticDeliveryStatus(optimistic, events) })}
                 key={item.key}
                 role={item.role}
+                timestamp={item.timestamp}
               />
             );
           }
@@ -1103,6 +1122,7 @@ export function Thread({
               : { deliveryStatus: optimisticDeliveryStatus(message, events) })}
             key={message.id}
             role="user"
+            timestamp={message.timestamp}
           />
         ))}
       </div>
@@ -1111,6 +1131,7 @@ export function Thread({
           active={active}
           allowedModels={allowedModels}
           branches={branches}
+          incomingCodeReferences={incomingCodeReferences}
           incomingImages={incomingImages}
           onStop={stop}
           onSubmit={send}

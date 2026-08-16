@@ -27,6 +27,7 @@ import { useAppSession } from '../../hooks/useAppSession';
 import { useProjectConversations } from '../../hooks/useProjectConversations';
 import { Thread } from '../conversation/Thread';
 import type { ConversationImageInput } from '../conversation/Composer';
+import type { ConversationCodeReferenceInput } from '../conversation/code-references';
 import { ConversationHistoryDrawer } from '../conversation/ConversationHistoryDrawer';
 import { WorkingSurface } from './WorkingSurface';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
@@ -62,8 +63,7 @@ interface ShellProps {
 }
 
 type ConversationSelection =
-  | { readonly kind: 'conversation'; readonly id: string }
-  | { readonly kind: 'new' };
+  { readonly kind: 'conversation'; readonly id: string } | { readonly kind: 'new' };
 
 function parseConversationSelection(search: URLSearchParams): ConversationSelection | undefined {
   const value = search.get('conversation');
@@ -745,8 +745,7 @@ function MissionControlPanel({
 export function Shell({ projectId }: ShellProps): ReactElement {
   const session = useAppSession();
   const [activeRun, setActiveRun] = useState<BuilderRun>();
-  const [conversationSelection, setConversationSelection] =
-    useState<ConversationSelection>();
+  const [conversationSelection, setConversationSelection] = useState<ConversationSelection>();
   const [runEventSnapshot, setRunEventSnapshot] = useState<{
     readonly events: readonly RunEvent[];
     readonly runId: string | undefined;
@@ -769,6 +768,9 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   );
   const [project, setProject] = useState<ProjectResponse>();
   const [previewAttachments, setPreviewAttachments] = useState<readonly ConversationImageInput[]>(
+    [],
+  );
+  const [codeReferences, setCodeReferences] = useState<readonly ConversationCodeReferenceInput[]>(
     [],
   );
   const preferredConversationWidthRef = useRef(defaultConversationWidth);
@@ -822,10 +824,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const setConversationUrl = useCallback(
     (selection: ConversationSelection, behavior: 'push' | 'replace'): void => {
       const search = new URLSearchParams(window.location.search);
-      search.set(
-        'conversation',
-        selection.kind === 'conversation' ? selection.id : 'new',
-      );
+      search.set('conversation', selection.kind === 'conversation' ? selection.id : 'new');
       const query = search.toString();
       window.history[behavior === 'push' ? 'pushState' : 'replaceState'](
         window.history.state,
@@ -1271,7 +1270,6 @@ export function Shell({ projectId }: ShellProps): ReactElement {
             projectId={projectId}
             projectName={project.project.name}
             repositoryAvailable={project.repository !== null}
-            supportLevel={project.project.supportLevel}
           />
           {readySession.invalidOrganization ? (
             <p className="zapp-builder-notice" role="status">
@@ -1309,6 +1307,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                     : { conversation: selectedConversation })}
                   conversationLoading={projectConversations.loading}
                   conversationListError={projectConversations.error}
+                  incomingCodeReferences={codeReferences}
                   incomingImages={previewAttachments}
                   {...(firstPrompt === undefined ? {} : { initialPrompt: firstPrompt })}
                   newThread={conversationSelection?.kind === 'new'}
@@ -1390,6 +1389,22 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                         },
                       ]);
                     });
+                  }}
+                  onReferenceCodeFile={(path) => {
+                    const id = crypto.randomUUID();
+                    setCodeReferences((current) => [
+                      ...current,
+                      {
+                        id,
+                        onConsumed(accepted) {
+                          setCodeReferences((pending) =>
+                            pending.filter((candidate) => candidate.id !== id),
+                          );
+                          if (accepted) selectPane('conversation');
+                        },
+                        path,
+                      },
+                    ]);
                   }}
                   onRunCreated={adoptCreatedRun}
                   manageSection={navigation.manage}

@@ -731,14 +731,15 @@ test('opens code and diff data and renders failed-test evidence with a Fix actio
 
   await openBuilder(page);
   await page.getByRole('tab', { name: 'Code' }).click();
-  await expect(page.getByRole('button', { name: 'src/page.tsx' })).toHaveCount(0);
+  const workspaceTree = page.getByRole('tree', { name: 'Workspace files' });
+  await expect(workspaceTree.getByRole('button', { name: 'src/page.tsx' })).toHaveCount(0);
   await page.getByRole('button', { name: 'src', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'src/page.tsx' })).toBeVisible();
+  await expect(workspaceTree.getByRole('button', { name: 'src/page.tsx' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'page.tsx', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'src/page.tsx' }).click();
+  await workspaceTree.getByRole('button', { name: 'src/page.tsx' }).click();
   await expect(page.getByText(/Checkout/u)).toBeVisible();
   await page.getByRole('button', { name: 'src', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'src/page.tsx' })).toHaveCount(0);
+  await expect(workspaceTree.getByRole('button', { name: 'src/page.tsx' })).toHaveCount(0);
   expect(listedWorkspacePaths).toEqual(['.:0', 'src:0']);
   expect(workspaceCreateBodies).toEqual([{ branchId, resourceProfile: 'standard' }]);
   await page.getByLabel('Before commit').fill(before);
@@ -1397,6 +1398,16 @@ test('keeps prior runs visible when a terminal conversation receives a follow-up
 
   await expect(page.getByText(priorRequest, { exact: true })).toBeVisible();
   await expect(page.getByText(priorAnswer, { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole('article', { name: 'You' }).filter({ hasText: priorRequest }).locator('time'),
+  ).toHaveAttribute(
+    'datetime',
+    eventData({
+      payload: {},
+      sequence: 1,
+      type: 'message.user',
+    }).occurredAt,
+  );
 
   await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
     if (route.request().method() === 'GET') {
@@ -1758,14 +1769,14 @@ test('keeps an accepted active-run message queued until message.applied arrives'
 
   await page.getByLabel('Message the agent').fill(prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(page.getByRole('article', { name: 'You' }).filter({ hasText: prompt })).toContainText(
-    'Queued',
-  );
+  await expect(
+    page.getByRole('article', { name: 'You' }).filter({ hasText: prompt }),
+  ).toContainText('Queued');
 
   releaseApplied?.();
-  await expect(page.getByRole('article', { name: 'You' }).filter({ hasText: prompt })).toContainText(
-    'Applied',
-  );
+  await expect(
+    page.getByRole('article', { name: 'You' }).filter({ hasText: prompt }),
+  ).toContainText('Applied');
 });
 
 test('blocks submission while a newly selected conversation run is unresolved', async ({
@@ -1960,7 +1971,9 @@ test('shows a retryable conversation history failure in the main thread', async 
   await signIn(page);
   await page.goto(`/projects/${projectId}`);
 
-  await expect(page.getByText('Conversation history could not be loaded.', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('Conversation history could not be loaded.', { exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Reload thread' })).toBeVisible();
   await expect(page.getByText('Loading conversation…')).toHaveCount(0);
 
@@ -1973,14 +1986,17 @@ test('rejects a conversation selection outside the scoped project history', asyn
   const foreignConversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FZ';
   let foreignHistoryReads = 0;
   await mockBuilder(page, [activeRun]);
-  await page.route(`${apiBaseUrl}/v1/conversations/${foreignConversationId}/events*`, async (route) => {
-    foreignHistoryReads += 1;
-    await route.fulfill({
-      body: JSON.stringify({ items: [], nextCursor: null }),
-      headers: corsHeaders(),
-      status: 200,
-    });
-  });
+  await page.route(
+    `${apiBaseUrl}/v1/conversations/${foreignConversationId}/events*`,
+    async (route) => {
+      foreignHistoryReads += 1;
+      await route.fulfill({
+        body: JSON.stringify({ items: [], nextCursor: null }),
+        headers: corsHeaders(),
+        status: 200,
+      });
+    },
+  );
   await signIn(page);
   await page.goto(`/projects/${projectId}?conversation=${foreignConversationId}`);
 
@@ -2057,7 +2073,9 @@ test('retries failed conversation event history before enabling submission', asy
   await signIn(page);
   await page.goto(`/projects/${projectId}?conversation=${conversationId}`);
 
-  await expect(page.getByText('This conversation could not be loaded.', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('This conversation could not be loaded.', { exact: true }),
+  ).toBeVisible();
   await expect(page.getByLabel('Message the agent')).toBeDisabled();
   await page.getByRole('button', { name: 'Reload thread' }).click();
 
@@ -2066,7 +2084,9 @@ test('retries failed conversation event history before enabling submission', asy
   await expect(page.getByLabel('Message the agent')).toBeEnabled();
 });
 
-test('masks the prior transcript synchronously when conversation scope changes', async ({ page }) => {
+test('masks the prior transcript synchronously when conversation scope changes', async ({
+  page,
+}) => {
   const firstTitle = 'Scoped transcript from the first conversation';
   const secondTitle = 'Scoped transcript from the second conversation';
   const completedRun = {

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import type { ReactElement, ReactNode } from 'react';
+import '@fontsource-variable/roboto-mono';
 import '@zapp/ui/tokens.css';
 
 import { FrontendObservability } from '../components/frontend-observability';

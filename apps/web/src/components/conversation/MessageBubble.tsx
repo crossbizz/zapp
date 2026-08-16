@@ -1,11 +1,20 @@
+'use client';
+
 import { Markdown } from '@zapp/ui';
-import type { ReactElement } from 'react';
+import * as React from 'react';
+
+import { formatConversationTimestamp } from './message-time';
 
 export interface MessageBubbleProps {
   readonly attachmentNames?: readonly string[];
   readonly content: string;
   readonly deliveryStatus?: 'Applied' | 'Queued' | undefined;
   readonly role: 'assistant' | 'user';
+  readonly timestamp?: string;
+}
+
+function subscribeToTimestamp(): () => void {
+  return () => undefined;
 }
 
 export function MessageBubble({
@@ -13,7 +22,14 @@ export function MessageBubble({
   content,
   deliveryStatus,
   role,
-}: MessageBubbleProps): ReactElement {
+  timestamp,
+}: MessageBubbleProps): React.ReactElement {
+  const timestampLabel = React.useSyncExternalStore(
+    subscribeToTimestamp,
+    () => (timestamp === undefined ? undefined : formatConversationTimestamp(timestamp)),
+    () => undefined,
+  );
+
   return (
     <article
       aria-label={role === 'user' ? 'You' : 'Agent'}
@@ -21,17 +37,20 @@ export function MessageBubble({
       data-role={role}
     >
       {role === 'assistant' ? <Markdown>{content}</Markdown> : <p>{content}</p>}
-      {deliveryStatus === undefined ? null : (
-        <small className="zapp-conversation-message-delivery" role="status">
-          {deliveryStatus}
-        </small>
-      )}
       {attachmentNames.length === 0 ? null : (
         <ul aria-label="Message attachments" className="zapp-conversation-message-attachments">
           {attachmentNames.map((name, index) => (
             <li key={`${name}-${String(index)}`}>{name}</li>
           ))}
         </ul>
+      )}
+      {deliveryStatus === undefined && timestampLabel === undefined ? null : (
+        <footer className="zapp-conversation-message-meta">
+          {deliveryStatus === undefined ? null : <span role="status">{deliveryStatus}</span>}
+          {timestampLabel === undefined || timestamp === undefined ? null : (
+            <time dateTime={timestamp}>{timestampLabel}</time>
+          )}
+        </footer>
       )}
     </article>
   );

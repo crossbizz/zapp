@@ -38,7 +38,7 @@ A static highlighter would make the code colorful but would not provide the real
 
 `CodeView` remains the owner of tenant-scoped workspace loading, file reads, and commit comparison. It gains an in-memory ordered tab model keyed by canonical workspace path. Opening a file selects an existing tab or appends one; closing the selected tab activates the nearest surviving tab. Each tab retains its fetched file record and decoded text.
 
-`FileTree` remains lazy and API-backed. It adds semantic tree roles, expand/collapse-all control, active-path state, file-type icons, compact hierarchy guides, and search behavior that exposes matching descendants without issuing speculative reads.
+`FileTree` remains lazy and API-backed. It adds semantic tree roles, expand/collapse-all control, active-path state, disclosure-only directory rows, file-type icons, compact hierarchy guides, and search behavior that exposes matching descendants without issuing speculative reads.
 
 `CodeEditor` is a focused client component. It creates one read-only CodeMirror 6 view, maps the path extension to TypeScript/JavaScript, CSS, HTML, JSON, Markdown, or plain text support, and uses a compartment to reconfigure language without recreating the editor. It never calls an API.
 
@@ -52,11 +52,12 @@ Per the user's product clarification, the code surface is viewer-only for every 
 
 ## Visual contract
 
-- Explorer width: `14rem` at normal desktop widths, with a `12rem` compact fallback.
+- Explorer width: `15rem` at normal desktop widths, with a `14rem` compact fallback, matching the live reference's measured 239px rail.
 - Editor and explorer fill the available workspace height with independent scrolling.
 - Tabs are 2.5rem high, path-labelled, horizontally scrollable, and use a blue bottom/outline accent only for selection.
 - Toolbar controls are icon buttons with accessible names and tooltips; Download may include a visible label when space permits.
-- Code uses Geist Mono, 13px–14px text, 1.55 line height, a neutral gutter, subtle active-line fill, and CodeMirror syntax colors tuned to the light zapp.build canvas.
+- Code bundles the same Roboto Mono Variable family measured in Lovable, at the same 14px size and 19.6px line height, with a neutral 12px gutter, subtle active-line fill, and CodeMirror syntax colors tuned to the light zapp.build canvas.
+- Explorer labels use the measured 14px regular sans treatment in dense 28px rows; directories use Lovable's single chevron rather than adding a second folder glyph.
 - The current Preview/Files/Code/More tab model and builder split-pane behavior stay unchanged.
 
 ## State and error handling

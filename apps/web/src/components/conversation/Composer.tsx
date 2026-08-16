@@ -15,8 +15,10 @@ import {
 
 import type { CreateRunInput } from '../../lib/api';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
+import { mergeCodeReferences, type ConversationCodeReferenceInput } from './code-references';
 
 const maximumImages = 10;
+const maximumCodeReferences = 10;
 const maximumImageBytes = 8 * 1024 * 1024;
 const supportedImageTypes = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
 const modes = [
@@ -36,6 +38,7 @@ export interface ConversationSubmission {
   readonly files: readonly File[];
   readonly mode: ConversationMode;
   readonly model?: string;
+  readonly referencedFiles: readonly string[];
   readonly selectedElements: readonly SelectedPreviewElement[];
 }
 
@@ -51,6 +54,7 @@ export interface ConversationComposerProps {
   readonly active: boolean;
   readonly allowedModels: readonly string[];
   readonly branches: readonly { readonly id: string; readonly name: string }[];
+  readonly incomingCodeReferences?: readonly ConversationCodeReferenceInput[];
   readonly incomingImages?: readonly ConversationImageInput[];
   readonly onStop: () => Promise<void>;
   readonly onSubmit: (submission: ConversationSubmission) => Promise<boolean>;
@@ -135,6 +139,7 @@ export function Composer({
   active,
   allowedModels,
   branches,
+  incomingCodeReferences = [],
   incomingImages = [],
   onStop,
   onSubmit,
@@ -145,11 +150,15 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
   const consumedIncomingImagesRef = useRef(new Set<string>());
+  const consumedIncomingReferencesRef = useRef(new Set<string>());
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [content, setContent] = useState('');
   const [imageError, setImageError] = useState<string>();
   const [images, setImages] = useState<readonly SelectedImage[]>([]);
   const imagesRef = useRef<readonly SelectedImage[]>([]);
+  const [codeReferences, setCodeReferences] = useState<readonly string[]>([]);
+  const codeReferencesRef = useRef<readonly string[]>([]);
+  const [referenceError, setReferenceError] = useState<string>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [settings, setSettings] = useState<ComposerSettings>({ mode: 'auto' });
@@ -241,6 +250,26 @@ export function Composer({
     if (results.some(Boolean)) messageInputRef.current?.focus();
   }, [incomingImages]);
 
+  useEffect(() => {
+    const fresh = incomingCodeReferences.filter(
+      (reference) => !consumedIncomingReferencesRef.current.has(reference.id),
+    );
+    if (fresh.length === 0) return;
+    const merged = mergeCodeReferences(
+      codeReferencesRef.current,
+      fresh.map((reference) => reference.path),
+      maximumCodeReferences,
+    );
+    fresh.forEach((reference, index) => {
+      consumedIncomingReferencesRef.current.add(reference.id);
+      reference.onConsumed?.(merged.accepted[index] === true);
+    });
+    codeReferencesRef.current = merged.references;
+    setCodeReferences(merged.references);
+    setReferenceError(merged.rejected ? 'You can reference up to 10 code files.' : undefined);
+    messageInputRef.current?.focus();
+  }, [incomingCodeReferences]);
+
   const chooseFiles = (event: ChangeEvent<HTMLInputElement>): void => {
     addImages(Array.from(event.currentTarget.files ?? [], (file) => ({ file })));
     event.currentTarget.value = '';
@@ -266,12 +295,15 @@ export function Composer({
       files: images.map(({ file }) => file),
       mode: settings.mode,
       ...(settings.model === undefined ? {} : { model: settings.model }),
+      referencedFiles: codeReferences,
       selectedElements: images.flatMap((image) =>
         image.selection === undefined ? [] : [image.selection],
       ),
     });
     if (!sent) return;
     setContent('');
+    codeReferencesRef.current = [];
+    setCodeReferences([]);
     imagesRef.current = [];
     setImages([]);
     setImageError(undefined);
@@ -335,7 +367,29 @@ export function Composer({
             );
           })}
       </div>
+      <div aria-label="Code references" className="zapp-conversation-images" role="list">
+        {codeReferences.map((path) => (
+          <span className="zapp-conversation-image-chip" key={path} role="listitem">
+            {`@${path}`}
+            <button
+              aria-label={`Remove code reference ${path}`}
+              onClick={() => {
+                const nextReferences = codeReferencesRef.current.filter(
+                  (candidate) => candidate !== path,
+                );
+                codeReferencesRef.current = nextReferences;
+                setCodeReferences(nextReferences);
+                setReferenceError(undefined);
+              }}
+              type="button"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
       {imageError === undefined ? null : <p role="alert">{imageError}</p>}
+      {referenceError === undefined ? null : <p role="alert">{referenceError}</p>}
       <label className="zapp-sr-only" htmlFor="conversation-message">
         Message the agent
       </label>

@@ -1,4 +1,3 @@
-import { SupportLevelBadge } from '@zapp/ui';
 import Link from 'next/link';
 import type { ReactElement, ReactNode } from 'react';
 
@@ -11,7 +10,6 @@ interface TopBarProps {
   readonly projectId: string;
   readonly projectName: string;
   readonly repositoryAvailable: boolean;
-  readonly supportLevel: 'compatible' | 'verified' | 'managed';
 }
 
 function RepositoryIcon(): ReactElement {
@@ -20,7 +18,13 @@ function RepositoryIcon(): ReactElement {
       <circle cx="6" cy="5" fill="currentColor" r="2" />
       <circle cx="6" cy="19" fill="currentColor" r="2" />
       <circle cx="18" cy="9" fill="currentColor" r="2" />
-      <path d="M6 7v10M8 17c5 0 2-8 8-8" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+      <path
+        d="M6 7v10M8 17c5 0 2-8 8-8"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.6"
+      />
     </svg>
   );
 }
@@ -76,7 +80,6 @@ export function TopBar({
   projectId,
   projectName,
   repositoryAvailable,
-  supportLevel,
 }: TopBarProps): ReactElement {
   return (
     <div aria-label="Project editor" className="zapp-builder-top-bar" role="region">
@@ -96,7 +99,6 @@ export function TopBar({
         <div className="zapp-builder-project-title">
           <h1 className="zapp-builder-project-name">{projectName}</h1>
         </div>
-        <SupportLevelBadge level={supportLevel} />
       </div>
       <div aria-label="Builder mode" className="zapp-builder-mode-switcher" role="group">
         {(['preview', 'manage'] as const).map((item) => (
@@ -116,14 +118,16 @@ export function TopBar({
       </div>
       <nav aria-label="Project actions" className="zapp-builder-project-actions">
         {conversationActions}
-        {repositoryAvailable ? <a
-          aria-label="Source repository"
-          className="zapp-builder-action-link"
-          href={`/projects/${projectId}/settings/integrations`}
-          title="Source repository"
-        >
-          <RepositoryIcon />
-        </a> : null}
+        {repositoryAvailable ? (
+          <a
+            aria-label="Source repository"
+            className="zapp-builder-action-link"
+            href={`/projects/${projectId}/settings/integrations`}
+            title="Source repository"
+          >
+            <RepositoryIcon />
+          </a>
+        ) : null}
         {deploy}
         {missionControl}
         <a

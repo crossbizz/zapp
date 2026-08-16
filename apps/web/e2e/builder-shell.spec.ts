@@ -3,6 +3,7 @@ import { expect, test, type Page, type Request } from '@playwright/test';
 const apiBaseUrl = `http://127.0.0.1:${process.env['ZAPP_WEB_E2E_API_PORT'] ?? '4100'}`;
 const appBaseUrl = `http://127.0.0.1:${process.env['ZAPP_WEB_E2E_APP_PORT'] ?? '3100'}`;
 const projectId = 'project-apollo';
+const organizationId = 'org_01K27Q9C2W85CMN1V9S6Q3D4FD';
 const conversationWidthStorageKey = `zapp:builder:conversation-width:${projectId}`;
 const defaultConversationWidth = 44;
 
@@ -13,7 +14,7 @@ const projectRead = {
       headCommitSha: null,
       id: 'branch-main',
       name: 'main',
-      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+      organizationId,
       projectId,
       status: 'active',
     },
@@ -25,7 +26,7 @@ const projectRead = {
       deploymentProvider: null,
       id: 'environment-preview',
       name: 'preview',
-      organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+      organizationId,
       projectId,
       type: 'preview',
     },
@@ -37,7 +38,7 @@ const projectRead = {
     description: 'A mission planning workspace.',
     id: projectId,
     name: 'Project Apollo',
-    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    organizationId,
     slug: 'project-apollo',
     sourceType: 'prompt',
     supportLevel: 'compatible' as const,
@@ -47,7 +48,7 @@ const projectRead = {
     externalRepoRef: null,
     id: 'repository-apollo',
     internalRepoRef: 'org_alpha/project_apollo',
-    organizationId: 'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+    organizationId,
     projectId,
     provider: 'forgejo',
     syncPolicy: 'none',
@@ -91,6 +92,136 @@ async function openBuilder(page: Page): Promise<Request[]> {
   await page.goto(`/projects/${projectId}`);
   await expect(page.getByRole('heading', { name: 'Project Apollo' })).toBeVisible();
   return requests;
+}
+
+async function mockCodeWorkspace(page: Page): Promise<Request[]> {
+  const workspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FZ';
+  const workspaceRequests: Request[] = [];
+  const corsHeaders = {
+    'access-control-allow-credentials': 'true',
+    'access-control-allow-origin': appBaseUrl,
+    'content-type': 'application/json',
+  };
+  await page.route(
+    new RegExp(`${apiBaseUrl}/v1/projects/${projectId}/workspaces(?:\\?.*)?$`, 'u'),
+    async (route) => {
+      workspaceRequests.push(route.request());
+      await route.fulfill({
+        body: JSON.stringify({
+          workspaces: [
+            {
+              branchId: 'branch-main',
+              createdAt: '2026-08-16T12:00:00.000Z',
+              id: workspaceId,
+              lastActiveAt: '2026-08-16T12:00:00.000Z',
+              organizationId,
+              projectId,
+              provider: 'docker',
+              providerWorkspaceId: 'provider-code-workspace',
+              resourceProfile: 'standard',
+              snapshotRef: null,
+              status: 'ready',
+              terminatedAt: null,
+            },
+          ],
+        }),
+        headers: corsHeaders,
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    new RegExp(`${apiBaseUrl}/v1/workspaces/${workspaceId}/files(?:\\?.*)?$`, 'u'),
+    async (route) => {
+      workspaceRequests.push(route.request());
+      const path = new URL(route.request().url()).searchParams.get('path') ?? '.';
+      await route.fulfill({
+        body: JSON.stringify({
+          entries:
+            path === 'src'
+              ? [
+                  { path: 'App.tsx', type: 'file' },
+                  { path: 'styles.css', type: 'file' },
+                ]
+              : [
+                  { path: 'src', type: 'directory' },
+                  { path: 'README.md', type: 'file' },
+                ],
+          truncated: false,
+        }),
+        headers: corsHeaders,
+        status: 200,
+      });
+    },
+  );
+  await page.route(
+    new RegExp(`${apiBaseUrl}/v1/workspaces/${workspaceId}/file(?:\\?.*)?$`, 'u'),
+    async (route) => {
+      workspaceRequests.push(route.request());
+      const path = new URL(route.request().url()).searchParams.get('path') ?? '';
+      const source =
+        path === 'src/styles.css'
+          ? '.app { color: #2563eb; display: grid; }'
+          : 'export function App() { return <main className="app">Hello</main>; }';
+      await route.fulfill({
+        body: JSON.stringify({
+          byteSize: Buffer.byteLength(source),
+          compareToken: path === 'src/styles.css' ? 'b'.repeat(64) : 'a'.repeat(64),
+          dataBase64: Buffer.from(source).toString('base64'),
+          path,
+        }),
+        headers: corsHeaders,
+        status: 200,
+      });
+    },
+  );
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/compare*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        additions: 0,
+        afterSha: '2'.repeat(40),
+        beforeSha: '1'.repeat(40),
+        changedFiles: 0,
+        deletions: 0,
+        files: [],
+        filesTruncated: false,
+        patch: '',
+        patchTruncated: false,
+      }),
+      headers: corsHeaders,
+      status: 200,
+    });
+  });
+  return workspaceRequests;
+}
+
+async function mockMembership(page: Page, role: 'builder' | 'owner' | 'viewer'): Promise<void> {
+  await page.route(`${apiBaseUrl}/v1/me`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        memberships: [
+          {
+            allowedModels: [],
+            organization: { id: organizationId, name: 'Apollo Org', slug: 'apollo' },
+            role,
+            status: 'active',
+          },
+        ],
+        user: {
+          avatarUrl: null,
+          displayName: 'Apollo Builder',
+          email: 'apollo@example.test',
+          id: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+        },
+      }),
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+        'content-type': 'application/json',
+      },
+      status: 200,
+    });
+  });
 }
 
 async function setStoredConversationWidth(page: Page, value: number): Promise<void> {
@@ -158,7 +289,7 @@ test('loads a compact immersive builder with truthful header actions and surface
   expect(composerBounds.y + composerBounds.height).toBeLessThanOrEqual(950);
   await expect(page.getByRole('group', { name: 'Builder mode' })).toBeVisible();
   await expect(page.getByRole('tablist', { name: 'Project surfaces' })).toHaveCount(1);
-  await expect(page.getByText('Compatible')).toBeVisible();
+  await expect(page.getByText('Compatible')).toHaveCount(0);
   await expect(page.getByText('Last saved version', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Preview', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'Preview' })).toBeVisible();
@@ -232,6 +363,202 @@ test('loads a compact immersive builder with truthful header actions and surface
   expect(projectRequests).toHaveLength(1);
   expect(projectRequests[0]?.method()).toBe('GET');
   expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
+});
+
+test('renders a Lovable-style tabbed CodeMirror workspace with file actions', async ({ page }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  const workspaceRequests = await mockCodeWorkspace(page);
+  await openBuilder(page);
+  await page.getByRole('tab', { exact: true, name: 'Code' }).click();
+
+  await expect(page.getByRole('tree', { name: 'Workspace files' })).toBeVisible();
+  await page.getByRole('button', { name: 'Expand all folders' }).click();
+  await expect(
+    page
+      .getByRole('button', { exact: true, name: 'src/App.tsx' })
+      .locator('[data-file-icon="react"]'),
+  ).toHaveCount(1);
+  await expect(
+    page
+      .getByRole('button', { exact: true, name: 'src/styles.css' })
+      .locator('[data-file-icon="css"]'),
+  ).toHaveText('CSS');
+  const appRowBounds = await page
+    .getByRole('button', { exact: true, name: 'src/App.tsx' })
+    .boundingBox();
+  expect(appRowBounds?.height).toBeLessThanOrEqual(29);
+  await page.getByRole('button', { exact: true, name: 'src/App.tsx' }).click();
+  await expect(page.getByRole('tab', { exact: true, name: 'src/App.tsx' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  const appEditor = page.getByLabel('Code editor for src/App.tsx');
+  await expect(appEditor.locator('.cm-lineNumbers')).toBeVisible();
+  expect(await appEditor.locator('.cm-line span').count()).toBeGreaterThan(0);
+
+  await page.getByRole('button', { name: 'src/styles.css' }).click();
+  const openTabs = page.getByRole('tablist', { name: 'Open file tabs' });
+  await expect(openTabs.getByRole('tab')).toHaveCount(2);
+  await page.getByRole('button', { exact: true, name: 'src/App.tsx' }).click();
+  await expect(openTabs.getByRole('tab')).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'Reference file in chat' }).click();
+  await expect(page.getByRole('list', { name: 'Code references' })).toContainText('@src/App.tsx');
+  await page.getByRole('button', { name: 'Copy file content' }).click();
+  await expect(page.getByRole('status')).toContainText('Copied src/App.tsx');
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download file' }).click();
+  expect((await download).suggestedFilename()).toBe('App.tsx');
+  await expect(page.getByRole('button', { name: 'Edit file' })).toHaveCount(0);
+  await expect(appEditor.locator('.cm-content')).toHaveAttribute('contenteditable', 'false');
+  const editorTypography = await appEditor.locator('.cm-content').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { fontFamily: style.fontFamily, fontSize: style.fontSize, lineHeight: style.lineHeight };
+  });
+  expect(editorTypography).toEqual({
+    fontFamily: '"Roboto Mono Variable", monospace',
+    fontSize: '14px',
+    lineHeight: '19.6px',
+  });
+  await expect(page.getByRole('button', { exact: true, name: 'src/App.tsx' })).toHaveCSS(
+    'font-size',
+    '14px',
+  );
+  await page.getByRole('button', { name: 'Close src/App.tsx' }).click();
+  await expect(page.getByRole('tab', { exact: true, name: 'src/styles.css' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  expect(workspaceRequests.length).toBeGreaterThanOrEqual(4);
+  for (const request of workspaceRequests) {
+    expect(request.headers()['x-organization-id']).toBe(organizationId);
+  }
+});
+
+for (const role of ['builder', 'viewer'] as const) {
+  test(`keeps the Lovable-style CodeMirror workspace read-only for ${role}s`, async ({ page }) => {
+    await mockCodeWorkspace(page);
+    await mockProjectRead(page);
+    await mockMembership(page, role);
+    await signIn(page);
+    await page.goto(`/projects/${projectId}`);
+    await expect(page.getByRole('heading', { name: 'Project Apollo' })).toBeVisible();
+    await page.getByRole('tab', { exact: true, name: 'Code' }).click();
+    await page.getByRole('button', { name: 'Expand all folders' }).click();
+    await page.getByRole('button', { exact: true, name: 'src/App.tsx' }).click();
+
+    await expect(page.getByRole('button', { name: 'Edit file' })).toHaveCount(0);
+    await expect(
+      page.getByLabel('Code editor for src/App.tsx').locator('.cm-content'),
+    ).toHaveAttribute('contenteditable', 'false');
+  });
+}
+
+test('hands one referenced code file to a new run and keeps the transcript human-readable', async ({
+  page,
+}) => {
+  const createdConversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FA';
+  const createdRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
+  const runRequests: Request[] = [];
+  const supplementalRequests: Request[] = [];
+  await mockCodeWorkspace(page);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        body: JSON.stringify({ items: [], nextCursor: null }),
+        headers: {
+          'access-control-allow-credentials': 'true',
+          'access-control-allow-origin': appBaseUrl,
+          'content-type': 'application/json',
+        },
+        status: 200,
+      });
+      return;
+    }
+    runRequests.push(route.request());
+    await route.fulfill({
+      body: JSON.stringify({
+        conversation: {
+          createdAt: '2026-08-16T12:00:00.000Z',
+          createdBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+          id: createdConversationId,
+          organizationId,
+          projectId,
+          title: 'Fix the heading.',
+          updatedAt: '2026-08-16T12:00:00.000Z',
+        },
+        run: {
+          appType: 'web',
+          branchId: 'branch-main',
+          completedAt: null,
+          conversationId: createdConversationId,
+          conversationRunNumber: 1,
+          id: createdRunId,
+          mode: 'build',
+          model: null,
+          organizationId,
+          projectId,
+          startedAt: '2026-08-16T12:00:00.000Z',
+          startedBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
+          status: 'queued',
+        },
+      }),
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+        'content-type': 'application/json',
+      },
+      status: 201,
+    });
+  });
+  await page.route(
+    new RegExp(`${apiBaseUrl}/v1/projects/${projectId}/conversations(?:\\?.*)?$`, 'u'),
+    async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({ items: [], nextCursor: null }),
+        headers: {
+          'access-control-allow-credentials': 'true',
+          'access-control-allow-origin': appBaseUrl,
+          'content-type': 'application/json',
+        },
+        status: 200,
+      });
+    },
+  );
+  await page.route(new RegExp(`${apiBaseUrl}/v1/runs/.+/messages$`, 'u'), async (route) => {
+    supplementalRequests.push(route.request());
+    await route.fulfill({
+      body: JSON.stringify({ messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FG', sequence: 2 }),
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+        'content-type': 'application/json',
+      },
+      status: 202,
+    });
+  });
+
+  await openBuilder(page);
+  await page.getByRole('tab', { exact: true, name: 'Code' }).click();
+  await page.getByRole('button', { name: 'Expand all folders' }).click();
+  await page.getByRole('button', { exact: true, name: 'src/App.tsx' }).click();
+  await page.getByRole('button', { name: 'Reference file in chat' }).click();
+  await expect(page.getByRole('list', { name: 'Code references' })).toContainText('@src/App.tsx');
+  await page.getByLabel('Message the agent').fill('Fix the heading.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect.poll(() => runRequests).toHaveLength(1);
+  const requestBody = runRequests[0]?.postDataJSON() as { prompt: string };
+  expect(JSON.parse(requestBody.prompt)).toEqual({
+    message: 'Fix the heading.',
+    referencedFiles: [{ path: 'src/App.tsx' }],
+  });
+  expect(supplementalRequests).toHaveLength(0);
+  await expect(page.getByRole('list', { name: 'Code references' })).not.toContainText(
+    '@src/App.tsx',
+  );
+  await expect(page.getByLabel('You')).toContainText('Fix the heading.');
+  await expect(page.getByLabel('You')).not.toContainText('referencedFiles');
 });
 
 test('keeps the immersive editor and both builder panes at 1180px', async ({ page }) => {

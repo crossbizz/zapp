@@ -320,7 +320,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-19 Project conversation history and new threads
 - [x] WEB-19-FIX-1 Restore persisted preview lifecycle after conversation reload
 - [x] WEB-20 Project-card deletion lifecycle
-- [ ] WEB-21 Lovable-parity tabbed code editor
+- [x] WEB-21 Lovable-parity tabbed code editor
 - [x] M6-GATE-FIX-1 Bound preview-proxy browser cleanup under cold-gate contention
 - [x] OPS-13-FIX-1 Narrow child-process runtime owners in Semgrep
 - [x] OPS-13-FIX-2 Admit the local Docker sandbox command owner in Semgrep

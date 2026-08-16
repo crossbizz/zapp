@@ -106,7 +106,7 @@ Phased delivery is governed by accepted ADR-0021. The task and tracker remain un
 **Files:** Create: `src/app/projects/[id]/page.tsx`, `src/components/builder/{Shell,TopBar,SurfaceTabs}.tsx`
 **Effort:** M
 
-Layout (PRD §10.0.2): top bar: project name + support badge + env badge, actions right: `Preview` (focus preview tab), `GitHub` (sync state pill: synced/ahead/diverged), `Deploy` (primary, enabled once a preview exists), Mission Control toggle, settings gear. Split: left conversation pane (min 380px, 40%), right surface (60%) tabs `Preview | Code | Logs | Tests`; Mission Control = right-side `Drawer` (overlay ≥ 1280px pushes content), collapsible, state persisted; responsive: < 1024px stacks with bottom tab switcher (conversation default).
+Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus preview tab), `GitHub` (sync state pill: synced/ahead/diverged), `Deploy` (primary, enabled once a preview exists), Mission Control toggle, settings gear. Project support level remains available on the dashboard and API, but is omitted from the builder header because it is not an actionable editing state. Split: left conversation pane (min 380px, 40%), right surface (60%) tabs `Preview | Code | Logs | Tests`; Mission Control = right-side `Drawer` (overlay ≥ 1280px pushes content), collapsible, state persisted; responsive: < 1024px stacks with bottom tab switcher (conversation default).
 
 - [x] e2e: pane resize persists; deploy disabled pre-preview with tooltip; Mission Control opens without navigation (URL unchanged, PRD §14.1).
 - [x] Commit: `feat(web): builder two-pane shell with mission control drawer`
@@ -519,10 +519,10 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Files:** Modify the existing code surface, web dependencies, focused Node/Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-lovable-code-editor.md`.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Replace the plain source `<pre>` with the same CodeMirror 6 family verified in Lovable's live DOM, configured as a full-height read-only viewer with line numbers, syntax coloring, selection, and light active-line treatment for every role.
-- [ ] Add a compact Lovable-style semantic file explorer with search, expand/collapse-all, folder/file-type icons, lazy hierarchy, and a clear selected state.
-- [ ] Add ordered, deduplicated, closeable open-file tabs plus truthful reference-in-chat, copy-content, and download actions for the selected file; references render as removable composer chips and enter the next message context.
-- [ ] Prove API tenant headers, all-role read-only behavior, tab behavior, file actions, chat context handoff, syntax rendering, accessibility, full builder regression coverage, and visual parity. Commit: `feat(web): add Lovable-parity code editor`
+- [x] Replace the plain source `<pre>` with the same CodeMirror 6 family verified in Lovable's live DOM, configured as a full-height read-only viewer with line numbers, syntax coloring, selection, and light active-line treatment for every role.
+- [x] Add a compact Lovable-style semantic file explorer with search, expand/collapse-all, folder/file-type icons, lazy hierarchy, and a clear selected state.
+- [x] Add ordered, deduplicated, closeable open-file tabs plus truthful reference-in-chat, copy-content, and download actions for the selected file; references render as removable composer chips and enter the next message context.
+- [x] Prove API tenant headers, all-role read-only behavior, tab behavior, file actions, chat context handoff, syntax rendering, accessibility, full builder regression coverage, and visual parity. Commit: `feat(web): add Lovable-parity code editor`
 
 ---
 
@@ -537,6 +537,7 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-16 WEB-21 done — Replaced the plain source view with a read-only CodeMirror 6 editor, Lovable-density tabs and darker compact semantic file icons, reference-in-chat context, polished conversation typography and localized timestamps, and removed the non-actionable builder Compatible badge; Builder/Viewer read-only checks, one-copy context handoff, 45/45 web Node tests, 160/160 browser tests, the production build, and the complete 94/94-task repository gate passed, while live-provider checks skipped visibly without credentials.
 - 2026-08-16 WEB-19-FIX-1 done — Forwarded the selected run's merged durable and live events to Preview so terminal projects recover their workspace after reload; the TDD regression failed before and passed after, and the complete web and repository gates passed.
 - 2026-08-16 WEB-20 done — Added Owner-only exact-name project-card deletion, truthful queued/running/unknown/failed states with automatic recovery reconciliation, bounded tenant-fenced polling, isolated cleanup, accessible disclosure behavior, and fresh-key failed-row restart support in the public API; passed 22/22 project browser tests, 7/7 deletion API tests, web/control API gates, and the full repository gate.
 - 2026-08-16 WEB-19 done — Added tenant-scoped paginated project history, explicit new threads, same-thread successor continuity, queued/applied delivery state, safe ambiguous-admission handling, retryable history, legacy preview continuity, and passed 149/149 browser tests plus the full repository gate.

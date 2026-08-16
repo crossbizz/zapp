@@ -22,6 +22,7 @@ export interface SurfaceTabsProps {
     file: File,
     selection: SelectedPreviewElement,
   ) => Promise<boolean>;
+  readonly onReferenceCodeFile: (path: string) => void;
   readonly onRunCreated: (run: BuilderRun) => void;
   readonly onValueChange: (value: SurfaceTab) => void;
   readonly organizationId: string;
@@ -81,6 +82,7 @@ export function SurfaceTabs({
   focusPreviewRequest,
   onAttachPreviewCapture,
   onAttachPreviewSelection,
+  onReferenceCodeFile,
   onRunCreated,
   onValueChange,
   organizationId,
@@ -145,6 +147,7 @@ export function SurfaceTabs({
       content = (
         <CodeView
           branchId={branchId}
+          onReferenceFile={onReferenceCodeFile}
           organizationId={organizationId}
           projectId={projectId}
           view="files"
@@ -155,6 +158,7 @@ export function SurfaceTabs({
       content = (
         <CodeView
           branchId={branchId}
+          onReferenceFile={onReferenceCodeFile}
           organizationId={organizationId}
           projectId={projectId}
           view="changes"
