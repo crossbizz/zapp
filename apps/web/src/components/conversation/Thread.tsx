@@ -126,11 +126,65 @@ function payloadString(event: RunEvent, key: string): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function toolAuditCount(event: RunEvent): number | undefined {
+function toolAudit(event: RunEvent): Readonly<Record<string, unknown>> | undefined {
   const audit = event.data.payload['audit'];
   if (typeof audit !== 'object' || audit === null || Array.isArray(audit)) return undefined;
-  const count = (audit as Readonly<Record<string, unknown>>)['count'];
+  return audit as Readonly<Record<string, unknown>>;
+}
+
+function auditCount(audit: Readonly<Record<string, unknown>> | undefined): number | undefined {
+  const count = audit?.['count'];
   return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+}
+
+function auditFilesChanged(
+  audit: Readonly<Record<string, unknown>> | undefined,
+): number | undefined {
+  const count = audit?.['filesChanged'];
+  return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+}
+
+function auditPaths(
+  audit: Readonly<Record<string, unknown>> | undefined,
+  tool: string | undefined,
+): readonly string[] | undefined {
+  if (audit === undefined || tool === undefined) return undefined;
+  const strings = (keys: readonly string[]): readonly string[] =>
+    keys.flatMap((key) => {
+      const value = audit[key];
+      return typeof value === 'string' && value.length > 0 ? [value] : [];
+    });
+  const listedPaths = [audit['paths'], audit['changedPaths']].flatMap((value) =>
+    Array.isArray(value)
+      ? value.filter((path): path is string => typeof path === 'string' && path.length > 0)
+      : [],
+  );
+  if (listedPaths.length > 0) return listedPaths;
+  switch (tool) {
+    case 'copy_file':
+      return strings(['destination']);
+    case 'rename_file':
+      return strings(['source', 'destination']);
+    case 'delete_file':
+    case 'write_file':
+      return strings(['path']);
+    default:
+      return undefined;
+  }
+}
+
+function toolActivityState(
+  event: RunEvent,
+  audit: Readonly<Record<string, unknown>> | undefined,
+): ToolActivity['state'] {
+  if (event.type === 'tool.failed') return 'failed';
+  if (event.type === 'tool.completed') {
+    const outcome = audit?.['outcome'];
+    return outcome === 'failed' || outcome === 'timed_out' || outcome === 'cancelled'
+      ? 'failed'
+      : 'completed';
+  }
+  return 'started';
 }
 
 function attachmentNames(event: RunEvent): readonly string[] {
@@ -187,18 +241,18 @@ function threadItems(events: readonly ConversationRunEvent[]): readonly ThreadIt
       const summary = payloadString(event, 'userSummary');
       if (summary !== undefined) {
         if (activities.length === 0) activityRunId = event.data.runId;
-        const count = toolAuditCount(event);
+        const audit = toolAudit(event);
+        const count = auditCount(audit);
+        const filesChanged = auditFilesChanged(audit);
         const tool = payloadString(event, 'tool');
         const toolCallId = payloadString(event, 'toolCallId');
+        const affectedPaths = auditPaths(audit, tool);
         activities.push({
+          ...(affectedPaths === undefined || affectedPaths.length === 0 ? {} : { affectedPaths }),
           ...(count === undefined ? {} : { count }),
+          ...(filesChanged === undefined ? {} : { filesChanged }),
           sequence: event.data.sequence,
-          state:
-            event.type === 'tool.completed'
-              ? 'completed'
-              : event.type === 'tool.failed'
-                ? 'failed'
-                : 'started',
+          state: toolActivityState(event, audit),
           summary,
           ...(tool === undefined ? {} : { tool }),
           ...(toolCallId === undefined ? {} : { toolCallId }),

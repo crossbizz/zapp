@@ -946,6 +946,39 @@ test('reduces the seeded stream into messages, grouped activity, progress, and a
   expect(eventRequests[0]?.headers()['x-organization-id']).toBe(organizationId);
 });
 
+test('shows a completed tool event with a failed audit outcome as failed', async ({ page }) => {
+  const frames = [
+    eventFrame({
+      payload: {
+        tool: 'run_build',
+        toolCallId: 'run-build',
+        userSummary: 'Started run build',
+      },
+      sequence: 1,
+      type: 'tool.started',
+    }),
+    eventFrame({
+      payload: {
+        audit: { outcome: 'failed' },
+        tool: 'run_build',
+        toolCallId: 'run-build',
+        userSummary: 'Build failed',
+      },
+      sequence: 2,
+      type: 'tool.completed',
+    }),
+  ].join('');
+  await page.route(`${apiBaseUrl}/v1/runs/${runId}/events*`, async (route) => {
+    await route.fulfill({ body: frames, headers: corsHeaders('text/event-stream'), status: 200 });
+  });
+
+  await openBuilder(page);
+
+  const activity = page.locator('details.zapp-conversation-activity');
+  await expect(activity.getByText('Build failed !', { exact: true })).toBeVisible();
+  await expect(activity).not.toContainText('✓');
+});
+
 test('shows an accepted queued prompt immediately and reconciles the durable user event once', async ({
   page,
 }) => {

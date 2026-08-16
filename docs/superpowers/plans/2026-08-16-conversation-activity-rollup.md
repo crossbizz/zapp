@@ -29,8 +29,11 @@
 - Modify: `tasks/todo.md`
 
 **Interfaces:**
-- Consumes: existing `RunEvent.data.payload.tool`, `toolCallId`, `userSummary`, and optional `audit.count` fields.
-- Produces: `ToolActivity` records with `tool`, `toolCallId`, optional `count`, `summary`, `state`, and `sequence`; `ToolActivityLine` renders one semantic summary plus collapsed ordered details.
+- Consumes: existing `RunEvent.data.payload.tool`, `toolCallId`, `userSummary`, and
+  optional structured audit `count`, `outcome`, path, and `filesChanged` fields.
+- Produces: `ToolActivity` records with tool identity, lifecycle state, optional count
+  and affected-file metadata, summary, and sequence; `ToolActivityLine` renders one
+  semantic summary plus collapsed ordered details.
 
 - [x] **Step 1: Write the failing rendering tests**
 
@@ -102,3 +105,11 @@
   Add checked `WEB-6-FIX-1` entries to `tasks/todo.md` and Plan 08, append the dated
   execution-log evidence, then commit all task files with:
   `fix(web): collapse conversation tool activity`
+
+- [x] **Step 11: Harden the rollup after independent review**
+
+  Add regressions for a structured failed audit outcome on `tool.completed`, mixed
+  completed and active tool families, affected-file counting, legacy lifecycle events
+  without call IDs, and canonical checks/migrations/releases. Confirm RED, then make
+  the projection and semantic summarizer truthful for those cases without changing
+  the event contract or any port behavior.

@@ -22,7 +22,8 @@ API, orchestrator, sandbox, model-gateway, preview, or port behavior changes.
 
 ## Interaction
 
-- File mutations roll up to `Updated 2 project files`.
+- File mutations roll up to `Updated 2 project files` from structured path and
+  `filesChanged` audit metadata; repeated paths are counted once.
 - Dependency installations roll up to `Installed 10 dependencies` when structured
   audit counts are available, otherwise `Installed dependencies`.
 - Read-only discovery rolls up to `Reviewed project context`.
@@ -31,7 +32,11 @@ API, orchestrator, sandbox, model-gateway, preview, or port behavior changes.
 - Mixed batches join at most three semantic summaries with ` · ` and collapse any
   additional categories into `Completed N more tasks`.
 - A completed batch ends with `✓`, an active batch ends with `…`, and a failed batch
-  displays the event's user-language failure summary with `!`.
+  displays the event's user-language failure summary with `!`. A `tool.completed`
+  lifecycle event whose structured audit outcome is failed, timed out, or cancelled
+  remains a visible failure rather than receiving a success checkmark.
+- Each tool family is summarized from its own lifecycle state, so newly started work
+  remains visible beside earlier completed work in the same batch.
 - The disclosure label is `Details`; expanding it shows the original ordered
   `userSummary` lifecycle entries and states.
 - Assistant/user messages, conversation cards, phase cards, and commit chips remain
@@ -52,4 +57,3 @@ Expanded details remain an ordered list in event sequence.
   they do not create extra visible activity rows.
 - Web lint, typecheck, focused Node tests, the focused Playwright regression, and the
   production web build must pass before integration.
-

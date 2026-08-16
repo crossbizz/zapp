@@ -63,6 +63,7 @@ void test('rolls structured tool activity into one reader-friendly summary', () 
       toolCallId: 'write-package',
     },
     {
+      affectedPaths: ['package.json'],
       sequence: 2,
       state: 'completed',
       summary: 'Wrote package.json',
@@ -70,6 +71,7 @@ void test('rolls structured tool activity into one reader-friendly summary', () 
       toolCallId: 'write-package',
     },
     {
+      affectedPaths: ['tsconfig.json'],
       sequence: 3,
       state: 'completed',
       summary: 'Wrote tsconfig.json',
@@ -129,4 +131,124 @@ void test('keeps a failed tool summary prominent while retaining prior details',
   assert.match(markup, /<summary><span>Command failed !<\/span>/u);
   assert.doesNotMatch(markup, /<summary>[^<]*Wrote package\.json/u);
   assert.match(markup, /Wrote package\.json \(completed\)/u);
+});
+
+void test('keeps active work visible beside completed activity', () => {
+  const activities = [
+    {
+      affectedPaths: ['package.json'],
+      sequence: 1,
+      state: 'completed',
+      summary: 'Wrote package.json',
+      tool: 'write_file',
+      toolCallId: 'write-package',
+    },
+    {
+      sequence: 2,
+      state: 'started',
+      summary: 'Started install dependency',
+      tool: 'install_dependency',
+      toolCallId: 'install-runtime',
+    },
+  ] as const;
+
+  const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
+
+  assert.match(markup, /Updated 1 project file · Installing dependencies…/u);
+});
+
+void test('counts affected files instead of file tool calls', () => {
+  const activities = [
+    {
+      affectedPaths: ['package.json'],
+      sequence: 1,
+      state: 'completed',
+      summary: 'Wrote package.json',
+      tool: 'write_file',
+      toolCallId: 'write-package-first',
+    },
+    {
+      affectedPaths: ['package.json'],
+      sequence: 2,
+      state: 'completed',
+      summary: 'Wrote package.json again',
+      tool: 'write_file',
+      toolCallId: 'write-package-second',
+    },
+    {
+      affectedPaths: ['package.json'],
+      sequence: 3,
+      state: 'completed',
+      summary: 'Wrote package.json a third time',
+      tool: 'write_file',
+      toolCallId: 'write-package-third',
+    },
+    {
+      filesChanged: 2,
+      sequence: 4,
+      state: 'completed',
+      summary: 'Applied 3 hunks across 2 files',
+      tool: 'apply_patch',
+      toolCallId: 'patch-source',
+    },
+  ] as const;
+
+  const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
+
+  assert.match(markup, /Updated 3 project files ✓/u);
+});
+
+void test('pairs legacy lifecycle events without tool call ids', () => {
+  const activities = [
+    {
+      sequence: 1,
+      state: 'started',
+      summary: 'Started write file',
+      tool: 'write_file',
+    },
+    {
+      affectedPaths: ['package.json'],
+      sequence: 2,
+      state: 'completed',
+      summary: 'Wrote package.json',
+      tool: 'write_file',
+    },
+  ] as const;
+
+  const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
+
+  assert.match(markup, /Updated 1 project file ✓/u);
+});
+
+void test('uses distinct summaries for canonical checks, migrations, and releases', () => {
+  const activities = [
+    {
+      sequence: 1,
+      state: 'completed',
+      summary: 'Build passed',
+      tool: 'run_build',
+      toolCallId: 'build',
+    },
+    {
+      sequence: 2,
+      state: 'completed',
+      summary: 'Migration migration-1 applied in production',
+      tool: 'execute_migration',
+      toolCallId: 'migration',
+    },
+    {
+      sequence: 3,
+      state: 'completed',
+      summary: 'Deployment deployment-1 started for release release-1',
+      tool: 'deploy_release',
+      toolCallId: 'release',
+    },
+  ] as const;
+
+  const markup = renderToStaticMarkup(createElement(ToolActivityLine, { activities }));
+
+  assert.match(
+    markup,
+    /Ran project checks · Applied a database migration · Updated the release ✓/u,
+  );
 });

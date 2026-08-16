@@ -126,7 +126,8 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 **Files:** Modify `apps/web/src/components/conversation/{Thread,ToolActivityLine}.tsx`, `apps/web/test/conversation-presentation.test.ts`, `apps/web/e2e/conversation.spec.ts`, this plan, and `tasks/todo.md`. Add the approved design and implementation plan. No public API, event schema, orchestration, preview, sandbox, model-gateway, or port behavior is in scope.
 
-- [x] Build semantic summaries from structured tool names and audit counts; keep failed `userSummary` text prominent.
+- [x] Build semantic summaries from structured tool names, lifecycle outcomes, and audit
+  counts/path metadata; keep failed `userSummary` text prominent and active work visible.
 - [x] Preserve exact ordered lifecycle summaries behind a native, closed-by-default `Details` disclosure.
 - [x] Ignore non-rendered events as activity boundaries while retaining messages, cards, phases, commits, and run changes as meaningful boundaries.
 - [x] Prove the rendering with focused SSR tests and a seeded browser stream containing `tool.output` and agent metadata. Commit: `fix(web): collapse conversation tool activity`.
