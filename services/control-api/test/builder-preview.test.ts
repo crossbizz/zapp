@@ -450,6 +450,58 @@ describe('public builder preview bridge', () => {
     });
   });
 
+  it('discovers root lockfiles through workspace agents with legacy recursive-glob behavior', async () => {
+    const source = new Map<string, string>([
+      [
+        'package.json',
+        JSON.stringify({
+          name: 'legacy-agent-vite-app',
+          private: true,
+          scripts: { dev: 'vite --port 3000', build: 'vite build' },
+          dependencies: { vite: '^5.4.0', typescript: '^5.6.0' },
+        }),
+      ],
+      ['pnpm-lock.yaml', 'lockfileVersion: 9.0'],
+      ['index.html', '<main id="app"></main>'],
+      ['src/main.ts', "document.querySelector('#app')!.textContent = 'Legacy agent';"],
+    ]);
+    const compatibleArtifacts = viteArtifacts(source);
+    const listInputs: Parameters<BuilderArtifactPort['listFiles']>[0][] = [];
+    const wired = await wire({
+      builderArtifacts: {
+        ...compatibleArtifacts,
+        listFiles: (input) => {
+          listInputs.push(input);
+          if (input.glob !== undefined) {
+            return Promise.resolve({ entries: [], truncated: false });
+          }
+          return compatibleArtifacts.listFiles(input);
+        },
+      },
+    });
+    const { workspace } = await seedWorkspace(wired);
+    Object.assign(wired.data.contracts[0]?.contractJson ?? {}, {
+      package_manager: 'npm',
+      install: { command: 'npm install' },
+      develop: { command: 'npm run dev', port: 3000 },
+    });
+
+    const response = await wired.harness.app.inject({
+      method: 'POST',
+      url: `/v1/workspaces/${workspace.id}/dev-server/restart`,
+      headers: { ...wired.asOwner, 'idempotency-key': 'builder-preview-legacy-agent-01' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(listInputs.length).toBeGreaterThan(0);
+    expect(listInputs.every((input) => input.glob === undefined)).toBe(true);
+    expect(wired.sandbox.restarts[0]?.contract).toMatchObject({
+      package_manager: 'pnpm',
+      install: { command: 'pnpm install --frozen-lockfile' },
+      develop: { command: 'pnpm run dev', port: 3000 },
+    });
+  });
+
   it('attributes a recovered workspace restart to the latest durable project run', async () => {
     const wired = await wire();
     const { project, workspace } = await seedWorkspace(wired);

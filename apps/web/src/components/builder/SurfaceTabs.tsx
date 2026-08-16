@@ -27,6 +27,7 @@ export interface SurfaceTabsProps {
   readonly organizationId: string;
   readonly projectId: string;
   readonly runId?: string;
+  readonly runConversationId?: string;
   readonly runEvents: readonly RunEvent[];
   readonly runStatus?: BuilderRun['status'];
   readonly value: SurfaceTab;
@@ -85,6 +86,7 @@ export function SurfaceTabs({
   organizationId,
   projectId,
   runId,
+  runConversationId,
   runEvents,
   runStatus,
   value,
@@ -134,6 +136,7 @@ export function SurfaceTabs({
           onRunCreated={onRunCreated}
           organizationId={organizationId}
           projectId={projectId}
+          {...(runConversationId === undefined ? {} : { runConversationId })}
           {...(runStatus === undefined ? {} : { runStatus })}
         />
       );

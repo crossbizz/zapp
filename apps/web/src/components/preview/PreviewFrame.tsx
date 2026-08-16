@@ -52,6 +52,7 @@ interface PreviewFrameProps {
   readonly onRunCreated: (run: BuilderRun) => void;
   readonly organizationId: string;
   readonly projectId: string;
+  readonly runConversationId?: string;
   readonly runStatus?: BuilderRun['status'];
 }
 
@@ -405,6 +406,7 @@ export function PreviewFrame({
   onRunCreated,
   organizationId,
   projectId,
+  runConversationId,
   runStatus,
 }: PreviewFrameProps): ReactElement {
   const [attaching, setAttaching] = useState(false);
@@ -420,6 +422,7 @@ export function PreviewFrame({
   const [publicShareUrl, setPublicShareUrl] = useState<string>();
   const [previewUrl, setPreviewUrl] = useState<string>();
   const [previewStartExpired, setPreviewStartExpired] = useState(false);
+  const [retryingBuild, setRetryingBuild] = useState(false);
   const [shareFailed, setShareFailed] = useState(false);
   const [shareRenewalGeneration, setShareRenewalGeneration] = useState(0);
   const [sharing, setSharing] = useState(false);
@@ -443,6 +446,8 @@ export function PreviewFrame({
   const refreshPromiseRef = useRef<Promise<void> | undefined>(undefined);
   const restartKeyRef = useRef<string | undefined>(undefined);
   const restartPendingRef = useRef(false);
+  const retryBuildKeyRef = useRef<string | undefined>(undefined);
+  const retryBuildPendingRef = useRef(false);
   const screenshotKeyRef = useRef<string | undefined>(undefined);
   const selectionScreenshotKeyRef = useRef<string | undefined>(undefined);
   const selectionPendingRef = useRef(false);
@@ -461,8 +466,11 @@ export function PreviewFrame({
     runStatus === 'failed' ||
     runStatus === 'cancelled' ||
     events.some((event) => event.type === 'run.cancelled');
+  const durableCommitSha = latestCommitSha(events) ?? fallbackCommitSha;
+  const terminalWithoutRevision = runTerminalObserved && durableCommitSha === undefined;
   const activeRunOwnsPreview = !runTerminalObserved;
-  const workspaceRecoveryAllowed = eventWorkspace !== undefined || runTerminalObserved;
+  const workspaceRecoveryAllowed =
+    eventWorkspace !== undefined || (runTerminalObserved && durableCommitSha !== undefined);
   const previewUsable = logs?.state === 'ready';
   const wakeInProgress =
     wakeRequested || (workspaceId !== undefined && autoWakeWorkspaceRef.current === workspaceId);
@@ -592,6 +600,8 @@ export function PreviewFrame({
     publicSharePendingRef.current = false;
     restartKeyRef.current = undefined;
     restartPendingRef.current = false;
+    retryBuildKeyRef.current = undefined;
+    retryBuildPendingRef.current = false;
     screenshotKeyRef.current = undefined;
     selectionScreenshotKeyRef.current = undefined;
     selectionPendingRef.current = false;
@@ -608,6 +618,7 @@ export function PreviewFrame({
     setPath('/');
     setPreviewUrl(undefined);
     setPublicShareUrl(undefined);
+    setRetryingBuild(false);
     setSharing(false);
     setSelecting(false);
     if (workspaceId === undefined) return;
@@ -1078,6 +1089,37 @@ export function PreviewFrame({
     }
   };
 
+  const retryBuild = async (): Promise<void> => {
+    if (retryBuildPendingRef.current) return;
+    retryBuildPendingRef.current = true;
+    setRetryingBuild(true);
+    setOperationStatus('Starting a new build run…');
+    const idempotencyKey = retryBuildKeyRef.current ?? crypto.randomUUID();
+    retryBuildKeyRef.current = idempotencyKey;
+    try {
+      const created = await createControlPlaneClient(organizationId).createRun(
+        projectId,
+        {
+          appType: 'web',
+          ...(branchId === '' ? {} : { branchId }),
+          ...(runConversationId === undefined ? {} : { conversationId: runConversationId }),
+          mode: 'build',
+          prompt:
+            'Retry the failed build. Complete the existing project request, resolve the prior failure, and keep a usable preview running.',
+        },
+        idempotencyKey,
+      );
+      retryBuildKeyRef.current = undefined;
+      onRunCreated(created.run);
+      setOperationStatus('Build retry started. The preview will open when the workspace is ready.');
+    } catch {
+      setOperationStatus('The build retry could not be started. Retry safely.');
+    } finally {
+      retryBuildPendingRef.current = false;
+      setRetryingBuild(false);
+    }
+  };
+
   const previewContent = (): ReactElement => {
     if (workspaceRecoveryError !== undefined) {
       return (
@@ -1096,8 +1138,10 @@ export function PreviewFrame({
     }
     if (workspaceId === undefined) {
       const terminalWithoutWorkspace = runStatus === 'failed' || runStatus === 'cancelled';
-      const title = terminalWithoutWorkspace
-        ? 'Preview unavailable'
+      const title = terminalWithoutRevision
+        ? 'Build needs another run'
+        : terminalWithoutWorkspace
+          ? 'Preview unavailable'
         : runStatus === 'queued'
           ? 'Build queued'
           : runStatus === 'completed'
@@ -1105,8 +1149,10 @@ export function PreviewFrame({
             : runStatus === undefined
               ? 'Loading build'
               : 'Build in progress';
-      const description = terminalWithoutWorkspace
-        ? 'This run ended before the agent started a project workspace.'
+      const description = terminalWithoutRevision
+        ? 'The previous run ended before it saved a preview revision. Retry the build in this conversation.'
+        : terminalWithoutWorkspace
+          ? 'This run ended before the agent started a project workspace.'
         : runStatus === 'queued'
           ? 'The agent accepted your request and will start the workspace next.'
           : runStatus === 'completed'
@@ -1121,6 +1167,11 @@ export function PreviewFrame({
         >
           <h2>{title}</h2>
           <p>{description}</p>
+          {terminalWithoutRevision ? (
+            <Button disabled={retryingBuild} onClick={() => void retryBuild()}>
+              {retryingBuild ? 'Starting build…' : 'Retry build'}
+            </Button>
+          ) : null}
         </div>
       );
     }

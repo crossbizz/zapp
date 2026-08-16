@@ -468,10 +468,21 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Root cause:** The canonical local supervisor inherited `ZAPP_WEB_NEXT_DIST_DIR` from its caller. After a focused Playwright run exported `.next-e2e-3100`, port 3000 and the browser-test server shared one Next.js output directory. Either process could then clean or rewrite the other's manifests, producing intermittent 500s, blank pages, preview flicker, unrelated test timeouts, and `require is not defined` errors.
 **Files:** Modify `scripts/local/config.mjs`, `scripts/local.test.mjs`, this plan, and `tasks/todo.md`. No public API, generated application source, or test-server output ownership change is in scope.
 
-- [ ] Add a failing local-supervisor regression proving a caller-provided browser-test output directory cannot reach the port 3000 web process.
-- [ ] Pin the canonical local web process to its dedicated `.next-dev` directory at the structural environment boundary.
-- [ ] Prove the focused local supervisor suite, clean port 3000 startup, full web browser suite, and cold repository gate.
-- [ ] Commit: `fix(web): isolate local and browser-test build output`
+- [x] Add a failing local-supervisor regression proving a caller-provided browser-test output directory cannot reach the port 3000 web process.
+- [x] Pin the canonical local web process to its dedicated `.next-dev` directory at the structural environment boundary.
+- [x] Prove the focused local supervisor suite, clean port 3000 startup, full web browser suite, and cold repository gate.
+- [x] Commit: `fix(web): isolate local and browser-test build output`
+
+#### WEB-18-FIX-20 - recover legacy and revisionless project previews
+
+**Root cause:** The immutable development workspace image still uses the legacy recursive-glob matcher, which excludes root-level lockfiles for `**/*`. Recovery therefore refreshed a pnpm project into an npm execution contract and left wake stuck after dependency installation failed. Separately, a terminal run with no durable branch head has no workspace or revision to restore, but Preview still followed the workspace-wake path and left the user at a dead end.
+**Files:** Modify `services/control-api/src/routes/builder-preview.ts`, `services/control-api/test/builder-preview.test.ts`, `apps/web/src/components/preview/PreviewFrame.tsx`, `apps/web/src/components/builder/{Shell.tsx,SurfaceTabs.tsx}`, `apps/web/e2e/preview-panel.spec.ts`, this plan, and `tasks/todo.md`. No workspace image rebuild, public API shape, generated application source, or visual redesign is in scope.
+
+- [x] Add failing API and browser regressions for legacy-agent root lockfile discovery and terminal projects with no durable preview revision.
+- [x] Make bounded capability scans compatible with the immutable legacy agent, refresh the real package-manager contract, and preserve the existing wake lifecycle.
+- [x] Replace impossible revisionless wake recovery with a keyed public-API build retry in the same project branch and conversation.
+- [x] Prove the affected API/browser suites, lint/typecheck, a live signed-in legacy Docker wake plus source tree, clean port 3000, and the cold repository gate.
+- [x] Commit: `fix(preview): recover legacy and failed project previews`
 
 ### Task WEB-19 [M6]: Project conversation history and new threads
 
@@ -506,6 +517,8 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 
 ## Execution log
 
+- 2026-08-16 WEB-18-FIX-20 done — Made capability scans compatible with the immutable legacy workspace agent, restored the actual pnpm preview contract, replaced impossible revisionless wake attempts with a keyed same-conversation build retry, passed control API 13/13 and web 140/140, rendered the real signed-in Docker preview and source tree, and passed the 94/94-task cold repository gate.
+- 2026-08-16 WEB-18-FIX-19 done — Isolated the canonical port 3000 Next process in `.next-dev`, proved a clean local startup and the 140/140 browser suite, and passed the 94/94-task cold repository gate.
 - 2026-08-15 WEB-18-FIX-18 done — Filtered dependency/generated trees before bounded listings and scans, refreshed preview contracts from current source, preserved the shared pnpm cache, serialized wake recovery, and proved 12/12 preview browser flows plus a live authenticated Docker restart that restored Vite and rendered the project.
 - 2026-08-15 WEB-18-FIX-17 done — Reserved initial workspace provisioning for the authoritative run, restored terminal projects from their durable branch, and proved the focused preview lifecycle, web lint/typecheck, fresh-run non-race, and signed-in Docker restoration flow.
 - 2026-08-15 WEB-18-FIX-16 done — Forced preview dependency recovery into non-interactive development mode for both start and restart; the focused and full sandbox suites, full repository gate, and signed-in restored Docker preview/source flow passed.

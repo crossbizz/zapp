@@ -1269,6 +1269,9 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                   }}
                   organizationId={organizationId}
                   projectId={projectId}
+                  {...(activeRun === undefined
+                    ? {}
+                    : { runConversationId: activeRun.conversationId })}
                   runEvents={
                     runEventSnapshot.runId === activeRun?.id ? runEventSnapshot.events : []
                   }

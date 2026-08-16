@@ -141,7 +141,10 @@ export function registerBuilderPreviewRoutes(
                   projectId: workspace.projectId,
                   workspaceId: workspace.id,
                   path: '.',
-                  glob,
+                  // Capability scanners need the complete bounded source tree. Omitting the
+                  // catch-all glob also keeps restored workspaces compatible with immutable
+                  // agents whose legacy glob matcher excluded root-level files for `**/*`.
+                  ...(glob === '**/*' ? {} : { glob }),
                   maxDepth: 100,
                 })
               )?.entries

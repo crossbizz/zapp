@@ -4,6 +4,7 @@ const apiBaseUrl = 'http://127.0.0.1:4100';
 const appBaseUrl = 'http://127.0.0.1:3100';
 const projectId = 'proj_01K27Q9C2W85CMN1V9S6Q3D4FE';
 const runId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FF';
+const conversationId = 'conv_01K27Q9C2W85CMN1V9S6Q3D4FY';
 const branchId = 'br_01K27Q9C2W85CMN1V9S6Q3D4FQ';
 const fixRunId = 'run_01K27Q9C2W85CMN1V9S6Q3D4FZ';
 const workspaceId = 'ws_01K27Q9C2W85CMN1V9S6Q3D4FG';
@@ -44,10 +45,13 @@ const activeRun = {
   appType: 'web' as const,
   branchId: null,
   completedAt: null as string | null,
+  conversationId,
+  conversationRunNumber: 1,
   id: runId,
   mode: 'build' as const,
   model: null,
   organizationId,
+  planMaxCredits: '1000.0000',
   projectId,
   startedAt: '2026-08-10T12:00:00.000Z',
   startedBy: 'user_01K27Q9C2W85CMN1V9S6Q3D4FG',
@@ -308,6 +312,76 @@ test('restores a failed run from its project branch when no workspace was starte
   await expect(
     page.getByText('This run ended before the agent started a project workspace.'),
   ).toHaveCount(0);
+});
+
+test('rebuilds a failed project that has no durable preview revision', async ({ page }) => {
+  const runBodies: unknown[] = [];
+  const workspaceRequests: string[] = [];
+  const failedRun = {
+    ...activeRun,
+    completedAt: '2026-08-10T12:01:00.000Z',
+    status: 'failed',
+  };
+  await installBuilder(page, () => '', failedRun);
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        ...projectRead,
+        branches: projectRead.branches.map((branch) => ({ ...branch, headCommitSha: null })),
+      }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/workspaces*`, async (route) => {
+    workspaceRequests.push(route.request().method());
+    await route.fulfill({
+      body: JSON.stringify({ workspaces: [] }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/projects/${projectId}/runs`, async (route) => {
+    if (route.request().method() === 'POST') {
+      runBodies.push(route.request().postDataJSON());
+      await route.fulfill({
+        body: JSON.stringify({
+          run: {
+            ...failedRun,
+            completedAt: null,
+            conversationRunNumber: 2,
+            id: fixRunId,
+            status: 'queued',
+          },
+        }),
+        headers: corsHeaders(),
+        status: 202,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({ items: [failedRun], nextCursor: null }),
+      headers: corsHeaders(),
+      status: 200,
+    });
+  });
+
+  await signIn(page);
+  await page.goto(`/projects/${projectId}`);
+
+  await expect(page.getByRole('heading', { name: 'Build needs another run' })).toBeVisible();
+  expect(workspaceRequests).toEqual([]);
+  await page.getByRole('button', { name: 'Retry build' }).click();
+  await expect.poll(() => runBodies.length).toBe(1);
+  expect(runBodies[0]).toMatchObject({
+    appType: 'web',
+    branchId,
+    conversationId,
+    mode: 'build',
+  });
+  expect(runBodies[0]).toMatchObject({
+    prompt: expect.stringContaining('Retry the failed build'),
+  });
 });
 
 test('does not race an active run for control of its idle preview workspace', async ({ page }) => {
