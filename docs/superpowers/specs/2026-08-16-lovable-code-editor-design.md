@@ -24,7 +24,7 @@ The result mirrors that interaction model and density with zapp.build tokens and
 
 ### 1. CodeMirror 6 — selected
 
-Use the stack already bound by Plan 08. A small React adapter owns the CodeMirror `EditorView`, reconfigures language and read-only state, and emits edits only while the existing Owner/Builder edit mode is active. This provides a real editor with a smaller web footprint than Monaco and preserves the current public workspace APIs.
+Use the same editor family verified in Lovable's live rendered DOM: CodeMirror 6 (`cm-editor`, `cm-content`, and its read-only textbox contract). A small React adapter owns a permanently read-only `EditorView` and reconfigures its language when tabs change. This provides the requested real viewer with a smaller web footprint than Monaco and preserves the current public workspace APIs.
 
 ### 2. Monaco Editor
 
@@ -32,23 +32,23 @@ Monaco would closely resemble VS Code and already exists in the desktop dependen
 
 ### 3. Static Shiki or Prism rendering
 
-A static highlighter would make the code colorful but would not be a real editor, would not preserve the existing direct-edit flow, and would fall short of the user's explicit requirement. It is not selected.
+A static highlighter would make the code colorful but would not provide the real editor viewer demonstrated by the reference. It is not selected.
 
 ## Architecture
 
-`CodeView` remains the owner of tenant-scoped workspace loading, file reads, direct-edit saves, and commit comparison. It gains an in-memory ordered tab model keyed by canonical workspace path. Opening a file selects an existing tab or appends one; closing the selected tab activates the nearest surviving tab. Each tab retains its fetched file record, current text, saved text, and compare token.
+`CodeView` remains the owner of tenant-scoped workspace loading, file reads, and commit comparison. It gains an in-memory ordered tab model keyed by canonical workspace path. Opening a file selects an existing tab or appends one; closing the selected tab activates the nearest surviving tab. Each tab retains its fetched file record and decoded text.
 
 `FileTree` remains lazy and API-backed. It adds semantic tree roles, expand/collapse-all control, active-path state, file-type icons, compact hierarchy guides, and search behavior that exposes matching descendants without issuing speculative reads.
 
-`CodeEditor` is a focused client component. It creates one CodeMirror 6 view, maps the path extension to TypeScript/JavaScript, CSS, HTML, JSON, Markdown, or plain text support, and uses compartments to reconfigure language and editability without recreating the editor. It never calls an API.
+`CodeEditor` is a focused client component. It creates one read-only CodeMirror 6 view, maps the path extension to TypeScript/JavaScript, CSS, HTML, JSON, Markdown, or plain text support, and uses a compartment to reconfigure language without recreating the editor. It never calls an API.
 
 `CodeView` adds toolbar actions for the active file:
 
-- **Copy file reference** copies an `@path` token and reports the action truthfully in the live status region; no hidden model or provider call is added.
+- **Reference file in chat** adds a removable `@path` chip to the project composer. The next submitted message serializes the referenced workspace path as structured context, so the agent can read the current branch copy through its existing workspace tools.
 - **Copy file content** uses the browser clipboard and reports success or failure.
 - **Download file** creates a local Blob download with the file's basename and revokes the object URL.
 
-The existing Owner/Builder `Edit file` action remains available. Edit mode enables CodeMirror; Save uses the existing public keyed direct-edit API and updates the selected tab's compare token. Cancel restores the saved text. Tabs with unsaved changes show a dot and cannot be closed until saved or cancelled.
+Per the user's product clarification, the code surface is viewer-only for every role. WEB-21 removes edit/save controls from this surface; code changes continue through chat-driven runs rather than direct browser editing.
 
 ## Visual contract
 
@@ -64,15 +64,14 @@ The existing Owner/Builder `Edit file` action remains available. Edit mode enabl
 - Organization, project, branch, or surface changes abort pending reads and reset workspace, entries, tabs, editor state, and status together.
 - Stale file reads cannot populate a new organization or workspace generation.
 - A failed open leaves existing tabs intact and announces `The file could not be opened.`
-- Clipboard and download failures never claim success.
-- Saving preserves unsaved text on failure and announces the existing conflict/retry message.
+- Clipboard, reference, and download failures never claim success.
 - Binary or undecodable text continues through the existing workspace boundary response; this task does not add source-content heuristics or a private API.
 
 ## Accessibility
 
 - The explorer uses `tree`/`treeitem`, folder rows expose `aria-expanded`, and selected files expose `aria-selected`.
 - The tab strip uses `tablist`/`tab`, supports ArrowLeft/ArrowRight/Home/End, and close buttons have path-specific labels.
-- CodeMirror is focusable and labelled `Code editor for <path>` in both read-only and editable modes.
+- CodeMirror is focusable, labelled `Code editor for <path>`, and exposes `aria-readonly="true"` for every role.
 - All toolbar actions have accessible names and visible focus rings.
 - Status changes use the existing polite live region; color is never the only selected/dirty signal.
 
@@ -83,8 +82,8 @@ Playwright will prove the user-visible contract against fixture workspace APIs:
 1. Code opens as a full-height editor with line numbers and syntax-highlighted tokens.
 2. Tree rows expose folder/file icons, search, expand-all, selection, and keyboard-operable folder state.
 3. Opening two files creates two tabs without duplicates; switching and closing tabs selects the correct file.
-4. Content-copy, reference-copy, and download actions operate on the selected file; reference copy emits the exact `@path` token.
-5. Owners/Builders can edit, cancel, and save through the existing API; Viewer remains read-only.
+4. Content-copy, chat-reference, and download actions operate on the selected file; chat reference creates a removable `@path` composer chip and is included in the next message context.
+5. Owner, Builder, and Viewer sessions all receive a read-only CodeMirror surface.
 6. Existing builder layout, Preview/Files/Code/More keyboard navigation, and commit comparison behavior remain green.
 
 Web lint, typecheck, production build, the full builder browser suite, and the repository verification gate complete the acceptance run.

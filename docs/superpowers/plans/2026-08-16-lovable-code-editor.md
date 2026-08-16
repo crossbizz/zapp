@@ -4,15 +4,15 @@
 
 **Goal:** Turn the existing zapp.build code surface into a polished Lovable-style file explorer and tabbed, syntax-colored CodeMirror 6 editor without changing workspace APIs.
 
-**Architecture:** `CodeView` continues to own tenant-scoped API and save state, `FileTree` owns lazy hierarchy/search, and a new `CodeEditor` component owns the CodeMirror lifecycle. An ordered in-memory tab model connects the tree, editor header, toolbar actions, and existing direct-edit flow.
+**Architecture:** `CodeView` continues to own tenant-scoped file reads, `FileTree` owns lazy hierarchy/search, and a new permanently read-only `CodeEditor` component owns the CodeMirror lifecycle. An ordered in-memory tab model connects the tree, editor header, toolbar actions, and a project-level code-reference handoff into the conversation composer.
 
 **Tech Stack:** Next.js 15, React 19, TypeScript 5.6, CodeMirror 6, Playwright, Node test runner.
 
 ## Global Constraints
 
-- Keep all source reads and edits on the existing generated public `/v1` SDK methods.
+- Keep all source reads on the existing generated public `/v1` SDK methods.
 - Do not add a backend route, schema, provider call, private UI endpoint, or source-content heuristic.
-- Preserve Owner/Builder edit access and Viewer read-only access.
+- Keep the browser code surface read-only for Owner, Builder, and Viewer roles per the user's clarification.
 - Reset and fence tabs, source text, file selection, and requests on organization/project/branch changes.
 - Use zapp.build tokens, branding, and copy; do not copy Lovable source or proprietary assets.
 - Preserve unrelated working-tree changes.
@@ -29,16 +29,23 @@
 - Modify: `apps/web/src/components/code/FileTree.tsx`
 - Modify: `apps/web/src/components/code/CodeView.tsx`
 - Modify: `apps/web/src/components/code/code.module.css`
+- Modify: `apps/web/src/components/builder/Shell.tsx`
+- Modify: `apps/web/src/components/builder/SurfaceTabs.tsx`
+- Modify: `apps/web/src/components/conversation/Composer.tsx`
+- Modify: `apps/web/src/components/conversation/Thread.tsx`
+- Create: `apps/web/src/components/conversation/code-references.ts`
 - Create: `apps/web/test/code-editor.test.ts`
 - Modify: `apps/web/e2e/builder-shell.spec.ts`
 - Modify: `docs/plans/08-web-ux.md`
+- Modify: `docs/superpowers/specs/2026-08-16-lovable-code-editor-design.md`
 - Modify: `tasks/todo.md`
 
 **Interfaces:**
 - Produces: `editorLanguageForPath(path): 'css' | 'html' | 'javascript' | 'json' | 'markdown' | 'text'`.
-- Produces: `CodeEditor({ editable, onChange, path, value })` using CodeMirror compartments for language and editability.
+- Produces: `CodeEditor({ path, value })` as a permanently read-only CodeMirror viewer.
 - Extends: `FileTree` with `activePath`, `onCollapseAll`, `onExpandAll`, and semantic selected tree state while preserving `onOpen` and `onOpenDirectory`.
-- Preserves: `CodeView` props and every existing control-plane client call.
+- Extends: the builder/composer bridge with a typed file-path reference that renders as a removable `@path` chip and is serialized into the next message context.
+- Preserves: existing tenant-scoped workspace list/read and commit-compare calls; removes the direct-edit call from this viewer-only surface.
 
 - [ ] **Step 1: Write failing language and browser tests**
 
@@ -57,6 +64,14 @@ test('maps common workspace paths to CodeMirror languages', () => {
   assert.equal(editorLanguageForPath('package.json'), 'json');
   assert.equal(editorLanguageForPath('README.md'), 'markdown');
   assert.equal(editorLanguageForPath('public/favicon.ico'), 'text');
+});
+
+test('serializes referenced workspace paths into message context', () => {
+  assert.equal(serializeMessageContext('Fix the heading.', [], []), 'Fix the heading.');
+  assert.deepEqual(
+    JSON.parse(serializeMessageContext('Fix the heading.', ['src/App.tsx'], [])),
+    { message: 'Fix the heading.', referencedFiles: [{ path: 'src/App.tsx' }] },
+  );
 });
 ```
 
@@ -80,15 +95,15 @@ test('renders a Lovable-style tabbed CodeMirror workspace with file actions', as
 
   await page.getByRole('button', { name: 'src/styles.css' }).click();
   await expect(page.getByRole('tablist', { name: 'Open file tabs' }).getByRole('tab')).toHaveCount(2);
-  await page.getByRole('button', { name: 'Copy file reference' }).click();
-  await expect(page.getByRole('status')).toContainText('Copied @src/styles.css');
+  await page.getByRole('button', { name: 'Reference file in chat' }).click();
+  await expect(page.getByRole('list', { name: 'Code references' })).toContainText('@src/styles.css');
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download file' }).click();
   expect((await download).suggestedFilename()).toBe('styles.css');
 });
 ```
 
-The helper must also assert the exact organization header on workspace file list/read calls and expose both Viewer read-only and Owner/Builder editable fixtures.
+The helper must also assert the exact organization header on workspace file list/read calls and prove the CodeMirror surface stays read-only for both Viewer and Owner/Builder fixtures.
 
 - [ ] **Step 2: Run tests and verify RED**
 
@@ -141,14 +156,12 @@ Create `CodeEditor.tsx` with this public surface:
 
 ```ts
 export interface CodeEditorProps {
-  readonly editable: boolean;
-  readonly onChange: (value: string) => void;
   readonly path: string;
   readonly value: string;
 }
 ```
 
-Instantiate one `EditorView`; use `Compartment` instances for language and read-only configuration; dispatch external value changes only when `view.state.doc.toString() !== value`; destroy the view on unmount. Apply `basicSetup`, line wrapping, labelled content attributes, a full-height theme, and light syntax colors. `EditorState.readOnly` and `EditorView.editable` must both follow `editable`.
+Instantiate one `EditorView`; use a `Compartment` for language configuration; dispatch external value changes only when `view.state.doc.toString() !== value`; destroy the view on unmount. Apply `basicSetup`, line wrapping, labelled content attributes, a full-height theme, and light syntax colors. Always install `EditorState.readOnly.of(true)` and `EditorView.editable.of(false)`.
 
 - [ ] **Step 6: Implement the semantic file tree and tabbed editor shell**
 
@@ -164,12 +177,11 @@ In `CodeView`, replace the single `file/content` pair with:
 ```ts
 interface OpenFileTab {
   readonly file: WorkspaceFileData;
-  readonly savedContent: string;
   readonly content: string;
 }
 ```
 
-Opening a file must deduplicate by path; clicking a tab activates it; closing selects the nearest sibling; a dirty tab renders an accessible `Unsaved` label and refuses close until Save or Cancel. Add icon buttons for Copy file reference, Copy file content, and Download file. Keep direct-edit saves and commit comparison intact.
+Opening a file must deduplicate by path; clicking a tab activates it; closing selects the nearest sibling. Add icon buttons for Reference file in chat, Copy file content, and Download file. The reference action adds a removable `@path` chip to the composer and the next message serializes the referenced path as structured context. Keep commit comparison intact and remove direct edit/save controls from the code surface.
 
 - [ ] **Step 7: Style to the reference and verify browser GREEN**
 
@@ -208,6 +220,6 @@ Run: `pnpm verify`
 Check WEB-21 in `tasks/todo.md`, mark every task bullet in `docs/plans/08-web-ux.md`, append one execution-log line including skips/deviations, and commit:
 
 ```bash
-git add apps/web/package.json pnpm-lock.yaml apps/web/src/components/code apps/web/test/code-editor.test.ts apps/web/e2e/builder-shell.spec.ts docs/plans/08-web-ux.md docs/superpowers/plans/2026-08-16-lovable-code-editor.md tasks/todo.md
+git add apps/web/package.json pnpm-lock.yaml apps/web/src/components/code apps/web/src/components/builder/Shell.tsx apps/web/src/components/builder/SurfaceTabs.tsx apps/web/src/components/conversation/Composer.tsx apps/web/src/components/conversation/Thread.tsx apps/web/src/components/conversation/code-references.ts apps/web/test/code-editor.test.ts apps/web/e2e/builder-shell.spec.ts docs/plans/08-web-ux.md docs/superpowers/plans/2026-08-16-lovable-code-editor.md docs/superpowers/specs/2026-08-16-lovable-code-editor-design.md tasks/todo.md
 git commit -m "feat(web): add Lovable-parity code editor"
 ```

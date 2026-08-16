@@ -519,10 +519,10 @@ Layout (PRD §10.0.2): top bar: project name + support badge + env badge, action
 **Files:** Modify the existing code surface, web dependencies, focused Node/Playwright tests, this plan, and `tasks/todo.md` as enumerated by `docs/superpowers/plans/2026-08-16-lovable-code-editor.md`.
 **Effort:** M. **[expand-at-execution]**
 
-- [ ] Replace the plain source `<pre>` with a full-height CodeMirror 6 surface providing line numbers, syntax coloring, selection, light active-line treatment, and the existing role-gated edit/save flow.
+- [ ] Replace the plain source `<pre>` with the same CodeMirror 6 family verified in Lovable's live DOM, configured as a full-height read-only viewer with line numbers, syntax coloring, selection, and light active-line treatment for every role.
 - [ ] Add a compact Lovable-style semantic file explorer with search, expand/collapse-all, folder/file-type icons, lazy hierarchy, and a clear selected state.
-- [ ] Add ordered, deduplicated, closeable open-file tabs plus truthful copy-reference, copy-content, and download actions for the selected file.
-- [ ] Prove API tenant headers, read-only/editable roles, tab behavior, file actions, syntax rendering, accessibility, full builder regression coverage, and visual parity. Commit: `feat(web): add Lovable-parity code editor`
+- [ ] Add ordered, deduplicated, closeable open-file tabs plus truthful reference-in-chat, copy-content, and download actions for the selected file; references render as removable composer chips and enter the next message context.
+- [ ] Prove API tenant headers, all-role read-only behavior, tab behavior, file actions, chat context handoff, syntax rendering, accessibility, full builder regression coverage, and visual parity. Commit: `feat(web): add Lovable-parity code editor`
 
 ---
 
