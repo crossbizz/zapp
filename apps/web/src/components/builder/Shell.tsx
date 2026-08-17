@@ -26,7 +26,7 @@ import { readFirstPrompt } from '../../lib/prompt-handoff';
 import { useAppSession } from '../../hooks/useAppSession';
 import { useProjectConversations } from '../../hooks/useProjectConversations';
 import { Thread } from '../conversation/Thread';
-import type { ConversationImageInput } from '../conversation/Composer';
+import type { ConversationDraftInput, ConversationImageInput } from '../conversation/Composer';
 import type { ConversationCodeReferenceInput } from '../conversation/code-references';
 import { ConversationHistoryDrawer } from '../conversation/ConversationHistoryDrawer';
 import { WorkingSurface } from './WorkingSurface';
@@ -773,6 +773,9 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   const [codeReferences, setCodeReferences] = useState<readonly ConversationCodeReferenceInput[]>(
     [],
   );
+  const [conversationDrafts, setConversationDrafts] = useState<readonly ConversationDraftInput[]>(
+    [],
+  );
   const preferredConversationWidthRef = useRef(defaultConversationWidth);
   const activeResizePointerIdRef = useRef<number | null>(null);
   const missionControlTriggerRef = useRef<HTMLButtonElement>(null);
@@ -909,7 +912,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
   useEffect(() => {
     if (!navigationReady) return;
     const current = new URLSearchParams(window.location.search);
-    for (const key of ['mode', 'view', 'section', 'pane']) current.delete(key);
+    for (const key of ['mode', 'view', 'subview', 'section', 'pane']) current.delete(key);
     const builder = new URLSearchParams(serializeBuilderNavigation(navigation));
     builder.forEach((value, key) => {
       current.set(key, value);
@@ -1308,6 +1311,7 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                   conversationLoading={projectConversations.loading}
                   conversationListError={projectConversations.error}
                   incomingCodeReferences={codeReferences}
+                  incomingDrafts={conversationDrafts}
                   incomingImages={previewAttachments}
                   {...(firstPrompt === undefined ? {} : { initialPrompt: firstPrompt })}
                   newThread={conversationSelection?.kind === 'new'}
@@ -1406,15 +1410,35 @@ export function Shell({ projectId }: ShellProps): ReactElement {
                       },
                     ]);
                   }}
+                  onConversationDraft={(content) => {
+                    const id = crypto.randomUUID();
+                    setConversationDrafts((current) => [
+                      ...current,
+                      {
+                        content,
+                        id,
+                        onConsumed() {
+                          setConversationDrafts((pending) =>
+                            pending.filter((candidate) => candidate.id !== id),
+                          );
+                        },
+                      },
+                    ]);
+                    selectPane('conversation');
+                  }}
                   onRunCreated={adoptCreatedRun}
                   manageSection={navigation.manage}
                   mode={navigation.mode}
                   onManageSectionChange={selectManageSection}
+                  onMoreSubviewChange={(more) => {
+                    setNavigation((current) => ({ ...current, more, preview: 'more' }));
+                  }}
                   onValueChange={(preview) => {
                     setNavigation((current) => ({ ...current, preview }));
                   }}
                   organizationId={organizationId}
                   projectId={projectId}
+                  moreSubview={navigation.more}
                   {...(activeRun === undefined
                     ? {}
                     : { runConversationId: activeRun.conversationId })}

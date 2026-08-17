@@ -7,7 +7,7 @@ import type { BuilderRun } from '../../lib/api';
 import { CodeView } from '../code/CodeView';
 import { PreviewFrame } from '../preview/PreviewFrame';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
-import type { PreviewSection } from './builder-navigation';
+import type { MoreSubview, PreviewSection } from './builder-navigation';
 import { MoreView } from './MoreView';
 import styles from './builder.module.css';
 
@@ -23,6 +23,8 @@ export interface SurfaceTabsProps {
     selection: SelectedPreviewElement,
   ) => Promise<boolean>;
   readonly onReferenceCodeFile: (path: string) => void;
+  readonly onConversationDraft: (content: string) => void;
+  readonly onMoreSubviewChange: (subview: MoreSubview) => void;
   readonly onRunCreated: (run: BuilderRun) => void;
   readonly onValueChange: (value: SurfaceTab) => void;
   readonly organizationId: string;
@@ -31,6 +33,7 @@ export interface SurfaceTabsProps {
   readonly runConversationId?: string;
   readonly runEvents: readonly RunEvent[];
   readonly runStatus?: BuilderRun['status'];
+  readonly moreSubview: MoreSubview;
   readonly value: SurfaceTab;
 }
 
@@ -39,7 +42,13 @@ const primaryTabs = [
   ['files', 'Files'],
   ['code', 'Code'],
 ] as const satisfies readonly (readonly [SurfaceTab, string])[];
-const moreValues = new Set<SurfaceTab>(['logs', 'tests', 'releases', 'health']);
+const moreValues = new Set<SurfaceTab>(['more', 'logs', 'tests', 'releases', 'health']);
+
+function legacyMoreSubview(value: SurfaceTab, selected: MoreSubview): MoreSubview {
+  if (value === 'logs') return 'cloud';
+  if (value === 'tests') return 'security';
+  return selected;
+}
 
 function SurfaceIcon({
   tab,
@@ -82,6 +91,8 @@ export function SurfaceTabs({
   focusPreviewRequest,
   onAttachPreviewCapture,
   onAttachPreviewSelection,
+  onConversationDraft,
+  onMoreSubviewChange,
   onReferenceCodeFile,
   onRunCreated,
   onValueChange,
@@ -91,6 +102,7 @@ export function SurfaceTabs({
   runConversationId,
   runEvents,
   runStatus,
+  moreSubview,
   value,
 }: SurfaceTabsProps): ReactElement {
   const tabsRef = useRef<HTMLDivElement>(null);
@@ -165,20 +177,23 @@ export function SurfaceTabs({
         />
       );
       break;
+    case 'more':
     case 'logs':
     case 'tests':
     case 'releases':
     case 'health':
       content = (
         <MoreView
-          activeSurface={value}
-          events={runEvents}
+          onConversationDraft={onConversationDraft}
           onRunCreated={onRunCreated}
-          onSurfaceChange={onValueChange}
+          onSubviewChange={(subview) => {
+            onMoreSubviewChange(subview);
+            onValueChange('more');
+          }}
           organizationId={organizationId}
           projectId={projectId}
           {...(runId === undefined ? {} : { runId })}
-          {...(runStatus === undefined ? {} : { runStatus })}
+          subview={legacyMoreSubview(value, moreSubview)}
         />
       );
       break;
@@ -217,7 +232,7 @@ export function SurfaceTabs({
           className={styles.surfaceTab}
           data-compact-tab={moreActive ? 'labelled' : 'icon'}
           onClick={() => {
-            onValueChange(moreActive ? value : 'health');
+            onValueChange(moreActive ? value : 'more');
           }}
           onKeyDown={moveTabFocus}
           role="tab"

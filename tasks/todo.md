@@ -332,6 +332,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-22-FIX-3 Allow cold E2E production builds to finish
 - [x] WEB-22-FIX-4 Synchronize the cold web test graph
 - [x] AR-26 Bounded builder turnaround for simple applications
+- [x] WEB-23 Functional Lovable-style project More views
 - [x] M6-GATE-FIX-1 Bound preview-proxy browser cleanup under cold-gate contention
 - [x] OPS-13-FIX-1 Narrow child-process runtime owners in Semgrep
 - [x] OPS-13-FIX-2 Admit the local Docker sandbox command owner in Semgrep

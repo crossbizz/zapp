@@ -221,6 +221,19 @@
   overflow: auto;
 }
 
+.embeddedMoreSettings {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.moreStatus {
+  min-height: 1.25rem;
+  margin: 0 0 0.5rem;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-12);
+}
+
 .analytics,
 .cloudOverview {
   max-width: 56rem;
@@ -294,6 +307,9 @@
   color: var(--zapp-text-secondary);
   font-size: var(--zapp-text-14);
 }
+.moreEmpty > button {
+  margin-top: 1rem;
+}
 .moreEmpty a {
   margin-top: 1rem;
   padding: 0.4rem 0.8rem;
@@ -301,6 +317,30 @@
   border-radius: var(--zapp-radius-pill);
   color: var(--zapp-text-primary);
   text-decoration: none;
+  font-size: var(--zapp-text-12);
+  font-weight: 650;
+}
+
+.moreEmptyInline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--zapp-border);
+  border-radius: var(--zapp-radius-panel);
+  background: var(--zapp-surface-raised);
+}
+
+.moreEmptyInline p {
+  margin: 0;
+  color: var(--zapp-text-secondary);
+  font-size: var(--zapp-text-14);
+}
+
+.moreEmptyInline a {
+  color: var(--zapp-text-primary);
   font-size: var(--zapp-text-12);
   font-weight: 650;
 }

@@ -602,6 +602,16 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - [x] Synchronize the exact web test command contract without weakening graph validation.
 - [x] Prove the focused configuration contract and complete cold repository gate. Commit: `test(config): sync web cold test contract`
 
+### Task WEB-23 [M6]: Functional Lovable-style project More views
+
+**Files:** Modify the builder navigation/shell/surface/More components and styles, reuse public project settings/release/usage APIs, add focused Node/Playwright tests, this plan, and `tasks/todo.md`.
+**Effort:** M.
+
+- [x] Persist the exact `/projects/:id?view=more&subview=...` selection for Analytics, Cloud, AI, Agent integrations, Payments, Connectors, Security, and SEO while retaining backward-compatible legacy surface URLs.
+- [x] Replace placeholder settings links with real tenant-scoped API-backed controls where a public capability exists: Cloud secrets/logs/usage, project AI usage, Payments, Connectors, security evidence, and release-aware analytics.
+- [x] Make Agent integrations and SEO actionable by handing a precise editable request into the mounted project conversation, never inventing unsupported provider state or visitor metrics.
+- [x] Prove deep links, real API calls and headers, actionable controls, conversation handoff, responsive layout, and existing builder navigation. Commit: `feat(web): activate project More views`
+
 ---
 
 ## Testing strategy
@@ -614,6 +624,8 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - No secret values ever render (write-only UI verified by e2e network assertions); org header injected centrally; support-visibility events never requested by user clients.
 
 ## Execution log
+
+- 2026-08-17 WEB-23 done — Replaced all eight project More placeholders with persistent deep links, tenant-scoped public API views and controls, real embedded settings/log/security surfaces, and editable Agent/SEO conversation handoffs without fabricated metrics; 63/63 web Node tests, 169/169 browser tests, and the complete repository gate passed.
 
 - 2026-08-16 WEB-22-FIX-4 done — Synchronized the exact Turbo web test-command contract with the tracked project-title and run-outcome suites; the focused configuration test passed 5/5 and the complete cold repository gate passed 94/94 package tasks plus 167/167 browser tests.
 - 2026-08-16 WEB-22-FIX-3 done — Raised the browser supervisor's startup budget above the observed two-minute clean-CI production build while retaining bounded shutdown; the focused RED/GREEN contract, 62/62 web Node tests, 167/167 browser tests, and complete 94/94-task repository gate passed, with provider-credential cases skipped visibly as designed and exact-SHA GitHub workflows required before final handoff.

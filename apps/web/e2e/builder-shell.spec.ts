@@ -359,9 +359,11 @@ test('loads a compact immersive builder with truthful header actions and surface
   await expect(page.getByRole('heading', { exact: true, name: 'Secrets' })).toBeVisible();
   await page.getByRole('tab', { name: 'Preview' }).click();
 
-  expect(projectRequests).toHaveLength(1);
-  expect(projectRequests[0]?.method()).toBe('GET');
-  expect(projectRequests[0]?.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
+  expect(projectRequests).toHaveLength(2);
+  for (const request of projectRequests) {
+    expect(request.method()).toBe('GET');
+    expect(request.headers()['x-organization-id']).toBe('org_01K27Q9C2W85CMN1V9S6Q3D4FD');
+  }
 });
 
 test('renders a Lovable-style tabbed CodeMirror workspace with file actions', async ({ page }) => {
@@ -1177,6 +1179,84 @@ test('keeps the Lovable-style More hierarchy usable on a narrow workspace', asyn
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   );
+});
+
+test('deep-links functional More views and hands SEO work into the mounted conversation', async ({
+  page,
+}) => {
+  const integrationRequests: Request[] = [];
+  await mockMembership(page, 'owner');
+  await page.route(`${apiBaseUrl}/v1/integrations`, async (route) => {
+    integrationRequests.push(route.request());
+    await route.fulfill({
+      body: JSON.stringify({ connections: [] }),
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+        'content-type': 'application/json',
+      },
+      status: 200,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/usage/summary?*`, async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({
+        credits: {
+          available: '98.8000',
+          reserved: '0.0000',
+          source: 'wallet',
+          wallet: '100.0000',
+        },
+        usage: {
+          byCategory: [{ category: 'model_input_tokens', credits: '1.2000' }],
+          byProject: [{ projectId, credits: '1.2000' }],
+          byRun: [],
+        },
+        window: { from: '2026-08-01T00:00:00.000Z', to: '2026-09-01T00:00:00.000Z' },
+      }),
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+        'content-type': 'application/json',
+      },
+      status: 200,
+    });
+  });
+  await page.route(new RegExp(`^${apiBaseUrl}/v1/projects/${projectId}/releases`, 'u'), async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ items: [], nextCursor: null, rollbackTargets: [] }),
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+        'content-type': 'application/json',
+      },
+      status: 200,
+    });
+  });
+  await mockProjectRead(page);
+  await signIn(page);
+  await page.goto(`/projects/${projectId}?view=more&subview=connectors&pane=workspace`);
+
+  await expect(page.getByRole('tab', { name: 'More' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { exact: true, name: 'Connectors' })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await expect(page.getByRole('heading', { exact: true, name: 'Integrations' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'GitHub' })).toBeVisible();
+  expect(integrationRequests[0]?.headers()['x-organization-id']).toBe(organizationId);
+
+  await page.getByRole('tab', { exact: true, name: 'AI' }).click();
+  await expect(page).toHaveURL(new RegExp(`view=more&subview=ai`, 'u'));
+  await expect(page.getByRole('heading', { exact: true, name: 'AI' })).toBeVisible();
+  await expect(page.getByText('1.2000 credits')).toBeVisible();
+
+  await page.getByRole('tab', { exact: true, name: 'SEO & AI search' }).click();
+  await page.getByRole('button', { name: 'Ask zapp to improve SEO' }).click();
+  await expect(page.getByLabel('Message the agent')).toHaveValue(
+    /Audit and improve this project's SEO and AI-search metadata/u,
+  );
+  await expect(page.getByRole('region', { name: 'Conversation' })).toBeVisible();
 });
 
 test('omits repository actions when the repository record is absent', async ({ page }) => {

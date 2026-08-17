@@ -257,6 +257,7 @@ void describe('builder navigation', () => {
   void it('defaults to Preview with the conversation pane selected', () => {
     assert.deepEqual(parseBuilderNavigation(new URLSearchParams()), {
       manage: 'general',
+      more: 'analytics',
       mode: 'preview',
       pane: 'conversation',
       preview: 'preview',
@@ -268,6 +269,7 @@ void describe('builder navigation', () => {
       parseBuilderNavigation(new URLSearchParams('mode=manage&section=integrations')),
       {
         manage: 'integrations',
+        more: 'analytics',
         mode: 'manage',
         pane: 'conversation',
         preview: 'preview',
@@ -279,6 +281,7 @@ void describe('builder navigation', () => {
       ),
       {
         manage: 'general',
+        more: 'analytics',
         mode: 'preview',
         pane: 'conversation',
         preview: 'preview',
@@ -289,6 +292,7 @@ void describe('builder navigation', () => {
   void it('serializes Preview restoration and mobile Workspace state', () => {
     const value = {
       manage: 'github',
+      more: 'analytics',
       mode: 'manage',
       pane: 'workspace',
       preview: 'code',
@@ -297,6 +301,22 @@ void describe('builder navigation', () => {
     assert.equal(
       serializeBuilderNavigation(value),
       'mode=manage&view=code&section=github&pane=workspace',
+    );
+    assert.deepEqual(parseBuilderNavigation(new URLSearchParams(serializeBuilderNavigation(value))), value);
+  });
+
+  void it('round-trips Lovable-style More deep links', () => {
+    const value = {
+      manage: 'general',
+      more: 'connectors',
+      mode: 'preview',
+      pane: 'workspace',
+      preview: 'more',
+    } as const;
+
+    assert.equal(
+      serializeBuilderNavigation(value),
+      'view=more&subview=connectors&pane=workspace',
     );
     assert.deepEqual(parseBuilderNavigation(new URLSearchParams(serializeBuilderNavigation(value))), value);
   });

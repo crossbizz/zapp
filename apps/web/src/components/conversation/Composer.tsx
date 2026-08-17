@@ -14,13 +14,11 @@ import {
 } from 'react';
 
 import type { CreateRunInput } from '../../lib/api';
+import { selectImageFiles } from '../../lib/image-attachments';
 import type { SelectedPreviewElement } from '../preview/SelectMode';
 import { mergeCodeReferences, type ConversationCodeReferenceInput } from './code-references';
 
-const maximumImages = 10;
 const maximumCodeReferences = 10;
-const maximumImageBytes = 8 * 1024 * 1024;
-const supportedImageTypes = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
 const modes = [
   { description: 'Let zapp choose from your message.', label: 'Auto (recommended)', value: 'auto' },
   { description: 'Get guidance without changing code.', label: 'Ask', value: 'ask' },
@@ -50,11 +48,18 @@ export interface ConversationImageInput {
   readonly selection?: SelectedPreviewElement;
 }
 
+export interface ConversationDraftInput {
+  readonly content: string;
+  readonly id: string;
+  readonly onConsumed?: () => void;
+}
+
 export interface ConversationComposerProps {
   readonly active: boolean;
   readonly allowedModels: readonly string[];
   readonly branches: readonly { readonly id: string; readonly name: string }[];
   readonly incomingCodeReferences?: readonly ConversationCodeReferenceInput[];
+  readonly incomingDrafts?: readonly ConversationDraftInput[];
   readonly incomingImages?: readonly ConversationImageInput[];
   readonly onStop: () => Promise<void>;
   readonly onSubmit: (submission: ConversationSubmission) => Promise<boolean>;
@@ -140,6 +145,7 @@ export function Composer({
   allowedModels,
   branches,
   incomingCodeReferences = [],
+  incomingDrafts = [],
   incomingImages = [],
   onStop,
   onSubmit,
@@ -151,6 +157,7 @@ export function Composer({
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
   const consumedIncomingImagesRef = useRef(new Set<string>());
   const consumedIncomingReferencesRef = useRef(new Set<string>());
+  const consumedIncomingDraftsRef = useRef(new Set<string>());
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [content, setContent] = useState('');
   const [imageError, setImageError] = useState<string>();
@@ -191,51 +198,33 @@ export function Composer({
   const addImages = (
     inputs: readonly Pick<ConversationImageInput, 'capture' | 'file' | 'selection'>[],
   ): readonly boolean[] => {
-    let available = maximumImages - imagesRef.current.length;
-    let exceededCapacity = false;
-    let unsupported = false;
-    let invalidSize = false;
-    const results: boolean[] = [];
-    const accepted: SelectedImage[] = [];
-    for (const { capture, file, selection } of inputs) {
-      if (!supportedImageTypes.has(file.type)) {
-        unsupported = true;
-        results.push(false);
-        continue;
-      }
-      if (file.size <= 0 || file.size > maximumImageBytes) {
-        invalidSize = true;
-        results.push(false);
-        continue;
-      }
-      if (available <= 0) {
-        exceededCapacity = true;
-        results.push(false);
-        continue;
-      }
-      available -= 1;
-      results.push(true);
-      accepted.push({
+    const selection = selectImageFiles(imagesRef.current.length, inputs);
+    const accepted: SelectedImage[] = selection.accepted.map(({ capture, file, selection }) => ({
         ...(capture === undefined ? {} : { capture }),
         file,
         id: crypto.randomUUID(),
         ...(selection === undefined ? {} : { selection }),
-      });
-    }
+      }));
     const nextImages = [...imagesRef.current, ...accepted];
     imagesRef.current = nextImages;
     setImages(nextImages);
-    if (exceededCapacity) {
-      setImageError('You can attach up to 10 images.');
-    } else if (unsupported) {
-      setImageError('Use PNG, JPEG, WebP, or GIF images.');
-    } else if (invalidSize) {
-      setImageError('Each image must be between 1 byte and 8 MiB.');
-    } else {
-      setImageError(undefined);
-    }
-    return results;
+    setImageError(selection.error);
+    return selection.results;
   };
+
+  useEffect(() => {
+    const fresh = incomingDrafts.filter(
+      (draft) => !consumedIncomingDraftsRef.current.has(draft.id),
+    );
+    if (fresh.length === 0) return;
+    const nextContent = fresh.map((draft) => draft.content).join('\n\n');
+    setContent((current) => current.trim() === '' ? nextContent : `${current.trim()}\n\n${nextContent}`);
+    fresh.forEach((draft) => {
+      consumedIncomingDraftsRef.current.add(draft.id);
+      draft.onConsumed?.();
+    });
+    messageInputRef.current?.focus();
+  }, [incomingDrafts]);
 
   useEffect(() => {
     const fresh = incomingImages.filter(

@@ -15,7 +15,12 @@ import {
   type CreatedConversation,
   type ProjectConversation,
 } from '../../lib/api';
-import { Composer, type ConversationImageInput, type ConversationSubmission } from './Composer';
+import {
+  Composer,
+  type ConversationDraftInput,
+  type ConversationImageInput,
+  type ConversationSubmission,
+} from './Composer';
 import {
   displayMessageContent,
   serializeMessageContext,
@@ -39,6 +44,7 @@ interface ThreadProps {
   readonly allowedModels: readonly string[];
   readonly branches: readonly { readonly id: string; readonly name: string }[];
   readonly incomingCodeReferences?: readonly ConversationCodeReferenceInput[];
+  readonly incomingDrafts?: readonly ConversationDraftInput[];
   readonly incomingImages?: readonly ConversationImageInput[];
   readonly initialPrompt?: string;
   readonly conversation?: ProjectConversation;
@@ -712,6 +718,7 @@ export function Thread({
   conversationLoading,
   incomingImages = [],
   incomingCodeReferences = [],
+  incomingDrafts = [],
   initialPrompt,
   newThread,
   onConversationCreated,
@@ -769,6 +776,22 @@ export function Thread({
     }
     return userMessageCount(currentRunEvents, message.content) < message.expectedOrdinal;
   });
+
+  useEffect(() => {
+    setOptimisticMessages((current) =>
+      current.filter((message) => {
+        const durableEvents = events.filter((event) => event.data.runId === message.runId);
+        if (message.messageId !== undefined) {
+          return !durableEvents.some(
+            (event) =>
+              event.type === 'message.user' &&
+              payloadString(event, 'messageId') === message.messageId,
+          );
+        }
+        return userMessageCount(durableEvents, message.content) < message.expectedOrdinal;
+      }),
+    );
+  }, [events]);
 
   useEffect(() => {
     onEventsChange(selectedRun?.id, currentRunEvents);
@@ -1241,6 +1264,7 @@ export function Thread({
           allowedModels={allowedModels}
           branches={branches}
           incomingCodeReferences={incomingCodeReferences}
+          incomingDrafts={incomingDrafts}
           incomingImages={incomingImages}
           onStop={stop}
           onSubmit={send}
