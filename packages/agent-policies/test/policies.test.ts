@@ -66,7 +66,17 @@ const PROMPT_CONTRACTS = [
   },
   {
     role: 'builder',
-    requirements: [/work test-first/iu, /confirm RED/iu, /rerun for GREEN/iu, /verification commands/iu],
+    requirements: [
+      /work test-first/iu,
+      /confirm RED/iu,
+      /rerun for GREEN/iu,
+      /one focused RED\/GREEN loop per requested behavior/iu,
+      /batch independent tool calls/iu,
+      /install dependencies once/iu,
+      /one final verification pass/iu,
+      /do not spend a turn narrating/iu,
+      /verification commands/iu,
+    ],
   },
   {
     role: 'verifier',

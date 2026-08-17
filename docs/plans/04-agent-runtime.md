@@ -390,6 +390,15 @@ Execution expansion (2026-08-12):
 - [x] **25d replay/context proof:** prove crash/retry around persistence and acknowledgement is idempotent, no first model turn/tool replays, same-conversation successor context is present, and a distinct conversation receives none.
 - [x] Verify focused worker unit/Temporal suites plus lint/typecheck/build and architecture gates; no real-provider call. Commit: `feat(orchestrator): apply queued messages safely`
 
+### Task AR-26 [M6]: Bounded builder turnaround for simple applications
+
+**Files:** Modify `packages/agent-policies/prompts/builder.md`, `packages/agent-policies/test/policies.test.ts`, `services/orchestrator-worker/src/workflows/run.ts`, `services/orchestrator-worker/test/modes.test.ts`, this plan, and `tasks/todo.md`.
+**Effort:** S.
+
+- [x] Preserve test-first execution while requiring one focused RED/GREEN loop per requested behavior, one dependency-install pass, batched independent tool calls, and one final verification pass; prohibit narration-only turns and rerunning checks that no intervening change invalidated.
+- [x] Prove both the durable Builder role prompt and Build-mode instructions carry the bounded-turn contract without weakening failed-check visibility or final verification.
+- [x] Verify the agent-policies and orchestrator-worker focused suites plus lint/typecheck; no real-provider call. Commit: `perf(orchestrator): bound simple builder round trips`
+
 ## Testing strategy
 - Unit: policies, graph, context assembly, schema round-trips (fast, no infra).
 - Integration: Temporal dev server + fake sandbox/model for workflow semantics (signals, restarts, isolation, idempotency). Worker-kill tests (AR-8, AR-17) are permanent CI.
@@ -402,6 +411,8 @@ Execution expansion (2026-08-12):
 - Policy evaluation is code-side (Global Constraint 15); model sees redacted, delimited tool output only; approval-gated tools enumerated in AR-4 table; all activities carry org/project context for ledger + audit attribution.
 
 ## Execution log
+
+- 2026-08-17 AR-26 done — Bounded simple builder sessions to one focused RED/GREEN loop per requested behavior, batched independent calls and file writes, one dependency install, no narration-only turns, and one final verification pass; agent policies passed 130/130, orchestrator-worker passed 278/278, and the complete repository gate passed without a real-provider call; credential-dependent integration cases skipped visibly as designed.
 
 - 2026-08-16 AR-25 done — Added tenant-scoped PostgreSQL transcript CAS with single-write checkpoint healing, update-admitted bounded message queues, production Build follow-up routing, terminal admission closure, safe tool-boundary yields, and post-persistence acknowledgements; required worker/control adapter and Build-mode test joins, worker 264/264 and architecture gates passed, no provider calls; live PostgreSQL acceptance skipped because `DATABASE_URL` was unset.
 

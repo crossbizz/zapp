@@ -57,6 +57,10 @@ describe('AR-15 Ask and Prototype modes', () => {
     expect(guardrails.modeInstructions).toContain('Prefer TypeScript');
     expect(guardrails.modeInstructions).toContain('do not inspect git history');
     expect(guardrails.modeInstructions).toContain('run the preview smoke test');
+    expect(guardrails.modeInstructions).toContain('Batch independent tool calls');
+    expect(guardrails.modeInstructions).toContain('Install dependencies once');
+    expect(guardrails.modeInstructions).toContain('Do not rerun a passing check');
+    expect(guardrails.modeInstructions).toContain('Do not spend a turn narrating');
   });
 
   it('keeps Ask read-only, warns on an uncited code claim, and does not commit', async () => {
