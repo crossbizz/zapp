@@ -612,6 +612,11 @@ describe('WS-5 scoped-token Git bootstrap', () => {
       getAttachment() {
         return Promise.resolve(attachment === undefined ? undefined : { row, attachment });
       },
+      listProject(organizationId, projectId) {
+        return Promise.resolve(
+          row.organizationId === organizationId && row.projectId === projectId ? [row] : [],
+        );
+      },
       listAttachments() {
         return Promise.resolve([]);
       },

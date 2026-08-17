@@ -128,6 +128,8 @@ export interface WorkspaceRowBoundary {
     organizationId: string,
     projectId: string,
   ): Promise<WorkspaceAttachmentRecord | undefined>;
+  /** Every durable workspace for exactly one tenant project, including stopped rows. */
+  listProject(organizationId: string, projectId: string): Promise<readonly WorkspaceLifecycleRow[]>;
   /** Durable active attachments used to restore lifecycle observation after restart. */
   listAttachments(): Promise<readonly WorkspaceAttachmentRecord[]>;
   transition(
@@ -951,6 +953,55 @@ export function registerWorkspaceRoutes(
     failureMonitors.get(workspaceId)?.controller.abort();
     failureMonitors.delete(workspaceId);
   };
+  const terminateProjectWorkspace = async (
+    row: WorkspaceLifecycleRow,
+    operationKey: string,
+  ): Promise<void> => {
+    let recording = activeCostRecordings.get(row.id);
+    if (recording === undefined && row.status !== 'terminated') {
+      const record = await deps.rows.getAttachment(row.id, row.organizationId, row.projectId);
+      if (record !== undefined) recording = await ensureCostRecording(record, operationKey);
+    }
+    if (recording !== undefined) {
+      await recording.terminate();
+      activeCostRecordings.delete(row.id);
+    }
+    if (row.providerWorkspaceId !== null) {
+      await deps.provider.terminateWorkspace(row.providerWorkspaceId);
+      if ((await deps.provider.getStatus(row.providerWorkspaceId)) !== 'terminated') {
+        throw Object.assign(new Error('Workspace provider termination was not confirmed.'), {
+          statusCode: 502,
+        });
+      }
+    }
+    await deps.previewMonitors.revoke(row.id);
+    stopFailureMonitor(row.id);
+    const terminated =
+      row.status === 'terminated'
+        ? row
+        : await deps.rows.transition(row.id, 'terminated', { terminatedAt: deps.now() });
+    await deps.governor.release({
+      workspaceId: terminated.id,
+      organizationId: terminated.organizationId,
+      operationKey,
+    });
+  };
+  const projectWorkspacesAbsent = async (scope: {
+    readonly organizationId: string;
+    readonly projectId: string;
+  }): Promise<boolean> => {
+    const rows = await deps.rows.listProject(scope.organizationId, scope.projectId);
+    const statuses = await Promise.all(
+      rows.map(async (row) =>
+        row.providerWorkspaceId === null
+          ? row.status
+          : await deps.provider.getStatus(row.providerWorkspaceId),
+      ),
+    );
+    return rows.every(
+      (row, index) => row.status === 'terminated' && statuses[index] === 'terminated',
+    );
+  };
   const acquireEnabledFailureMonitors = async (): Promise<void> => {
     for (const record of await deps.rows.listAttachments()) {
       if (
@@ -1078,8 +1129,15 @@ export function registerWorkspaceRoutes(
             statusCode: 400,
           });
         }
+        const operationKey = readIdempotencyKey(request.headers['idempotency-key']);
+        const workspaces = await deps.rows.listProject(scope.organizationId, scope.projectId);
+        await Promise.all(
+          workspaces.map(async (row) => terminateProjectWorkspace(row, operationKey)),
+        );
         await snapshotDeletion.remove(scope);
-        return { absent: await snapshotDeletion.absent(scope) };
+        return {
+          absent: (await projectWorkspacesAbsent(scope)) && (await snapshotDeletion.absent(scope)),
+        };
       },
     );
     app.get(
@@ -1102,7 +1160,9 @@ export function registerWorkspaceRoutes(
             statusCode: 400,
           });
         }
-        return { absent: await snapshotDeletion.absent(scope) };
+        return {
+          absent: (await projectWorkspacesAbsent(scope)) && (await snapshotDeletion.absent(scope)),
+        };
       },
     );
   }

@@ -702,6 +702,14 @@ class MemoryWorkspaceRows implements WorkspaceRowBoundary, PreviewMonitorCoordin
     return row === undefined || attachment === undefined ? undefined : { row, attachment };
   }
 
+  listProject(organizationId: string, projectId: string) {
+    return Promise.resolve(
+      [...this.rows.values()].filter(
+        (row) => row.organizationId === organizationId && row.projectId === projectId,
+      ),
+    );
+  }
+
   listAttachments() {
     return Promise.resolve(
       [...this.rows.values()].flatMap((row) => {
@@ -1649,7 +1657,7 @@ describe('create status terminate and idempotency', () => {
     expect(response.json()).toEqual({ snapshotBytes: '13', volumeBytes: '17' });
   });
 
-  it('deletes and probes project snapshots only for a tenant-scoped control-api caller', async () => {
+  it('deletes and probes project sandbox resources for a tenant-scoped control-api caller', async () => {
     const remove = vi.fn(() => Promise.resolve());
     const absent = vi.fn(() => Promise.resolve(true));
     const app = buildTestApp({
@@ -1704,6 +1712,60 @@ describe('create status terminate and idempotency', () => {
       organizationId: IDS.organizationId,
       projectId: IDS.projectId,
     });
+  });
+
+  it('terminates stopped project workspaces before reporting sandbox resources absent', async () => {
+    const sdk = new FakeModalWorkspaceSdk();
+    sdk.present = true;
+    const rows = new MemoryWorkspaceRows();
+    rows.seed({
+      ...requestedRow(),
+      providerWorkspaceId: sdk.sandbox.providerWorkspaceId,
+      status: 'terminated',
+      terminatedAt: NOW,
+    });
+    const app = buildTestApp({
+      provider: createModalSandboxProvider({
+        environment: 'dev',
+        imageLock: IMAGE_LOCK,
+        agentToken: AGENT_TOKEN,
+        sdkFactory: () => sdk,
+      }),
+      rows,
+      workspaceGit: WORKSPACE_GIT_FIXTURE,
+      serviceTokens,
+      snapshotDeletion: {
+        remove: () => Promise.resolve(),
+        absent: () => Promise.resolve(true),
+      },
+      now: () => NOW,
+    });
+    apps.push(app);
+    await app.ready();
+    const scopeHeaders = {
+      'x-zapp-service-token': SERVICE_TOKEN,
+      'x-zapp-organization-id': IDS.organizationId,
+      'x-zapp-project-id': IDS.projectId,
+    };
+
+    const initialProbe = await app.inject({
+      method: 'GET',
+      url: `/internal/projects/${IDS.projectId}/snapshots/absent`,
+      headers: scopeHeaders,
+    });
+
+    const deletion = await app.inject({
+      method: 'POST',
+      url: `/internal/projects/${IDS.projectId}/snapshots/delete`,
+      headers: { ...scopeHeaders, 'idempotency-key': OPERATION_KEY },
+    });
+
+    expect(initialProbe.statusCode).toBe(200);
+    expect(initialProbe.json()).toEqual({ absent: false });
+    expect(deletion.statusCode).toBe(200);
+    expect(deletion.json()).toEqual({ absent: true });
+    expect(sdk.sandbox.terminateCalls).toBe(1);
+    expect(sdk.present).toBe(false);
   });
 
   it('hides snapshot deletion from non-control-api service callers', async () => {

@@ -248,6 +248,16 @@ export function createPostgresWorkspaceStateStore(
       return row === undefined ? undefined : attachmentRecord(row);
     },
 
+    async listProject(organizationId, projectId) {
+      const rows = await database
+        .select()
+        .from(workspaces)
+        .where(
+          and(eq(workspaces.organizationId, organizationId), eq(workspaces.projectId, projectId)),
+        );
+      return rows.map(lifecycleRow);
+    },
+
     async listAttachments() {
       const rows = await database
         .select()

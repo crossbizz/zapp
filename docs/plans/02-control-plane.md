@@ -270,6 +270,14 @@ Execution expansion (2026-08-12; route-name assumption follows the existing proj
 - [x] **17g integration:** seed a real project with related PostgreSQL rows, classified objects in MinIO/R2, an internal Git repository, and snapshot records through dev-service adapters; enqueue, poll, and prove every target absent while tenant audit evidence remains. Environment-gate only genuinely unavailable providers and print exact skips.
 - [x] **17h verify/review/ship:** run schema/generator determinism, focused and full touched-package tests, lint/typecheck/build, one final real-provider gate, and at most two Critical/Important review rounds (exit zero); update tracker/log and commit `feat(control-api): retention + verified deletion pipeline`.
 
+#### CP-17-FIX-1 — terminate project workspaces before row deletion
+
+**Files:** Modify: `services/sandbox-service/src/routes/workspaces.ts`, `services/sandbox-service/src/state/postgres.ts`, sandbox-service integration fixtures/tests, `tasks/todo.md`, and this execution plan.
+
+- [x] **RED:** add a project-deletion regression proving that an existing provider workspace remains present and the absence probe stays false even when its durable row is already marked terminated.
+- [x] **GREEN:** enumerate workspaces by exact organization/project scope, finalize active usage, terminate every provider workspace idempotently, revoke monitors, persist termination, release capacity, and require both workspace and snapshot absence before deletion can advance.
+- [x] **Verify/ship:** run focused integration coverage, the full sandbox-service test/lint/typecheck/build gates, `pnpm verify`, then update the tracker/log and commit `fix(sandbox): remove project containers before deletion`.
+
 ### Task CP-18 [M5]: Export APIs
 
 **Files:** Create: `services/control-api/src/routes/export.ts`, `services/control-api/src/export/service.ts`, `services/control-api/test/export.test.ts`, `services/control-api/test/integration/export.test.ts`, `services/git-service/src/export.ts`, `services/git-service/test/export.test.ts`; Modify: control-api/Git-service app, composition, auth/idempotency/storage boundaries and test doubles, shared audit contract, generated OpenAPI/SDK artifacts, Git provider integration coverage.
@@ -459,3 +467,4 @@ Execution expansion (2026-08-12):
 - 2026-08-12 CP-25 done — Added presentation-only template APIs and exact-slug Remix creation with server-owned seeding and idempotent replay; no provider call.
 - 2026-08-12 CP-27 done — Added bounded authenticated desktop-notification cursor replay over the existing strict projection and preference boundary, with atomic Redis cursor append, per-user/tenant isolation, reconnect guidance, and regenerated SDK; no provider call.
 - 2026-08-13 CP-3-FIX-1 done — Self-service Stytch discovery and transactional default workspace bootstrap shipped; updated dependent org/audit/isolation fixtures for the new login invariant.
+- 2026-08-17 CP-17-FIX-1 done — Project deletion now terminates and confirms every tenant-scoped provider workspace, including stopped containers whose durable rows were already terminal, before snapshot and PostgreSQL deletion can advance; full verification passed with database and live cloud-provider cases skipped visibly when credentials were unset.

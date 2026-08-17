@@ -150,6 +150,12 @@ describe.skipIf(!hasDatabase)('Postgres workspace state', () => {
     const restoredWorkspace = restored.find(({ row: candidate }) => candidate.id === workspaceId);
     expect(restoredWorkspace?.row.providerWorkspaceId).toBe('sb-durable');
     expect(restoredWorkspace?.attachment).toEqual(attachment);
+    await expect(restarted.listProject(organizationId, projectId)).resolves.toEqual([
+      expect.objectContaining({ id: workspaceId, providerWorkspaceId: 'sb-durable' }),
+    ]);
+    await expect(
+      restarted.listProject('org_01J8ME7YQZJ2V9Q0X3T5B6K7NZ', projectId),
+    ).resolves.toEqual([]);
     expect(await restarted.claim(workspaceId, 'replica-b', 100)).toBeUndefined();
     expect(await restarted.renew(workspaceId, firstLease, 100)).toBe(true);
 

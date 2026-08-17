@@ -298,6 +298,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 
 ## M6 — Private beta validation (Weeks 26–30)
 
+- [x] CP-17-FIX-1 Terminate project workspaces before row deletion
 - [x] WEB-18 Reference-quality real API product shell and builder Manage
 - [x] WEB-18-FIX-2 Browser API CORS for the real product shell
 - [x] WEB-18-FIX-3 Immersive builder prompt and preview repair
