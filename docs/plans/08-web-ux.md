@@ -612,6 +612,15 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 - [x] Make Agent integrations and SEO actionable by handing a precise editable request into the mounted project conversation, never inventing unsupported provider state or visitor metrics.
 - [x] Prove deep links, real API calls and headers, actionable controls, conversation handoff, responsive layout, and existing builder navigation. Commit: `feat(web): activate project More views`
 
+### Task WEB-24 [M6]: Paste images into project creation
+
+**Files:** Modify the dashboard prompt composer and shared image-selection utility, public-SDK creation handoff, focused Playwright tests, this plan, and `tasks/todo.md`.
+**Effort:** S.
+
+- [x] Accept pasted and file-picked PNG/JPEG/WebP/GIF images in the new-project composer with the same 10-image and 8 MiB limits as project conversations; render removable chips and truthful errors.
+- [x] Upload accepted files through the public attachment API after project creation and attach their returned references to the initial run through the public message API with retry-stable idempotency keys.
+- [x] Prove paste, validation, upload ordering, tenant/CSRF/idempotency headers, retry without duplicate creation, and successful builder handoff. Commit: `feat(web): attach pasted images to new projects`
+
 ---
 
 ## Testing strategy
@@ -625,6 +634,7 @@ Layout (PRD §10.0.2): top bar: project name, actions right: `Preview` (focus pr
 
 ## Execution log
 
+- 2026-08-17 WEB-24 done — Added pasted and file-picked dashboard images with shared validation, removable chips, public attachment upload, initial message references, and stable retry identities; focused paste/retry acceptance, 63/63 web Node tests, 169/169 browser tests, and the complete repository gate passed.
 - 2026-08-17 WEB-23 done — Replaced all eight project More placeholders with persistent deep links, tenant-scoped public API views and controls, real embedded settings/log/security surfaces, and editable Agent/SEO conversation handoffs without fabricated metrics; 63/63 web Node tests, 169/169 browser tests, and the complete repository gate passed.
 
 - 2026-08-16 WEB-22-FIX-4 done — Synchronized the exact Turbo web test-command contract with the tracked project-title and run-outcome suites; the focused configuration test passed 5/5 and the complete cold repository gate passed 94/94 package tasks plus 167/167 browser tests.

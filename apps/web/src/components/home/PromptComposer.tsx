@@ -8,12 +8,18 @@ import {
   useLayoutEffect,
   useState,
   type ChangeEvent,
+  type ClipboardEvent,
   type ReactElement,
   type SyntheticEvent,
 } from 'react';
 
-import { createControlPlaneClient, type CreateRunInput } from '../../lib/api';
+import {
+  createControlPlaneClient,
+  type CreateRunInput,
+  type CreateRunMessageInput,
+} from '../../lib/api';
 import { captureProjectCreated } from '../../lib/activation';
+import { selectImageFiles } from '../../lib/image-attachments';
 import { deriveProjectTitle } from '../../lib/project-title';
 import { rememberFirstPrompt } from '../../lib/prompt-handoff';
 import styles from './home.module.css';
@@ -94,7 +100,10 @@ function renderedTextareaRows(textarea: HTMLTextAreaElement): number {
 }
 
 interface PendingCreation {
+  readonly attachmentKeys: readonly string[];
+  readonly attachmentMessageKey: string;
   readonly appType: AppType;
+  readonly files: readonly File[];
   readonly model?: CreateRunInput['model'];
   readonly projectBody: Parameters<ReturnType<typeof createControlPlaneClient>['createProject']>[0];
   readonly projectIdempotencyKey: string;
@@ -103,7 +112,13 @@ interface PendingCreation {
   readonly runBudget?: CreateRunInput['budget'];
   readonly runIdempotencyKey: string;
   readonly runMode: RunMode;
+  readonly uploads: Map<number, NonNullable<CreateRunMessageInput['attachments']>[number]>;
   runBody?: CreateRunInput;
+}
+
+interface SelectedImage {
+  readonly file: File;
+  readonly id: string;
 }
 
 export interface PromptComposerProps {
@@ -137,7 +152,9 @@ export function PromptComposer({
   const [selectedModel, setSelectedModel] = useState<CreateRunInput['model']>();
   const [budget, setBudget] = useState('');
   const [targetBranch, setTargetBranch] = useState('main');
-  const [attachedFiles, setAttachedFiles] = useState<readonly string[]>([]);
+  const [images, setImages] = useState<readonly SelectedImage[]>([]);
+  const imagesRef = useRef<readonly SelectedImage[]>([]);
+  const [imageError, setImageError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -177,7 +194,10 @@ export function PromptComposer({
           throw new RangeError('invalid_budget');
         }
         pending = {
+          attachmentKeys: imagesRef.current.map(() => crypto.randomUUID()),
+          attachmentMessageKey: crypto.randomUUID(),
           appType,
+          files: imagesRef.current.map(({ file }) => file),
           ...(selectedModel === undefined ? {} : { model: selectedModel }),
           projectBody: {
             name: deriveProjectTitle(trimmedPrompt),
@@ -189,6 +209,7 @@ export function PromptComposer({
           ...(budgetNumber === undefined ? {} : { runBudget: { maxCredits: budgetNumber } }),
           runIdempotencyKey: crypto.randomUUID(),
           runMode: mode === 'auto' ? recommendedMode(trimmedPrompt) : mode,
+          uploads: new Map(),
         };
         pendingCreationRef.current = pending;
       }
@@ -201,6 +222,19 @@ export function PromptComposer({
       const requestedBranch = pending.requestedBranch || created.repository.defaultBranch;
       const branch = created.branches.find((candidate) => candidate.name === requestedBranch);
       if (branch === undefined) throw new RangeError('target_branch_not_found');
+      const attachments = await Promise.all(
+        pending.files.map(async (file, index) => {
+          const cached = pending.uploads.get(index);
+          if (cached !== undefined) return cached;
+          const uploaded = await client.uploadAttachment(
+            created.project.id,
+            file,
+            pending.attachmentKeys[index],
+          );
+          pending.uploads.set(index, uploaded);
+          return uploaded;
+        }),
+      );
       pending.runBody ??= {
         appType: pending.appType,
         branchId: branch.id,
@@ -209,9 +243,25 @@ export function PromptComposer({
         ...(pending.model === undefined ? {} : { model: pending.model }),
         prompt: pending.prompt,
       };
-      await client.createRun(created.project.id, pending.runBody, pending.runIdempotencyKey);
+      const createdRun = await client.createRun(
+        created.project.id,
+        pending.runBody,
+        pending.runIdempotencyKey,
+      );
+      if (attachments.length > 0) {
+        await client.sendRunMessage(
+          createdRun.run.id,
+          {
+            attachments: [...attachments],
+            content: 'Use this visual reference with my initial request.',
+          },
+          pending.attachmentMessageKey,
+        );
+      }
       rememberFirstPrompt(created.project.id, pending.prompt);
       pendingCreationRef.current = undefined;
+      imagesRef.current = [];
+      setImages([]);
       router.push(`/projects/${encodeURIComponent(created.project.id)}`);
     } catch {
       setSubmitError(true);
@@ -229,8 +279,29 @@ export function PromptComposer({
     setMode(selected);
   };
 
+  const addImages = (files: readonly File[]): void => {
+    const selected = selectImageFiles(
+      imagesRef.current.length,
+      files.map((file) => ({ file, id: crypto.randomUUID() })),
+    );
+    const next = [...imagesRef.current, ...selected.accepted];
+    imagesRef.current = next;
+    setImages(next);
+    setImageError(selected.error);
+  };
+
   const uploadFiles = (event: ChangeEvent<HTMLInputElement>): void => {
-    setAttachedFiles(Array.from(event.target.files ?? []).map((file) => file.name));
+    addImages(Array.from(event.currentTarget.files ?? []));
+    event.currentTarget.value = '';
+  };
+
+  const pasteImages = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    const files = Array.from(event.clipboardData.files).filter((file) =>
+      file.type.startsWith('image/'),
+    );
+    if (files.length === 0) return;
+    event.preventDefault();
+    addImages(files);
   };
 
   const startVoiceInput = (): void => {
@@ -272,9 +343,23 @@ export function PromptComposer({
               {selectedModel}
             </span>
           )}
-          {attachedFiles.map((file) => (
-            <span className={styles.selectionChip} key={file}>
-              {file}
+        </div>
+        <div aria-label="Attached images" className={styles.selectionChips} role="list">
+          {images.map((image) => (
+            <span className={styles.selectionChip} key={image.id} role="listitem">
+              {image.file.name}
+              <button
+                aria-label={`Remove ${image.file.name}`}
+                onClick={() => {
+                  const next = imagesRef.current.filter((candidate) => candidate.id !== image.id);
+                  imagesRef.current = next;
+                  setImages(next);
+                  setImageError(undefined);
+                }}
+                type="button"
+              >
+                ×
+              </button>
             </span>
           ))}
         </div>
@@ -288,6 +373,7 @@ export function PromptComposer({
             setTextareaRowCount(renderedTextareaRows(event.currentTarget));
             onPromptChange(event.target.value);
           }}
+          onPaste={pasteImages}
           placeholder="Describe your idea. zapp will build, test, and ship it."
           ref={textareaRef}
           rows={textareaRowCount}
@@ -321,7 +407,7 @@ export function PromptComposer({
             <label className={styles.menuItem}>
               Upload file
               <input
-                accept="image/*,.txt,.md,.json,.csv,.pdf"
+                accept="image/gif,image/jpeg,image/png,image/webp"
                 aria-label="Upload file"
                 className={styles.fileInput}
                 multiple
@@ -447,6 +533,7 @@ export function PromptComposer({
           {submitting ? 'Starting your project…' : null}
           {voiceError ? 'Voice input could not start. You can continue typing.' : null}
         </p>
+        {imageError === undefined ? null : <p role="alert">{imageError}</p>}
       </form>
 
       {submitError ? (

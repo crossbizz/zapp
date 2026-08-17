@@ -698,6 +698,102 @@ test('exposes attachment, mode, model-policy, and advanced controls', async ({ p
   await expect(page.getByRole('textbox', { name: 'Target branch' })).toHaveValue('main');
 });
 
+test('pastes an image, uploads it once, and retries the initial attachment handoff with stable keys', async ({
+  page,
+}) => {
+  const observed = await mockCreation(page);
+  const uploadRequests: import('@playwright/test').Request[] = [];
+  const messageRequests: import('@playwright/test').Request[] = [];
+  await page.route(`${apiBaseUrl}/v1/projects/proj-home/attachments`, async (route) => {
+    uploadRequests.push(route.request());
+    await route.fulfill({
+      body: JSON.stringify({
+        attachmentId: 'art_01K27Q9C2W85CMN1V9S6Q3D4FA',
+        byteSize: 3,
+        contentType: 'image/png',
+        kind: 'image',
+        name: 'reference.png',
+      }),
+      contentType: 'application/json',
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+      },
+      status: 201,
+    });
+  });
+  await page.route(`${apiBaseUrl}/v1/runs/run-home/messages`, async (route) => {
+    messageRequests.push(route.request());
+    if (messageRequests.length === 1) {
+      await route.fulfill({
+        body: JSON.stringify({
+          error: { code: 'fixture_failure', message: 'Try again', requestId: 'req-image' },
+        }),
+        contentType: 'application/json',
+        headers: {
+          'access-control-allow-credentials': 'true',
+          'access-control-allow-origin': appBaseUrl,
+        },
+        status: 500,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({ messageId: 'msg_01K27Q9C2W85CMN1V9S6Q3D4FG', sequence: 2 }),
+      contentType: 'application/json',
+      headers: {
+        'access-control-allow-credentials': 'true',
+        'access-control-allow-origin': appBaseUrl,
+      },
+      status: 202,
+    });
+  });
+
+  await signIn(page);
+  const composer = page.getByRole('textbox', { name: 'Describe your project' });
+  await composer.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['png'], 'reference.png', { type: 'image/png' }));
+    element.dispatchEvent(
+      new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }),
+    );
+  });
+  await expect(page.getByRole('list', { name: 'Attached images' })).toContainText('reference.png');
+  await composer.fill('Build a gallery from this visual reference');
+  await page.getByRole('button', { name: 'Create project' }).click();
+  await expect(page.getByRole('heading', { name: 'We could not start your project.' })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page).toHaveURL('/projects/proj-home');
+
+  expect(uploadRequests).toHaveLength(1);
+  expect(messageRequests).toHaveLength(2);
+  expect(messageRequests[0]?.postDataJSON()).toEqual({
+    attachments: [
+      {
+        attachmentId: 'art_01K27Q9C2W85CMN1V9S6Q3D4FA',
+        byteSize: 3,
+        contentType: 'image/png',
+        kind: 'image',
+        name: 'reference.png',
+      },
+    ],
+    content: 'Use this visual reference with my initial request.',
+  });
+  expect(uploadRequests[0]?.headers()['x-organization-id']).toBe(
+    'org_01K27Q9C2W85CMN1V9S6Q3D4FD',
+  );
+  expect(uploadRequests[0]?.headers()['idempotency-key']).toBeTruthy();
+  expect(messageRequests[0]?.headers()['idempotency-key']).toBe(
+    messageRequests[1]?.headers()['idempotency-key'],
+  );
+  expect(observed.projectRequests[0]?.headers['idempotency-key']).toBe(
+    observed.projectRequests[1]?.headers['idempotency-key'],
+  );
+  expect(observed.runRequests[0]?.headers['idempotency-key']).toBe(
+    observed.runRequests[1]?.headers['idempotency-key'],
+  );
+});
+
 test('renders only valid policy model radios and submits the explicit generated-SDK model', async ({ page }) => {
   const observed = await mockCreation(page);
   await signIn(page);

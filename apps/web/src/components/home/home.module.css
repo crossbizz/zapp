@@ -183,6 +183,8 @@
 
 .selectionChip {
   display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   border: 1px solid var(--zapp-accent);
   border-radius: var(--zapp-radius-pill);
   padding: 0.25rem 0.625rem;
@@ -190,6 +192,15 @@
   background: var(--zapp-support-verified-bg);
   font-size: var(--zapp-text-12);
   font-weight: 650;
+}
+
+.selectionChip button {
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
 }
 
 .composerTextarea {
