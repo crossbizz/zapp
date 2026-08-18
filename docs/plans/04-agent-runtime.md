@@ -423,6 +423,7 @@ Execution expansion (2026-08-12):
 ## Execution log
 
 - 2026-08-17 AR-27 done — Replaced product-facing RED/GREEN methodology with preview-first Builder guidance, retained safe tool-boundary yields while keeping their narration out of chat, and preserved terminal failure summaries; agent policies passed 130/130, orchestrator-worker passed 279/279, and the complete repository gate passed with bounded task concurrency after three load-contended tests passed independently, without a real-provider call.
+- 2026-08-17 AR-27 CI remediation — Clean Linux exposed a Temporal test racing the approval activity callback against the workflow query update; all three approval-status assertions now wait for the durable workflow state instead of assuming activity completion and workflow progression are the same instant.
 
 - 2026-08-17 AR-26 done — Bounded simple builder sessions to one focused RED/GREEN loop per requested behavior, batched independent calls and file writes, one dependency install, no narration-only turns, and one final verification pass; agent policies passed 130/130, orchestrator-worker passed 278/278, and the complete repository gate passed without a real-provider call; credential-dependent integration cases skipped visibly as designed.
 

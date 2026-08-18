@@ -221,10 +221,12 @@ describe('AR-14 durable run budget approval loop', () => {
             Promise.reject(error instanceof Error ? error : new Error('workflow failed')),
         ),
       ]);
-      await expect(handle.query(getRunStatusQuery)).resolves.toMatchObject({
-        status: 'waiting_for_approval',
-        phase: 'session',
-        taskId: 'task-m1',
+      await vi.waitFor(async () => {
+        expect(await handle.query(getRunStatusQuery)).toMatchObject({
+          status: 'waiting_for_approval',
+          phase: 'session',
+          taskId: 'task-m1',
+        });
       });
       await handle.signal('budgetApprovalResolved', {
         approvalId: 'appr_01J00000000000000000000000',
@@ -434,9 +436,11 @@ describe('AR-14 durable run budget approval loop', () => {
           reason: 'organization_credit_exhausted',
         }),
       ]);
-      await expect(handle.query(getRunStatusQuery)).resolves.toMatchObject({
-        status: 'waiting_for_approval',
-        phase: 'session',
+      await vi.waitFor(async () => {
+        expect(await handle.query(getRunStatusQuery)).toMatchObject({
+          status: 'waiting_for_approval',
+          phase: 'session',
+        });
       });
       expect(sessionAttempts).toBe(1);
 
@@ -531,7 +535,11 @@ describe('AR-14 durable run budget approval loop', () => {
       await vi.waitFor(() => {
         expect(approvals).toHaveLength(1);
       }, { timeout: 5_000 });
-      await expect(handle.query(getRunStatusQuery)).resolves.toMatchObject({ status: 'waiting_for_approval' });
+      await vi.waitFor(async () => {
+        expect(await handle.query(getRunStatusQuery)).toMatchObject({
+          status: 'waiting_for_approval',
+        });
+      });
       await handle.signal('budgetApprovalResolved', {
         approvalId: 'appr_01J00000000000000000000003', decision: 'approved', absoluteCeiling: '100.0000', reason: 'organization_credit_exhausted',
       });
