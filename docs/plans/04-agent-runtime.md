@@ -399,6 +399,16 @@ Execution expansion (2026-08-12):
 - [x] Prove both the durable Builder role prompt and Build-mode instructions carry the bounded-turn contract without weakening failed-check visibility or final verification.
 - [x] Verify the agent-policies and orchestrator-worker focused suites plus lint/typecheck; no real-provider call. Commit: `perf(orchestrator): bound simple builder round trips`
 
+### Task AR-27 [M6]: Preview-first Builder conversation
+
+**Files:** Modify `packages/agent-policies/prompts/{planner,builder,verifier,summarizer}.md`, `packages/agent-policies/test/policies.test.ts`, `services/orchestrator-worker/src/runtime/m1-session.ts`, `services/orchestrator-worker/src/workflows/run.ts`, `services/orchestrator-worker/test/{m1-session,modes}.test.ts`, this plan, and `tasks/todo.md`.
+**Effort:** S.
+
+- [x] Add failing prompt contracts that reject product-facing RED/GREEN and test-methodology narration while requiring a runnable preview before the final verification pass.
+- [x] Add a failing workflow contract that publishes terminal Builder summaries but keeps yielded internal narration out of the user conversation.
+- [x] Implement preview-first instructions, keep the development server running through one final verification pass, and preserve truthful visibility for genuine terminal failures.
+- [x] Run the focused agent-policies and orchestrator-worker suites plus touched-package lint, typecheck, and build; no real-provider call. Commit: `perf(orchestrator): make builder preview-first`.
+
 ## Testing strategy
 - Unit: policies, graph, context assembly, schema round-trips (fast, no infra).
 - Integration: Temporal dev server + fake sandbox/model for workflow semantics (signals, restarts, isolation, idempotency). Worker-kill tests (AR-8, AR-17) are permanent CI.
@@ -411,6 +421,8 @@ Execution expansion (2026-08-12):
 - Policy evaluation is code-side (Global Constraint 15); model sees redacted, delimited tool output only; approval-gated tools enumerated in AR-4 table; all activities carry org/project context for ledger + audit attribution.
 
 ## Execution log
+
+- 2026-08-17 AR-27 done — Replaced product-facing RED/GREEN methodology with preview-first Builder guidance, retained safe tool-boundary yields while keeping their narration out of chat, and preserved terminal failure summaries; agent policies passed 130/130, orchestrator-worker passed 279/279, and the complete repository gate passed with bounded task concurrency after three load-contended tests passed independently, without a real-provider call.
 
 - 2026-08-17 AR-26 done — Bounded simple builder sessions to one focused RED/GREEN loop per requested behavior, batched independent calls and file writes, one dependency install, no narration-only turns, and one final verification pass; agent policies passed 130/130, orchestrator-worker passed 278/278, and the complete repository gate passed without a real-provider call; credential-dependent integration cases skipped visibly as designed.
 

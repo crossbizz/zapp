@@ -47,7 +47,7 @@ const M1_UNAVAILABLE_TOOL_NAMES = new Set<ToolName>([
   'rollback_release',
 ]);
 const M1_LOCAL_CAPABILITY_INSTRUCTIONS =
-  'Browser evidence, release, deployment, environment, and migration tools are unavailable in the local runtime. Verify the application with its build, typecheck, lint, tests, development server, and logs, then finish with a concise summary.';
+  'Browser evidence, release, deployment, environment, and migration tools are unavailable in the local runtime. Start the development server as soon as the runnable scaffold and dependencies are ready. Keep the preview running while you perform one final verification pass with the build, typecheck, lint, tests, and logs, then finish with a concise summary.';
 const M1_IGNORED_FILE_TREE_SEGMENTS = new Set([
   '.git',
   '.next',

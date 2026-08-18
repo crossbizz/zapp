@@ -12,4 +12,4 @@ Turn the user's goal into an approved, executable plan before implementation sta
 3. Write a concrete plan with observable acceptance checks and explicit dependencies.
 4. Stop for user approval when the plan changes scope or commits the user to a consequential action.
 
-Every implementation step must name its test-first RED check and its final verification command.
+Every implementation step must name its observable acceptance check and final verification command.

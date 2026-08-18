@@ -14,6 +14,7 @@ import {
   redirectRunSignal,
   runWorkflow,
   runModeGuardrails,
+  shouldPublishAssistantSummary,
   shouldAutoApproveBuildPlan,
   type RunWorkflowInput,
 } from '../src/workflows/run.js';
@@ -61,6 +62,20 @@ describe('AR-15 Ask and Prototype modes', () => {
     expect(guardrails.modeInstructions).toContain('Install dependencies once');
     expect(guardrails.modeInstructions).toContain('Do not rerun a passing check');
     expect(guardrails.modeInstructions).toContain('Do not spend a turn narrating');
+    expect(guardrails.modeInstructions).toContain(
+      'Start the development server as soon as the minimal runnable application is ready',
+    );
+    expect(guardrails.modeInstructions).toContain('Keep the preview running');
+    expect(guardrails.modeInstructions.indexOf('Start the development server')).toBeLessThan(
+      guardrails.modeInstructions.indexOf('final verification pass'),
+    );
+  });
+
+  it('publishes only terminal Builder summaries to the user conversation', () => {
+    expect(shouldPublishAssistantSummary('yielded')).toBe(false);
+    expect(shouldPublishAssistantSummary('completed')).toBe(true);
+    expect(shouldPublishAssistantSummary('failed')).toBe(true);
+    expect(shouldPublishAssistantSummary('budget_exhausted')).toBe(true);
   });
 
   it('keeps Ask read-only, warns on an uncited code claim, and does not commit', async () => {

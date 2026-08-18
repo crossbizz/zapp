@@ -62,21 +62,22 @@ const EXPECTED_TOOL_METADATA = TOOL_NAMES.map((name) => {
 const PROMPT_CONTRACTS = [
   {
     role: 'planner',
-    requirements: [/\bbrainstorm\b/iu, /approved, executable plan/iu, /test-first RED check/iu],
+    requirements: [/\bbrainstorm\b/iu, /approved, executable plan/iu, /observable acceptance check/iu],
+    forbidden: [/\bRED\b/iu, /\bGREEN\b/iu, /test-first/iu],
   },
   {
     role: 'builder',
     requirements: [
-      /work test-first/iu,
-      /confirm RED/iu,
-      /rerun for GREEN/iu,
-      /one focused RED\/GREEN loop per requested behavior/iu,
+      /working preview/iu,
+      /start the development server/iu,
+      /keep the preview running/iu,
       /batch independent tool calls/iu,
       /install dependencies once/iu,
       /one final verification pass/iu,
       /do not spend a turn narrating/iu,
       /verification commands/iu,
     ],
+    forbidden: [/\bRED\b/iu, /\bGREEN\b/iu, /test-first/iu],
   },
   {
     role: 'verifier',
@@ -85,10 +86,12 @@ const PROMPT_CONTRACTS = [
       /run fresh tests yourself/iu,
       /do not treat the builder's test output, summary, or confidence as evidence/iu,
     ],
+    forbidden: [/\bRED\b/iu, /\bGREEN\b/iu],
   },
   {
     role: 'summarizer',
-    requirements: [/brainstorm/iu, /approved plan/iu, /test-first work/iu, /independent verification/iu],
+    requirements: [/brainstorm/iu, /approved plan/iu, /implementation work/iu, /independent verification/iu],
+    forbidden: [/\bRED\b/iu, /\bGREEN\b/iu, /test-first/iu],
   },
 ] as const;
 
@@ -475,5 +478,6 @@ describe('versioned role prompt contracts', () => {
       role: contract.role,
     });
     for (const requirement of contract.requirements) expect(prompt).toMatch(requirement);
+    for (const forbidden of contract.forbidden) expect(prompt).not.toMatch(forbidden);
   });
 });

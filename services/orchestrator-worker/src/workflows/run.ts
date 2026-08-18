@@ -484,7 +484,7 @@ const ASK_MODE_INSTRUCTIONS =
 const PROTOTYPE_MODE_INSTRUCTIONS =
   'Optimize for a working preview. Start the dev server, run the preview smoke test, and label every mock or incomplete integration. Finish with exactly one strict JSON object and no other text: {"summary":"<user-facing summary>","mocks":[{"name":"<mock name>","reason":"<why it is mocked>"}]}.';
 const DEFAULT_MODE_INSTRUCTIONS =
-  'Implement the requested application directly. Prefer TypeScript. Inspect the execution contract and file tree once. If the repository is blank or scaffold-only, do not inspect git history, database schema, release state, empty logs, or unrelated integrations. Batch independent tool calls and create independent files in the same response. Install dependencies once after deciding the complete dependency set. Do not spend a turn narrating a routine next step; perform it. Create runnable application files immediately, start the development server, run the preview smoke test, and fix any reported errors. Do not rerun a passing check unless an intervening code or configuration change could invalidate it. Run one final verification pass and continue until the requested verification succeeds.';
+  'Implement the requested application directly. Prefer TypeScript. Inspect the execution contract and file tree once. If the repository is blank or scaffold-only, do not inspect git history, database schema, release state, empty logs, or unrelated integrations. Batch independent tool calls and create independent files in the same response. Install dependencies once after deciding the complete dependency set. Do not spend a turn narrating a routine next step; perform it. Create runnable application files immediately. Start the development server as soon as the minimal runnable application is ready. Keep the preview running while you complete the remaining work; run the preview smoke test and fix reported errors, then run one final verification pass. Do not rerun a passing check unless an intervening code or configuration change could invalidate it. Continue until the requested verification succeeds.';
 
 function buildTaskPrompt(input: RunWorkflowInput, planArtifactId: string, task: PlanTask): string {
   return [
@@ -646,6 +646,12 @@ async function emitAssistantMessage(
       ),
     ],
   });
+}
+
+export function shouldPublishAssistantSummary(
+  status: Awaited<ReturnType<SessionActivities['runBuilderSession']>>['status'],
+): boolean {
+  return status === 'completed' || status === 'failed' || status === 'budget_exhausted';
 }
 
 async function executeRunWorkflow(
@@ -2155,10 +2161,7 @@ async function executeRunWorkflow(
       if (controlResult !== undefined) return controlResult;
       const assistantTurn = sessionResult.turn ?? sessionStep + 1;
       if (
-        (sessionResult.status === 'completed' ||
-          sessionResult.status === 'yielded' ||
-          sessionResult.status === 'failed' ||
-          sessionResult.status === 'budget_exhausted') &&
+        shouldPublishAssistantSummary(sessionResult.status) &&
         assistantTurn > lastEmittedAssistantTurn
       ) {
         const model = sessionResult.model ?? input.model ?? 'policy/default';

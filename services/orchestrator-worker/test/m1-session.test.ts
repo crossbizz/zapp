@@ -383,6 +383,12 @@ describe('M1 builder session composition', () => {
     expect(events.filter((event) => event.type === 'tool.started')).toHaveLength(5);
     expect(events.filter((event) => event.type === 'tool.completed')).toHaveLength(5);
     expect(scripted.requests[0]?.messages[1]?.role).toBe('user');
+    const systemMessage = scripted.requests[0]?.messages[0]?.content;
+    expect(systemMessage).toContain(
+      'Start the development server as soon as the runnable scaffold and dependencies are ready',
+    );
+    expect(systemMessage).toContain('Keep the preview running while you perform one final');
+    expect(systemMessage).not.toMatch(/\b(?:RED|GREEN)\b/iu);
     expect(scripted.requests[0]?.messages[1]?.content).toContain('[taskTranscript]');
     expect(scripted.requests[0]?.messages[1]?.content).toContain('Prior conversation context');
     expect(scripted.requests[0]?.messages[1]?.content).toContain(

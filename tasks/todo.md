@@ -333,6 +333,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] WEB-22-FIX-3 Allow cold E2E production builds to finish
 - [x] WEB-22-FIX-4 Synchronize the cold web test graph
 - [x] AR-26 Bounded builder turnaround for simple applications
+- [x] AR-27 Preview-first Builder conversation
 - [x] WEB-23 Functional Lovable-style project More views
 - [x] WEB-24 Paste images into project creation
 - [x] M6-GATE-FIX-1 Bound preview-proxy browser cleanup under cold-gate contention
