@@ -62,6 +62,7 @@ Source plans: [docs/plans/](../docs/plans/README.md). One checkbox per task; che
 - [x] M1-GATE-17-FIX-2 Preserve pnpm contracts on legacy sandbox images
 - [x] M1-GATE-17-FIX-3 Recover interrupted builder sessions and explain terminal failures
 - [x] M1-GATE-17-FIX-4 Reject false-ready local service processes
+- [x] M1-GATE-17-FIX-5 Complete repeated Ctrl-C shutdown
 - [ ] M1-GATE-17 Runnable local prompt-to-preview exit
 
 ### Plan 02 — Control plane (part 2)

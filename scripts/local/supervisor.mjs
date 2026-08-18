@@ -117,15 +117,14 @@ function signalPromise(signals) {
   let cleanup = () => undefined;
   const promise = new Promise((resolve) => {
     const stop = () => {
-      cleanup();
       resolve('signal');
     };
     cleanup = () => {
       signals.off('SIGINT', stop);
       signals.off('SIGTERM', stop);
     };
-    signals.once('SIGINT', stop);
-    signals.once('SIGTERM', stop);
+    signals.on('SIGINT', stop);
+    signals.on('SIGTERM', stop);
   });
   return { promise, cleanup };
 }

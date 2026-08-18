@@ -656,3 +656,62 @@ test('runs preflight and startup in dependency order, opens the UI, and exits ze
   ]);
   assert.equal(events.at(-1), 'stop');
 });
+
+test('keeps repeated Ctrl-C signals inside one complete shutdown', async () => {
+  const config = await configFixture();
+  const signals = new EventEmitter();
+  let resolveReady;
+  const ready = new Promise((resolve) => {
+    resolveReady = resolve;
+  });
+  let resolveStop;
+  const stopped = new Promise((resolve) => {
+    resolveStop = resolve;
+  });
+  let stopCalls = 0;
+  const supervisor = {
+    failure: new Promise(() => undefined),
+    start() {},
+    waitForLine: () => Promise.resolve(),
+    waitForLineMatch: () =>
+      Promise.resolve([
+        'https://local-m1.trycloudflare.com',
+        'local-m1.trycloudflare.com',
+      ]),
+    stopAll() {
+      stopCalls += 1;
+      return stopped;
+    },
+  };
+  const running = runLocal({
+    config,
+    supervisor,
+    exec: (_command, args) =>
+      Promise.resolve({ stdout: args.includes('--version') ? '9.15.0' : '' }),
+    checkPort: () => Promise.resolve(true),
+    waitForHttp: () => Promise.resolve(),
+    prepareImages: () => Promise.resolve(),
+    openBrowser: () => {
+      resolveReady();
+      return Promise.resolve();
+    },
+    signals,
+  });
+
+  await ready;
+  signals.emit('SIGINT');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(stopCalls, 1);
+  assert.equal(signals.listenerCount('SIGINT'), 1);
+  assert.equal(signals.listenerCount('SIGTERM'), 1);
+
+  signals.emit('SIGINT');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopCalls, 1);
+
+  resolveStop();
+  assert.equal(await running, 0);
+  assert.equal(signals.listenerCount('SIGINT'), 0);
+  assert.equal(signals.listenerCount('SIGTERM'), 0);
+});
